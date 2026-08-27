@@ -16,7 +16,6 @@
 package org.patryk3211.powergrid.electricity.sim.special;
 
 import org.jetbrains.annotations.Nullable;
-import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
@@ -107,6 +106,12 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
 
     /** Effective series resistance last written to the matrix, to avoid redundant updates. */
     private float appliedResistance = Float.NaN;
+
+    // Sampling policy. Held as fields rather than read from the mod config here so that this
+    // package stays free of Minecraft imports and remains unit-testable; the owning block
+    // entity pushes the configured values in.
+    private int samplesPerCycle = 32;
+    private int maxSubTicks = 16;
 
     private Precalculated<Float> fieldStrength;
 
@@ -201,11 +206,17 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
         super.setResistance(effective);
     }
 
+    /**
+     * Set the sampling policy, normally from {@code CSolver.acSamplesPerCycle} and
+     * {@code CSolver.acMaxSubTicks}.
+     */
+    public void setSamplingPolicy(int samplesPerCycle, int maxSubTicks) {
+        this.samplesPerCycle = Math.max(samplesPerCycle, 2);
+        this.maxSubTicks = Math.max(maxSubTicks, 1);
+    }
+
     @Override
     public int requiredSubTicks() {
-        var config = ModdedConfigs.server().electricity.solver;
-        var maxSubTicks = Math.max(config.acMaxSubTicks.get(), 1);
-
         // Electrical frequency in Hz. Below one cycle per world tick there is nothing to
         // resolve, so a stopped or slow machine asks for nothing and costs nothing.
         var frequency = Math.abs(rotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
@@ -213,7 +224,7 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
             return 1;
 
         // Samples needed across one world tick = samples per cycle * cycles per world tick.
-        var needed = config.acSamplesPerCycle.get() * frequency * 0.05;
+        var needed = samplesPerCycle * frequency * 0.05;
 
         // Round up to a power of two. Two reasons: every rate then divides the world tick
         // evenly so the stepping schedule is uniform, and the rate only changes at octave
