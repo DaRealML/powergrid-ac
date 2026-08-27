@@ -18,8 +18,6 @@ package org.patryk3211.powergrid.electricity.sim.special;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
-import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
-import org.patryk3211.powergrid.electricity.sim.solver.IOuterHook;
 import org.patryk3211.powergrid.electricity.sim.solver.IResidualAdder;
 import org.patryk3211.powergrid.electricity.sim.solver.ISubTickRate;
 
@@ -50,6 +48,15 @@ import static org.patryk3211.powergrid.electricity.sim.ElectricalNetwork.G_MIN;
  * the peak. The form used here holds the peak independent of pole count and lets {@code p}
  * select frequency alone. Multiply by {@code p} in {@link #preSolve()} for the strict form.
  *
+ * <h2>Relationship to the DC generator</h2>
+ * This extends {@link GeneratorCoupling} to reuse the excitation plumbing the commutator block
+ * entity already drives — the field-strength provider and the stored EMF state — and overrides
+ * every method that carries DC behaviour. In particular the inherited {@code backEmf} fudge
+ * resistance is never engaged, because {@link #setField(float)} does not compute it; a real
+ * armature inductance is stamped instead, which is what that fudge was approximating. Nothing
+ * about the DC machine changes: {@link GeneratorCoupling} is untouched and a commutator keeps
+ * behaving exactly as it did.
+ *
  * <h2>Armature reactance</h2>
  * A real winding has inductance, and without it two alternators connected in parallel are two
  * ideal voltage sources fighting each other — any phase difference produces a current limited
@@ -60,9 +67,7 @@ import static org.patryk3211.powergrid.electricity.sim.ElectricalNetwork.G_MIN;
  *     V+ - V- - (R + L/dt) * i = e - (L/dt) * i_prev
  * </pre>
  * so the inductance costs one addition to the source row's diagonal and one term on the right
- * hand side. This is the honest version of the fudge {@link GeneratorCoupling} applies as a
- * synthetic {@code backEmf} resistance, whose own comment admits it is standing in for
- * "an inductor like behaviour".
+ * hand side.
  *
  * <h2>Why the phase advances unconditionally</h2>
  * Every reactive component in the mod gates its state update on {@code isConverged()}, and the
@@ -83,13 +88,17 @@ import static org.patryk3211.powergrid.electricity.sim.ElectricalNetwork.G_MIN;
  * different resolutions — but it does mean the swing dynamics are sampled at 20 Hz, not at the
  * sub-tick rate, and very light rotors may hunt rather than settle.
  */
-public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterHook, ISubTickRate {
+public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRate {
     private static final double TWO_PI = Math.PI * 2;
 
-    private final IRotor rotor;
+    // The parent keeps its own private copies of these; this class deliberately shadows them
+    // with its own state and overrides every method that reads the parent's, so the DC field
+    // and back-EMF machinery is never engaged.
+    private final IRotor acRotor;
+    private float acField;
+    private float acBaseResistance;
+    private Precalculated<Float> acFieldStrength;
 
-    private float field;
-    private float baseResistance;
     private int polePairs = 1;
 
     /** Armature (synchronous) inductance in henries. Zero disables the companion model. */
@@ -113,22 +122,28 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
     private int samplesPerCycle = 32;
     private int maxSubTicks = 16;
 
-    private Precalculated<Float> fieldStrength;
-
     public AlternatorCoupling(IElectricNode positive, @Nullable IElectricNode negative, Number resistance, IRotor rotor) {
-        super(positive, negative, resistance);
-        this.rotor = rotor;
-        baseResistance = resistance.floatValue();
-        if(baseResistance <= 0)
-            baseResistance = (float) (1 / G_MIN);
+        super(positive, negative, resistance, rotor);
+        this.acRotor = rotor;
+        acBaseResistance = resistance.floatValue();
+        if(acBaseResistance <= 0)
+            acBaseResistance = (float) (1 / G_MIN);
     }
 
+    /** Sets the field strength without engaging the parent's back-EMF resistance. */
+    @Override
     public void setField(float field) {
-        this.field = field;
+        this.acField = field;
     }
 
     public float getField() {
-        return field;
+        return acField;
+    }
+
+    @Override
+    public void setFieldStrengthProvider(Precalculated<Float> fieldStrength) {
+        super.setFieldStrengthProvider(fieldStrength);
+        this.acFieldStrength = fieldStrength;
     }
 
     /**
@@ -172,15 +187,20 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
         return phaseSine;
     }
 
-    public void setFieldStrengthProvider(Precalculated<Float> fieldStrength) {
-        this.fieldStrength = fieldStrength;
+    /**
+     * Set the sampling policy, normally from {@code CSolver.acSamplesPerCycle} and
+     * {@code CSolver.acMaxSubTicks}.
+     */
+    public void setSamplingPolicy(int samplesPerCycle, int maxSubTicks) {
+        this.samplesPerCycle = Math.max(samplesPerCycle, 2);
+        this.maxSubTicks = Math.max(maxSubTicks, 1);
     }
 
     @Override
     public void setResistance(float resistance) {
-        baseResistance = resistance;
-        if(baseResistance <= 0)
-            baseResistance = (float) (1 / G_MIN);
+        acBaseResistance = resistance;
+        if(acBaseResistance <= 0)
+            acBaseResistance = (float) (1 / G_MIN);
         applyEffectiveResistance(deltaTime());
     }
 
@@ -194,32 +214,26 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
     }
 
     /**
-     * Push {@code R + L/dt} into the source row, but only when it actually changed. Every call
-     * to the parent counts as a conductance update, and enough of those trigger a full matrix
-     * rebuild — so writing the same value every sub-tick would be quietly expensive.
+     * Push {@code R + L/dt} into the source row, but only when it actually changed. Every write
+     * counts as a conductance update, and enough of those trigger a full matrix rebuild — so
+     * writing the same value every sub-tick would be quietly expensive.
      */
     private void applyEffectiveResistance(double dt) {
-        var effective = (float) (baseResistance + (dt > 0 ? armatureInductance / dt : 0));
+        var effective = (float) (acBaseResistance + (dt > 0 ? armatureInductance / dt : 0));
         if(effective == appliedResistance)
             return;
         appliedResistance = effective;
+        // Routes through GeneratorCoupling.setResistance, which adds its backEmf term before
+        // reaching the source row. That term is identically zero here because setField() is
+        // overridden never to compute it, so this writes exactly `effective`.
         super.setResistance(effective);
-    }
-
-    /**
-     * Set the sampling policy, normally from {@code CSolver.acSamplesPerCycle} and
-     * {@code CSolver.acMaxSubTicks}.
-     */
-    public void setSamplingPolicy(int samplesPerCycle, int maxSubTicks) {
-        this.samplesPerCycle = Math.max(samplesPerCycle, 2);
-        this.maxSubTicks = Math.max(maxSubTicks, 1);
     }
 
     @Override
     public int requiredSubTicks() {
         // Electrical frequency in Hz. Below one cycle per world tick there is nothing to
         // resolve, so a stopped or slow machine asks for nothing and costs nothing.
-        var frequency = Math.abs(rotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
+        var frequency = Math.abs(acRotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
         if(frequency <= 0)
             return 1;
 
@@ -239,11 +253,11 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
 
     @Override
     public void preSolve() {
-        if(fieldStrength != null)
-            field = fieldStrength.get();
+        if(acFieldStrength != null)
+            acField = acFieldStrength.get();
 
         var dt = deltaTime();
-        var omega = rotor.getAngularVelocityRadians();
+        var omega = acRotor.getAngularVelocityRadians();
 
         // Advance the clock first, then evaluate the waveform at the new angle. Unconditional
         // by design — see the class comment.
@@ -251,13 +265,14 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
         phaseSine = Math.sin(polePairs * phase);
 
         applyEffectiveResistance(dt);
-        setVoltage(field * omega * phaseSine);
+        setVoltage(acField * omega * phaseSine);
     }
 
     @Override
     public void addStaticResidual(IResidualAdder residual) {
-        // Contributes the source EMF.
-        super.addStaticResidual(residual);
+        // Deliberately does NOT call GeneratorCoupling's version, which stamps the DC back-EMF
+        // correction. The plain source contribution is the one line below.
+        residual.add(index, getVoltage());
 
         // Companion source of the armature inductance: (L/dt) * i_prev.
         if(armatureInductance > 0) {
@@ -281,7 +296,7 @@ public class AlternatorCoupling extends VoltageSourceCoupling implements IOuterH
         // sub-tick and the rotor consumes the sum once per world tick, so this has to be a
         // mean rather than a total.
         var subTicks = network == null ? 1 : Math.max(network.getMultiTick(), 1);
-        rotor.applyTickForce((float) (field * phaseSine * getCurrent() / subTicks));
+        acRotor.applyTickForce((float) (acField * phaseSine * getCurrent() / subTicks));
     }
 
     @Override

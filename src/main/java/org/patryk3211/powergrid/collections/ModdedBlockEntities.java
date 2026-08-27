@@ -182,7 +182,7 @@ public class ModdedBlockEntities {
     public static final BlockEntityEntry<CommutatorBlockEntity> GENERATOR_COMMUTATOR =
             REGISTRATE.blockEntity("generator_commutator", CommutatorBlockEntity::new)
                     .visual(() -> CommutatorVisual::new)
-                    .validBlocks(ModdedBlocks.GENERATOR_COMMUTATOR, ModdedBlocks.GENERATOR_VERTICAL_COMMUTATOR)
+                    .validBlocks(ModdedBlocks.GENERATOR_COMMUTATOR, ModdedBlocks.GENERATOR_VERTICAL_COMMUTATOR, ModdedBlocks.GENERATOR_ALTERNATOR)
                     .renderer(() -> CommutatorRenderer::new)
                     .register();
 

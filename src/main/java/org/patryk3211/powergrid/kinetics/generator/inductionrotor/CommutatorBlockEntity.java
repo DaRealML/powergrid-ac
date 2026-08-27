@@ -30,6 +30,8 @@ import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.calculation.PrecalculatedN;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
+import org.patryk3211.powergrid.collections.ModdedConfigs;
+import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.kinetics.generator.rotor.RotorBlockEntity;
@@ -45,6 +47,12 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     private float resistance;
     private boolean updateBehaviour = true;
     private float emf;
+
+    // Shaft angle of an alternator, in radians. Held here rather than on the rotor because the
+    // rotor's own angle is a render-only value that is neither synced nor saved, while an AC
+    // grid needs its machines to come back from a reload with their phase relationships intact.
+    // Unused by the DC commutator.
+    private double phase;
 
     private final PrecalculatedN<Float, Precalculated<Float>> totalFieldStrength = new PrecalculatedN<>(CommutatorBlockEntity::fieldSum, 0.0f);
 
@@ -71,10 +79,23 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         builder.setTerminalCount(2);
         if(resistance == 0)
             resistance = 1e-6f;
-        oldSource = source = builder.addInternalNode(GeneratorCoupling.class, builder.terminalNode(0), builder.terminalNode(1), resistance, rotorBehaviour);
+        // An alternator is electrically the same machine as the commutator generator apart from
+        // the shape of its EMF, so it reuses this entire assembly — rotor, field summing,
+        // terminals, network registration — and swaps only the coupling that makes the voltage.
+        var couplingClass = getBlockState().getBlock() instanceof AlternatorBlock
+                ? AlternatorCoupling.class
+                : GeneratorCoupling.class;
+        oldSource = source = builder.addInternalNode(couplingClass, builder.terminalNode(0), builder.terminalNode(1), resistance, rotorBehaviour);
         source.setFieldStrengthProvider(totalFieldStrength);
         source.setEmfValue(emf);
         emf = 0;
+        if(source instanceof AlternatorCoupling alternator) {
+            var solver = ModdedConfigs.server().electricity.solver;
+            alternator.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
+            // Restore the phase read from NBT, so a reloaded grid comes back with its machines
+            // in the same relative positions they were saved in.
+            alternator.setPhase(phase);
+        }
     }
 
     private void assemblyChanged() {
@@ -138,9 +159,12 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         resistance = tag.getFloat("Resistance");
+        phase = tag.getDouble("Phase");
         if(source != null) {
             source.setEmfValue(tag.getFloat("EmfState"));
             source.setResistance(resistance);
+            if(source instanceof AlternatorCoupling alternator)
+                alternator.setPhase(phase);
         } else {
             emf = tag.getFloat("EmfState");
         }
@@ -152,6 +176,8 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         if(source != null) {
             tag.putFloat("EmfState", (float) source.getEmfValue());
             tag.putFloat("Resistance", resistance);
+            if(source instanceof AlternatorCoupling alternator)
+                tag.putDouble("Phase", alternator.getPhase());
         }
     }
 
@@ -245,6 +271,12 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     public ITerminalPlacement terminal(BlockState state, int index) {
         if(!(state.getBlock() instanceof ICommutator block))
             return null;
+        // Swapping the terminal polarity on reverse rotation is what the brushes of a
+        // commutator do — it is the mechanical rectification itself. An alternator has slip
+        // rings instead and its output alternates regardless of which way the shaft turns, so
+        // its terminals keep a fixed labelling.
+        if(state.getBlock() instanceof AlternatorBlock)
+            return block.terminals().get(state, index);
         if(rotorBehaviour.getAngularVelocity() >= 0)
             return block.terminals().get(state, index);
         return block.terminalsFlipped().get(state, index);

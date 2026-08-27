@@ -117,6 +117,7 @@ import org.patryk3211.powergrid.general.ceilingtile.wire.CeilingTileConnectorBlo
 import org.patryk3211.powergrid.kinetics.generator.clutch.GeneratorClutchBlock;
 import org.patryk3211.powergrid.kinetics.generator.housing.GeneratorHousing;
 import org.patryk3211.powergrid.kinetics.generator.housing.VerticalGeneratorHousing;
+import org.patryk3211.powergrid.kinetics.generator.inductionrotor.AlternatorBlock;
 import org.patryk3211.powergrid.kinetics.generator.inductionrotor.CommutatorBlock;
 import org.patryk3211.powergrid.kinetics.generator.inductionrotor.InductionRotorBlock;
 import org.patryk3211.powergrid.kinetics.generator.inductionrotor.LargeInductionRotorBlock;
@@ -394,6 +395,19 @@ public class ModdedBlocks {
             .register();
 
     public static final BlockEntry<CommutatorBlock> GENERATOR_COMMUTATOR = REGISTRATE.block("generator_commutator", CommutatorBlock::new)
+            .blockstate(horizontalBlock("block/generator/commutator_base_horizontal"))
+            .initialProperties(SharedProperties::softMetal)
+            .transform(pickaxeOnly())
+            .transform(CStress.setImpact(8))
+            .defaultLoot()
+            .item()
+                .model(itemWithParent("block/generator/commutator"))
+                .build()
+            .register();
+
+    // Reuses the commutator's model and item model verbatim: geometrically it is the same
+    // machine, and giving it its own art is a separate job from making AC work.
+    public static final BlockEntry<AlternatorBlock> GENERATOR_ALTERNATOR = REGISTRATE.block("generator_alternator", AlternatorBlock::new)
             .blockstate(horizontalBlock("block/generator/commutator_base_horizontal"))
             .initialProperties(SharedProperties::softMetal)
             .transform(pickaxeOnly())
