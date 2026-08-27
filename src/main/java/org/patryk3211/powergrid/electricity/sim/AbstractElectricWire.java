@@ -33,6 +33,14 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     protected double aggregatePower;
     protected int tickCount;
 
+    // Sums accumulated across the sub-ticks of a single world tick, for AC metering.
+    // On an alternating supply the instantaneous voltage and current cross zero twice per
+    // cycle, so a gauge reading them directly shows noise; the RMS of the sampled waveform is
+    // the value a real meter would display. Kept as raw sums so each sub-tick costs three
+    // multiply-accumulates and nothing else.
+    protected double sumSquaredVoltage;
+    protected double sumSquaredCurrent;
+
     public AbstractElectricWire(IElectricNode node1, IElectricNode node2) {
         this.node1 = node1;
         this.node2 = node2;
@@ -130,15 +138,69 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
         return current() * potentialDifference();
     }
 
+    /**
+     * RMS voltage across this element over the last completed world tick.
+     * <p>
+     * Falls back to the instantaneous magnitude when the network is not sub-stepping, because
+     * without sub-ticks there is only one sample and RMS is not meaningful. That is the same
+     * condition {@link #power()} uses.
+     */
+    public double rmsVoltage() {
+        if(tickCount <= 1)
+            return Math.abs(potentialDifference());
+        return Math.sqrt(sumSquaredVoltage / tickCount);
+    }
+
+    /** RMS current through this element over the last completed world tick. */
+    public double rmsCurrent() {
+        if(tickCount <= 1)
+            return Math.abs(current());
+        return Math.sqrt(sumSquaredCurrent / tickCount);
+    }
+
+    /**
+     * Apparent power, S = V_rms * I_rms.
+     * <p>
+     * On DC this equals the real power. On AC it exceeds it whenever voltage and current are
+     * out of phase, and the difference is what a grid actually has to carry.
+     */
+    public double apparentPower() {
+        return rmsVoltage() * rmsCurrent();
+    }
+
+    /**
+     * Power factor, P / S, in [-1, 1].
+     * <p>
+     * {@link #power()} already averages the instantaneous product v*i across the sub-ticks,
+     * which is precisely the real power P. Returns 1 for an unloaded element, where S is zero
+     * and the ratio is undefined.
+     */
+    public double powerFactor() {
+        var apparent = apparentPower();
+        if(apparent <= 0)
+            return 1;
+        return power() / apparent;
+    }
+
     @Override
     public void prepare(int multiTicks) {
         tickCount = multiTicks;
         aggregatePower = 0;
+        sumSquaredVoltage = 0;
+        sumSquaredCurrent = 0;
     }
 
     @Override
     public void postMicroTick() {
-        aggregatePower += internalPower() / tickCount;
+        // Sample through current(), never through potentialDifference() * conductance():
+        // subclasses override current() to add their companion-model term (InductorWire adds
+        // Ieq, for one), so recomputing it inline would silently drop that contribution.
+        var voltage = potentialDifference();
+        var current = current();
+
+        aggregatePower += voltage * current / tickCount;
+        sumSquaredVoltage += voltage * voltage;
+        sumSquaredCurrent += current * current;
     }
 
     public abstract double conductance();

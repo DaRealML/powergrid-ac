@@ -20,8 +20,9 @@ import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.solver.IOuterHook;
 import org.patryk3211.powergrid.electricity.sim.solver.IResidualAdder;
 import org.patryk3211.powergrid.electricity.sim.solver.ISolverHook;
+import org.patryk3211.powergrid.electricity.sim.solver.ISubTickRate;
 
-public class TransmissionLinePort extends VoltageSourceCoupling implements IOuterHook, ISolverHook {
+public class TransmissionLinePort extends VoltageSourceCoupling implements IOuterHook, ISolverHook, ISubTickRate {
     private final TransmissionLine line;
     public TransmissionLinePort other;
     public boolean solved = false;
@@ -69,6 +70,17 @@ public class TransmissionLinePort extends VoltageSourceCoupling implements IOute
     @Override
     public void addResidual(IResidualAdder residual) {
         residual.add(index, Ieq);
+    }
+
+    /**
+     * The two ports of a line exchange voltage and current in {@link #postUpperSolve()} only
+     * once both ends report solved. If the islands at the ends ran at different sub-tick rates
+     * the faster end would solve repeatedly between exchanges and the line would carry stale
+     * state, so both ends must be stepped at the same rate.
+     */
+    @Override
+    public boolean requiresLockstep() {
+        return true;
     }
 
     public TransmissionLinePort getOther() {

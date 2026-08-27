@@ -53,6 +53,7 @@ public class ElectricalNetwork implements IStamped {
     public final Set<ISolverHook> innerHooks = new ReferenceOpenHashSet<>();
     protected final Set<ISolverHook> leafInnerHooks = new ReferenceOpenHashSet<>();
     protected final Set<IStaticResidual> residuals = new ReferenceOpenHashSet<>();
+    protected final Set<ISubTickRate> subTickRates = new ReferenceOpenHashSet<>();
     protected final Map<IElectricNode, IElectricNode> leafNodes = new Reference2ReferenceOpenHashMap<>();
 
     private int sourceCount;
@@ -64,6 +65,10 @@ public class ElectricalNetwork implements IStamped {
     public boolean countUpdates = true;
     protected int stamp;
     private int currentMultiTick = 1;
+
+    // Sub-ticks this network will actually be stepped this world tick, decided by WorldNetworks
+    // before prepare() and held here so the stepping loop can read it back per island.
+    private int subTicks = 1;
 
     public static Logger LOGGER = null;
 
@@ -117,6 +122,44 @@ public class ElectricalNetwork implements IStamped {
 
     public boolean hasHooks() {
         return !innerHooks.isEmpty();
+    }
+
+    /**
+     * How many solver sub-ticks this island needs this world tick.
+     * <p>
+     * The configured value is a floor, so a server that raises {@code multiTicks} globally still
+     * gets what it asked for; elements that need finer resolution (an alternator, for one) can
+     * only push the number up. An island with nothing to say returns the configured value and is
+     * stepped exactly as it was before this existed.
+     *
+     * @param configured the global {@code multiTicks} setting
+     * @return sub-ticks to run, never less than {@code configured} and never less than 1
+     */
+    public int computeSubTicks(int configured) {
+        var rate = Math.max(configured, 1);
+        for(var provider : subTickRates)
+            rate = Math.max(rate, provider.requiredSubTicks());
+        return rate;
+    }
+
+    /**
+     * Whether any element here trades state with another island every sub-tick, which forces
+     * this island to be stepped in lockstep with the fastest one in the world.
+     */
+    public boolean requiresLockstep() {
+        for(var provider : subTickRates) {
+            if(provider.requiresLockstep())
+                return true;
+        }
+        return false;
+    }
+
+    public int getSubTicks() {
+        return subTicks;
+    }
+
+    public void setSubTicks(int subTicks) {
+        this.subTicks = Math.max(subTicks, 1);
     }
 
     public double getDeltaTime() {
@@ -194,6 +237,8 @@ public class ElectricalNetwork implements IStamped {
         }
         if(node instanceof IStaticResidual residual)
             residuals.add(residual);
+        if(node instanceof ISubTickRate rate)
+            subTickRates.add(rate);
         if(node.isSource())
             ++sourceCount;
 
@@ -255,6 +300,8 @@ public class ElectricalNetwork implements IStamped {
         }
         if(node instanceof IStaticResidual residual)
             residuals.remove(residual);
+        if(node instanceof ISubTickRate rate)
+            subTickRates.remove(rate);
 
         warmUp(3);
         node.setNetwork(null);
@@ -540,6 +587,7 @@ public class ElectricalNetwork implements IStamped {
         multiHooks.clear();
         innerHooks.clear();
         residuals.clear();
+        subTickRates.clear();
         leafNodes.clear();
         if(mna != null)
             mna.hooksChanged();

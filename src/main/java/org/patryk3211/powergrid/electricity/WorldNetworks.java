@@ -267,6 +267,11 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
 
         perf.start();
         int multiTick = ModdedConfigs.server().electricity.solver.multiTicks.get();
+
+        // Each island decides its own sub-tick rate; the configured value is the floor. Islands
+        // holding only DC keep the configured rate and cost exactly what they always did, while
+        // an island with an alternator asks for enough steps to resolve its waveform.
+        int maxSubTicks = multiTick;
         var iter = subnetworks.iterator();
         while (iter.hasNext()) {
             var network = iter.next();
@@ -275,12 +280,37 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
                 network.cleanup();
                 continue;
             }
-            network.prepare(multiTick);
+            network.setSubTicks(network.computeSubTicks(multiTick));
+            maxSubTicks = Math.max(maxSubTicks, network.getSubTicks());
         }
-        for(int i = 0; i < multiTick; ++i) {
+
+        if(maxSubTicks > multiTick) {
+            // Transmission lines hand state between two islands once both ends have solved, so
+            // the ends must advance together. Rather than computing the connected components of
+            // the line graph, every island carrying a port is simply pulled up to the fastest
+            // rate in the world. That over-steps islands linked to a fast one but never
+            // under-steps, and it only costs anything in worlds that actually run lines to an
+            // alternator. Refining this to a union-find over the lines is a later optimisation.
+            for(var network : subnetworks) {
+                if(network.requiresLockstep())
+                    network.setSubTicks(maxSubTicks);
+            }
+        }
+
+        for(var network : subnetworks) {
+            network.prepare(network.getSubTicks());
+        }
+
+        for(int i = 0; i < maxSubTicks; ++i) {
             // I guess this could go on a thread-pool
             for(var network : subnetworks) {
-                network.singleTick();
+                // Step this island only on the sub-iterations it participates in. The integer
+                // division crosses a boundary exactly `subTicks` times over `maxSubTicks`
+                // iterations, so an island running at the full rate steps every time and one
+                // running at 1 steps once, at the end of the world tick.
+                var subTicks = network.getSubTicks();
+                if((i + 1) * subTicks / maxSubTicks > i * subTicks / maxSubTicks)
+                    network.singleTick();
             }
         }
         perf.end();

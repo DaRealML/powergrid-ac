@@ -281,9 +281,65 @@ public class JavaMNA implements IMNA {
         }
     }
 
+    /**
+     * Solve a network that carries no solver hooks.
+     * <p>
+     * Without an {@link ISolverHook} nothing relinearises the system between iterations: the
+     * Jacobian is constant for the whole sub-tick and {@link #computeResidual()} reduces to a
+     * copy of the RHS. The system is therefore linear and {@code A x = b} is satisfied exactly
+     * by one triangular solve.
+     * <p>
+     * The Newton loop reaches the same answer, but cannot know it is done without measuring:
+     * it pays iteration 0 (residual + mat-vec + solve), a line-search probe (residual + mat-vec)
+     * and iteration 1 (residual + mat-vec) to confirm convergence — three residual builds and
+     * three matrix-vector products for a single solve. This path skips the measuring.
+     * <p>
+     * Numerics are deliberately left identical to the general path: the same row/column
+     * equilibration is applied, and the same factorisation is reused, so the only difference
+     * is the work that was only ever used to detect convergence.
+     */
+    private void singleTickLinear() {
+        computeResidual();
+
+        var workMatrix = Jacobian;
+        if(SCALING) {
+            prepareScaled(workMatrix);
+            CommonOps_DDRM.multRows(rowScales, ResidualVector);
+            workMatrix = ScaledJ;
+        }
+
+        workMatrix.solve(ResidualVector, StateVector);
+
+        if(MatrixFeatures_DDRM.hasUncountable(StateVector)) {
+            // Mirrors the general path: a singular or otherwise unsolvable system collapses to
+            // the zero state rather than propagating NaN through component models.
+            StateVector.zero();
+            StateDelta.zero();
+            converged = false;
+            return;
+        }
+        if(SCALING)
+            CommonOps_DDRM.multRows(columnScales, StateVector);
+
+        // Equivalent of the converged branch of verifyConvergence(). The residual of a linear
+        // solve is zero by construction, so there is no norm to test — but warm-up must still
+        // be able to hold component state frozen after a structural change.
+        converged = true;
+        if(warmUpTicks > 0) {
+            --warmUpTicks;
+            converged = false;
+        }
+    }
+
     @Override
     public void singleTick() {
         PERF.start();
+        // Networks with no solver hooks are linear and take the single-solve path above.
+        if(network.innerHooks.isEmpty()) {
+            singleTickLinear();
+            PERF.end();
+            return;
+        }
         int maxIterations = network.maxIterations.apply(network.hasHooks());
         int i;
         double norm = 0;
