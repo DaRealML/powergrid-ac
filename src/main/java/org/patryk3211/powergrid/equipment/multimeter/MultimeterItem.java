@@ -16,6 +16,7 @@
 package org.patryk3211.powergrid.equipment.multimeter;
 
 import net.createmod.catnip.math.VecHelper;
+import net.createmod.catnip.gui.ScreenOpener;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.ChatFormatting;
@@ -257,7 +258,20 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
                     .component(), true);
             return InteractionResultHolder.success(player.getItemInHand(usedHand));
         }
+        // Right-click in the air with a connected meter opens the trace graph. Client-only:
+        // the history lives on the client and there is nothing for the server to arbitrate.
+        // Guarded on having a probe attached so an unconnected meter still behaves as before.
+        if(usedHand == InteractionHand.MAIN_HAND && getMode(player.getItemInHand(usedHand)) >= 0) {
+            if(level.isClientSide)
+                openTraceScreen();
+            return InteractionResultHolder.success(player.getItemInHand(usedHand));
+        }
         return super.use(level, player, usedHand);
+    }
+
+    @Environment(EnvType.CLIENT)
+    private static void openTraceScreen() {
+        ScreenOpener.open(new MultimeterScreen());
     }
 
     private InteractionResult onTerminal(Level level, IWireEndpoint endpoint, ItemStack stack) {

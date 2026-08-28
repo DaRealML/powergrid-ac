@@ -81,9 +81,15 @@ public class MultimeterItemRenderer extends CustomRenderedItemModelRenderer {
         if(stack1.getItem() instanceof MultimeterItem multimeter) {
             mainPrevDial = mainDial;
             mainDial = multimeter.getDial(level, stack1);
+            // Record the main-hand reading for the graph screen. One sample per client tick,
+            // which is the rate the underlying value reaches the client at all.
+            MultimeterTrace.sample(level, stack1, multimeter);
         } else {
             mainDial = 0;
             mainPrevDial = 0;
+            // Putting the meter away ends the trace; a stale history would otherwise be
+            // presented as if it belonged to whatever is probed next.
+            MultimeterTrace.clear();
         }
         var stack2 = player.getOffhandItem();
         if(stack2.getItem() instanceof MultimeterItem multimeter) {

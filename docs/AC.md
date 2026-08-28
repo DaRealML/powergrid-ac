@@ -12,14 +12,16 @@ shipped defaults every DC network is solved exactly as it was before.
 
 | Piece | Where | Status |
 |---|---|---|
-| Linear fast path in the solver | `JavaMNA` | Java backend only — see §7 |
+| Linear fast path in the solver | `JavaMNA` | Java backend only — see §8 |
 | Per-network sub-tick rates | `ISubTickRate`, `ElectricalNetwork`, `WorldNetworks` | Backend-agnostic |
 | Alternator | `AlternatorCoupling` | Backend-agnostic |
 | RMS / apparent power / power factor | `AbstractElectricWire` | Backend-agnostic |
 | Alternator block | `AlternatorBlock`, `CommutatorBlockEntity` | Compiles; not runtime-tested |
+| Pole-pair slider | `AlternatorPolePairsBehaviour` | Compiles; not runtime-tested — §5.1 |
+| Multimeter trace screen | `MultimeterTrace`, `MultimeterScreen` | Compiles; not runtime-tested — §5.2 |
 | Rectification | *nothing added* — `PNJunctionWire` already does it | — |
 
-The magnetic (T-model) transformer from the feasibility assessment is **not** included. See §8.
+The magnetic (T-model) transformer from the feasibility assessment is **not** included. See §9.
 
 ---
 
@@ -232,7 +234,80 @@ depends on network size and on how much time is spent inside the solve versus ar
 
 ---
 
-## 5. Files changed
+## 5. Player-facing controls
+
+### 5.1 Pole-pair slider on the alternator
+
+Pole pairs set the electrical frequency, and that is a decision with a real cost attached, so it
+is exposed where the player makes it rather than buried in a config file. Right-click and hold on
+the side of an alternator opens Create's standard value slider, 1 to 16 pairs, and the readout
+shows the resulting frequency at the shaft's speed ceiling:
+
+| Pole pairs | f at 272 rpm | Sub-ticks at 32 samples/cycle |
+|---|---|---|
+| 1 | 4.5 Hz | 8 |
+| 4 | 18.1 Hz | 32 |
+| 11 | 49.9 Hz | 128 |
+
+Reaching mains frequency therefore costs **16× the solver work** of the default, on any island
+holding that machine, and `acMaxSubTicks` (default 16) has to be raised to match or the waveform
+is under-sampled. That trade is the whole reason the number is a visible control.
+
+Implementation notes for review:
+
+- `AlternatorPolePairsBehaviour extends ScrollValueBehaviour`. Despite the name, that class is
+  Create's **click-and-hold slider** — the scroll-wheel path is gone in 6.x, and the class
+  implements `ValueSettingsBehaviour`, which is what `ValueSettingsInputHandler` drives.
+- The behaviour is added **only when the block is an `AlternatorBlock`**. Three blocks share the
+  commutator block-entity type, and behaviours are a plain map that every consumer iterates and
+  skips on miss, so conditional registration is safe. `RotorBlockEntity.addBehaviours` already
+  reads `getBlockState()` for the same reason. Every read of the field is null-guarded.
+- It is created **before** `ElectricBehaviour`, because that constructor runs `buildCircuit()`
+  immediately and needs the selected value.
+- Create's slider always sweeps from zero, so `getValueSettings`/`setValueSettings` shift by one
+  to keep the leftmost notch meaning "1 pair". `getPolePairs()` floors at 1, so a world saved
+  before this existed reads a missing key as 0 and degrades to a single pair rather than to an
+  invalid machine.
+- `ScrollValueBehaviour.read` assigns its field without firing the callback, so
+  `CommutatorBlockEntity.read` pushes the loaded value into the coupling by hand.
+
+Changing pole pairs deliberately does **not** reset the shaft angle. The electrical angle is
+`p * theta`, so the output waveform steps discontinuously either way, but leaving the mechanical
+angle alone keeps the machine where the shaft actually is and avoids yanking the phase reference
+out from under the rest of the grid.
+
+### 5.2 Multimeter trace screen
+
+Right-click in the air holding a connected multimeter to open a plot of the probed value against
+time — voltage in mode 0, current in mode 1. Shift-right-click still clears the probe as before.
+
+The graph is **entirely client-side**. Node voltages are already synchronised to tracking clients
+every tick — that is why the needle on the item model works — so `getMeasurement()` returns a real
+value on the client and no new networking, packet, or menu was needed. `MultimeterTrace` is a
+200-sample ring buffer filled from the existing `MultimeterItemRenderer.clientTick` hook, and
+resets when the probe moves or the meter is put away.
+
+Alongside the trace it shows the instantaneous value, the **RMS** over the window, and the peak.
+RMS is what a real meter displays and what determines how hard a load actually works, so on an
+alternating supply it is the more meaningful of the two.
+
+> **Sample rate, and an honest limit.** One sample per client tick, so **20 Hz** — that is the
+> rate at which the value reaches the client at all, regardless of how finely the solver is
+> sub-stepping internally. For DC and for an alternator at the default single pole pair (~4.5 Hz)
+> that is comfortably above Nyquist and the trace is faithful. **Above about 10 Hz — roughly 3
+> pole pairs — this graph aliases** and will show a believable waveform at the wrong frequency.
+> True sub-tick waveforms need the in-circuit sampling hardware, the plotter or the CRT, which
+> record every solver sub-tick via `SamplingWire`.
+>
+> Closing that gap would mean sampling the probed node per sub-tick server-side and streaming the
+> array to one player — roughly: a `addMultiHook`/`removeMultiHook` pair on `ElectricalNetwork`
+> so a probe can observe without stamping into the matrix, plus one S2C packet modelled on
+> `DrillSpeedS2CPacket`. That also requires bumping `PacketSet.builder(MOD_ID, 17)`, and a
+> version mismatch disconnects clients, so it was left out of this change.
+
+---
+
+## 6. Files changed
 
 ### Modified
 
@@ -254,7 +329,10 @@ depends on network size and on how much time is spent inside the solve versus ar
 | `sim/solver/ISubTickRate.java` | Lets an element declare its sub-tick needs and its lockstep requirement. |
 | `sim/special/AlternatorCoupling.java` | The machine model. |
 | `inductionrotor/AlternatorBlock.java` | Empty subclass of `CommutatorBlock`; exists so the block entity can tell the two apart. |
-| `test/.../AlternatorTest.java`, `LinearFastPathTest.java` | 13 tests, §6. |
+| `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
+| `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
+| `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
+| `test/.../AlternatorTest.java`, `LinearFastPathTest.java` | 13 tests, §7. |
 
 ### Why `AlternatorCoupling extends GeneratorCoupling`
 
@@ -270,7 +348,7 @@ which is why it was not taken here.
 
 ---
 
-## 6. Verification
+## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
 harness. **13 new tests, all passing.**
@@ -303,15 +381,18 @@ now take it, and their numbers did not move.
 
 - **The game was never launched.** The block compiles and is registered, but no in-world
   behaviour has been observed — not placement, not rendering, not wiring, not the assembly.
+- **Neither UI has been seen.** The pole-pair slider and the multimeter screen compile and are
+  wired, but no widget has ever been drawn. The value-box placement on the commutator model in
+  particular is a guess at voxel coordinates and wants checking in game.
 - **Nothing was profiled.** Every performance claim is an operation count.
-- **The native backend was not built or run.** See §7.
+- **The native backend was not built or run.** See §8.
 - **Two alternators have never been paralleled.** Phase-locking is the design's most interesting
   claim and it is the least tested; the tests cover a single machine.
 - **Save/load of phase was not exercised**, only implemented.
 
 ---
 
-## 7. The native backend
+## 8. The native backend
 
 `CSolver.solverBackend` defaults to `NATIVE`, and the native path was **not** modified, built, or
 run. It could not be: the `native/OpenBLAS` and `native/superlu` submodules are not checked out,
@@ -330,7 +411,7 @@ What this means:
 
 ---
 
-## 8. Deliberate omissions
+## 9. Deliberate omissions
 
 **Magnetic T-model transformer.** The assessment proposes a new transformer with winding
 resistance, leakage inductance and a magnetising branch, built from `InductorWire` plus mutual
@@ -348,7 +429,7 @@ should be placed deliberately.
 
 ---
 
-## 9. Corrections to the feasibility assessment
+## 10. Corrections to the feasibility assessment
 
 Three claims in the assessment this work was based on did not survive contact with the source.
 
@@ -388,12 +469,12 @@ sub-tick electromechanical transients should know this before relying on them.
 
 ---
 
-## 10. Open questions for the maintainer
+## 11. Open questions for the maintainer
 
-1. **Is the `warmUp` clamp intentional?** §9.1.
+1. **Is the `warmUp` clamp intentional?** §10.1.
 2. **Should EMF peak scale with pole pairs?** §3.2.
 3. **Is inheriting `AlternatorCoupling` from `GeneratorCoupling` acceptable**, or would you prefer
-   a shared abstract base? §5.
+   a shared abstract base? §6.
 4. **Should the lockstep rule use a real union-find** over transmission lines, or is the
    conservative "any port ⇒ max rate" acceptable? §3.7.
 5. **Usage complexity.** The maintainer's stated objection in issue #936 is a design position

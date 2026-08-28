@@ -51,6 +51,7 @@ public class CSolver extends ConfigBase {
 
     public final ConfigInt acSamplesPerCycle = i(32, 4, "acSamplesPerCycle", Comments.acSamplesPerCycle);
     public final ConfigInt acMaxSubTicks = i(16, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
+    public final ConfigFloat acArmatureInductance = f(0.02f, 0, "acArmatureInductance", Comments.acArmatureInductance);
 
     public final ConfigEnum<SolverBackend> solverBackend = e(SolverBackend.NATIVE, "solverBackend", Comments.solverBackend);
 
@@ -96,6 +97,7 @@ public class CSolver extends ConfigBase {
 
         public static final String acSamplesPerCycle = "Solver samples taken per electrical cycle of an alternating source. Higher values track the waveform more accurately at a proportional cost. Only networks containing an AC source are affected; DC networks ignore this entirely.";
         public static final String acMaxSubTicks = "Upper bound on sub-ticks per world tick that an alternating source may request. This is the real cost ceiling for AC: a network containing an alternator is solved at most this many times per tick. Rounded down to a power of two in use.";
+        public static final String acArmatureInductance = "Armature (synchronous) inductance of an alternator winding, in henries. This is what limits circulating current when two alternators are paralleled out of phase; setting it to zero makes them ideal voltage sources that fight each other. Raising it softens the machine's response to load and increases the phase angle between voltage and current.";
 
         public static final String bjtLimAlpha = "BJT inter-iteration voltage change smoothing multiplier";
         public static final String diodeLimAlpha = "Diode inter-iteration voltage change smoothing multiplier";

@@ -30,6 +30,9 @@ import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.calculation.PrecalculatedN;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
+import com.simibubi.create.foundation.blockEntity.behaviour.CenteredSideValueBoxTransform;
+import net.minecraft.core.Direction;
+import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
@@ -53,6 +56,11 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     // grid needs its machines to come back from a reload with their phase relationships intact.
     // Unused by the DC commutator.
     private double phase;
+
+    // Pole-pair slider, present only on the alternator. Null on a commutator, so every read
+    // must be guarded.
+    @Nullable
+    private AlternatorPolePairsBehaviour polePairs;
 
     private final PrecalculatedN<Float, Precalculated<Float>> totalFieldStrength = new PrecalculatedN<>(CommutatorBlockEntity::fieldSum, 0.0f);
 
@@ -92,9 +100,37 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         if(source instanceof AlternatorCoupling alternator) {
             var solver = ModdedConfigs.server().electricity.solver;
             alternator.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
+            alternator.setArmatureInductance(solver.acArmatureInductance.getF());
+            if(polePairs != null)
+                alternator.setPolePairs(polePairs.getPolePairs());
             // Restore the phase read from NBT, so a reloaded grid comes back with its machines
             // in the same relative positions they were saved in.
             alternator.setPhase(phase);
+        }
+    }
+
+    /**
+     * Push a newly chosen pole-pair count into the live coupling.
+     * <p>
+     * Phase is deliberately left alone. The electrical angle is {@code p * theta}, so changing
+     * {@code p} steps the output waveform discontinuously no matter what — but keeping the
+     * mechanical angle continuous means the machine stays where the shaft actually is, and
+     * nothing else on the grid sees its phase reference jump.
+     */
+    private void applyPolePairs(int value) {
+        if(source instanceof AlternatorCoupling alternator)
+            alternator.setPolePairs(value);
+    }
+
+    /**
+     * Places the slider on the flat sides of the housing — never on the shaft axis, where the
+     * rotor assembly continues, and never on top, which carries the terminals.
+     */
+    public static class PolePairsBox extends CenteredSideValueBoxTransform {
+        public PolePairsBox() {
+            super((state, direction) -> direction.getAxis() != Direction.Axis.Y
+                    && state.hasProperty(CommutatorBlock.HORIZONTAL_FACING)
+                    && state.getValue(CommutatorBlock.HORIZONTAL_FACING).getAxis() != direction.getAxis());
         }
     }
 
@@ -107,6 +143,17 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
         super.addBehaviours(behaviours);
         rotorBehaviour.setChangeCallback(this::assemblyChanged);
+
+        // Only the alternator gets a pole-pair slider; a commutator has no electrical frequency
+        // to choose. Behaviours are a plain map keyed by type, and every consumer skips what it
+        // does not find, so adding one for some blocks of a shared block-entity type is safe.
+        // This must come before ElectricBehaviour, whose constructor builds the circuit
+        // immediately and reads the selected value.
+        if(getBlockState().getBlock() instanceof AlternatorBlock) {
+            polePairs = new AlternatorPolePairsBehaviour(this, new PolePairsBox());
+            polePairs.withCallback(this::applyPolePairs);
+            behaviours.add(polePairs);
+        }
 
         electricBehaviour = new ElectricBehaviour(this);
         electricBehaviour.setSyncAppender(rotorBehaviour);
@@ -163,8 +210,14 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         if(source != null) {
             source.setEmfValue(tag.getFloat("EmfState"));
             source.setResistance(resistance);
-            if(source instanceof AlternatorCoupling alternator)
+            if(source instanceof AlternatorCoupling alternator) {
                 alternator.setPhase(phase);
+                // super.read() has just fanned out to the behaviours, so the slider now holds
+                // its saved value. ScrollValueBehaviour.read assigns the field directly without
+                // firing the callback, so the coupling has to be updated here by hand.
+                if(polePairs != null)
+                    alternator.setPolePairs(polePairs.getPolePairs());
+            }
         } else {
             emf = tag.getFloat("EmfState");
         }

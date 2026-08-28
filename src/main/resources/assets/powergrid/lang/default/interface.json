@@ -39,6 +39,14 @@
   "powergrid.gui.carbon_pile.max_resistance": "Maximum resistance:",
   "powergrid.gui.carbon_pile.current_resistance": "Current resistance:",
 
+  "powergrid.gui.alternator.pole_pairs": "Pole pairs",
+  "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
+  "powergrid.gui.multimeter.current_vs_time": "Current over time",
+  "powergrid.gui.multimeter.no_data": "Nothing probed",
+  "powergrid.gui.multimeter.now": "Now",
+  "powergrid.gui.multimeter.rms": "RMS",
+  "powergrid.gui.multimeter.peak": "Peak",
+
   "powergrid.gui.hv_breaker.setting": "Trip current",
   "powergrid.gui.hv_breaker.status": "Status:",
   "powergrid.gui.hv_breaker.open": "Open",
