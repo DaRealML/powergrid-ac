@@ -31,8 +31,8 @@ import net.minecraft.world.phys.Vec3;
 import org.patryk3211.powergrid.collections.ModdedBlocks;
 import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
-import org.patryk3211.powergrid.electricity.sim.node.CurrentSourceNode;
-import org.patryk3211.powergrid.electricity.sim.node.ProvidedVoltageSourceCoupling;
+import org.patryk3211.powergrid.electricity.sim.special.ACCurrentSourceNode;
+import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
@@ -41,8 +41,8 @@ import java.util.List;
 public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IHaveGoggleInformation {
     private CreativeSourceValueBehaviour value;
 
-    private CurrentSourceNode currentSourceNode;
-    private ProvidedVoltageSourceCoupling voltageSourceNode;
+    private ACCurrentSourceNode currentSourceNode;
+    private ACVoltageSourceCoupling voltageSourceNode;
 
     private boolean overwrite = false;
     private boolean voltageSource;
@@ -50,16 +50,35 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
     private float dc = 0;
     private float amplitude = 0;
     private float frequency = 0;
-    private float time;
 
     public CreativeSourceBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
     }
 
-    private float sine() {
-        float out = (float) (Math.sin(2 * Math.PI * frequency * time) * amplitude) + dc;
-        time += 0.05f / ModdedConfigs.server().electricity.solver.multiTicks.get();
-        return out;
+    /**
+     * Push the current waveform settings into whichever source this block owns.
+     * <p>
+     * Both variants are now genuine alternating sources with a DC offset, so a steady output is
+     * simply zero amplitude. That replaces a hand-rolled sine that advanced its own clock by
+     * {@code 0.05 / multiTicks} — which read the global config floor rather than the rate this
+     * island is actually being stepped at, so it ran at the wrong speed whenever anything else
+     * on the grid asked for finer sub-ticks, and it never requested finer stepping for itself,
+     * so any frequency above a few hertz aliased badly.
+     */
+    private void applyWaveform() {
+        var solver = ModdedConfigs.server().electricity.solver;
+        if(voltageSourceNode != null) {
+            voltageSourceNode.setAmplitude(amplitude);
+            voltageSourceNode.setFrequency(frequency);
+            voltageSourceNode.setDcOffset(dc);
+            voltageSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
+        }
+        if(currentSourceNode != null) {
+            currentSourceNode.setAmplitude(amplitude);
+            currentSourceNode.setFrequency(frequency);
+            currentSourceNode.setDcOffset(dc);
+            currentSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
+        }
     }
 
     @Override
@@ -94,16 +113,19 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
 
         if(getBlockState().is(ModdedBlocks.CREATIVE_VOLTAGE_SOURCE.get())) {
             voltageSource = true;
-            voltageSourceNode = new ProvidedVoltageSourceCoupling(positive, negative, 1e-4f);
+            voltageSourceNode = new ACVoltageSourceCoupling(positive, negative, 1e-4f);
             builder.add(voltageSourceNode);
         } else if(getBlockState().is(ModdedBlocks.CREATIVE_CURRENT_SOURCE.get())) {
             voltageSource = false;
-            currentSourceNode = builder.addInternalNode(CurrentSourceNode.class);
+            currentSourceNode = builder.addInternalNode(ACCurrentSourceNode.class);
             // Transformer needs some resistance for solver to work correctly with the current source.
             builder.couple(1, 1e-4f, currentSourceNode, positive, negative);
         } else {
             throw new IllegalArgumentException();
         }
+        // The circuit is rebuilt on any structural change, which produces a fresh source object;
+        // re-apply the waveform so a running AC source is not silently reset to zero.
+        applyWaveform();
     }
 
     @Override
@@ -146,27 +168,24 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
         }
     }
 
+    /** Steady output: a zero-amplitude alternating source is just its DC offset. */
     public void setValue(float value) {
-        if(voltageSource) {
-            frequency = 0;
-            amplitude = 0;
-            voltageSourceNode.setVoltageProvider(null);
-            voltageSourceNode.setVoltage(value);
-        } else {
-            currentSourceNode.setCurrent(value);
-        }
+        this.frequency = 0;
+        this.amplitude = 0;
+        this.dc = value;
+        applyWaveform();
         setChanged();
     }
 
+    /**
+     * Alternating output. Supported on the current source as well as the voltage source now
+     * that both are backed by real alternating sim components.
+     */
     public void setValue(float amplitude, float frequency, float dc) {
-        if(voltageSource) {
-            this.frequency = frequency;
-            this.amplitude = amplitude;
-            this.dc = dc;
-            voltageSourceNode.setVoltageProvider(this::sine);
-        } else {
-            throw new UnsupportedOperationException("Current source doesn't support frequency argument");
-        }
+        this.frequency = frequency;
+        this.amplitude = amplitude;
+        this.dc = dc;
+        applyWaveform();
         setChanged();
     }
 

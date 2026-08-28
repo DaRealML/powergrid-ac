@@ -59,9 +59,12 @@ public class InductorWire extends AbstractElectricWire implements IStaticResidua
     @Override
     public void postUpperSolve() {
         if(isConverged()) {
-            Vprev = TRAPEZOID_APPROX ? inductance * (current() - I) / getDeltaTime() : 0;
-            // Save current with a bit of leakage
-            I = current() * 0.99999;
+            // Dual of the capacitor: trapezoid needs this step's endpoint voltage. The previous
+            // expression evaluated L*(i_n - i_prev)/dt, which the trapezoid rule makes the step
+            // average (v_n + v_prev)/2.
+            Vprev = TRAPEZOID_APPROX ? potentialDifference() : 0;
+            // Save current with a bit of leakage, at a rate independent of the sub-tick count.
+            I = current() * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
     }
 

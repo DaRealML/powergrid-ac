@@ -68,9 +68,13 @@ public class CapacitorWire extends AbstractElectricWire implements IStaticResidu
     @Override
     public void postUpperSolve() {
         if(isConverged()) {
-            Iprev = TRAPEZOID_APPROX ? (potentialDifference() - V) * capacitance / getDeltaTime() : 0;
-            // Save voltage with a bit of leakage
-            V = potentialDifference() * 0.99999;
+            // Trapezoid needs this step's endpoint current, which current() already is:
+            // G*pd + Ieq, with Ieq computed for this step. The previous expression evaluated
+            // C*(v_n - v_prev)/dt, which the trapezoid rule makes the step *average*
+            // (i_n + i_prev)/2 — half the required factor and missing the -i_prev term.
+            Iprev = TRAPEZOID_APPROX ? current() : 0;
+            // Save voltage with a bit of leakage, at a rate independent of the sub-tick count.
+            V = potentialDifference() * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
     }
 

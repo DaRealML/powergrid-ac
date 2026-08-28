@@ -17,6 +17,9 @@ shipped defaults every DC network is solved exactly as it was before.
 | Alternator | `AlternatorCoupling` | Backend-agnostic |
 | RMS / apparent power / power factor | `AbstractElectricWire` | Backend-agnostic |
 | Alternator block | `AlternatorBlock`, `CommutatorBlockEntity` | Compiles; not runtime-tested |
+| AC voltage source | `ACVoltageSourceCoupling` | Backend-agnostic — §3.8 |
+| AC current source | `ACCurrentSourceNode` | Backend-agnostic — §3.8 |
+| Reactive components under AC | `CapacitorWire`, `InductorWire`, `CRSeriesWire`, `LRSeriesWire` | Already correct; two defects fixed — §3.9 |
 | Pole-pair slider | `AlternatorPolePairsBehaviour` | Compiles; not runtime-tested — §5.1 |
 | Multimeter trace screen | `MultimeterTrace`, `MultimeterScreen` | Compiles; not runtime-tested — §5.2 |
 | Rectification | *nothing added* — `PNJunctionWire` already does it | — |
@@ -198,6 +201,89 @@ therefore declares `requiresLockstep()`, and any island holding one is pulled up
 > graph, *every* island carrying a port goes to `N_max`. It never under-steps, and it only costs
 > anything in worlds that actually run transmission lines alongside an alternator. A union-find
 > over the lines would tighten it and is the obvious follow-up.
+### 3.8 Standalone alternating sources
+
+Two sources that are not machines, for driving a circuit at a chosen frequency:
+
+```
+ACVoltageSourceCoupling:  v(t) = dc + amplitude * sin(2*pi*f*t + offset)
+ACCurrentSourceNode:      i(t) = dc + amplitude * sin(2*pi*f*t + offset)
+```
+
+Both integrate their angle per sub-tick rather than evaluating it from an absolute clock. That
+keeps the waveform continuous when the frequency is retuned — an absolute-time sine jumps to
+wherever the new frequency's phase happens to be — and it keeps the source running through
+warm-up, the same reasoning as the alternator's shaft angle. Amplitude is the peak; RMS
+accessors convert.
+
+The phase offset exists so several sources can be given a fixed relationship: three at 0, 2π/3
+and 4π/3 form a balanced three-phase set, which is pinned by a test asserting their instantaneous
+sum is zero.
+
+The current source extends `CurrentSourceNode`, not `CurrentSourceWire`, because `ISubTickRate`
+was only collected from nodes. That gap is now closed — `addWire`/`removeWire` register it too —
+but keeping every alternating source on the node path means one place decides an island's rate.
+`isSource()` is inherited as true and deliberately not overridden: the count is taken once at
+add time, and an island reaching zero sources is short-circuited to the trivial solution before
+any hook runs, so a source whose `isSource()` depended on its amplitude would both desynchronise
+that count and silently stop advancing its own phase.
+
+The two creative source blocks now use these, which makes the existing
+`/source set <pos> <value> [frequency] [dc]` command work on the **current** source as well —
+it previously threw `UnsupportedOperationException`. A steady output is simply zero amplitude
+with a DC offset. This fixed three defects in the old hand-rolled sine: it advanced its clock by
+`0.05 / multiTicks` read from the global config floor rather than the rate its island was
+actually being stepped at, so it ran at the wrong speed whenever anything else on the grid asked
+for finer sub-ticks; it never requested finer stepping for itself, so any frequency above a few
+hertz aliased; and its time accumulator grew without bound.
+
+### 3.9 Reactive components under AC
+
+**They were already correct.** The capacitor and inductor carry standard backward-Euler companion
+models — `G = C/dt` with `Ieq = -G*V_prev`, and the dual — which are frequency-agnostic. Driven
+by a sine they produce the right reactance and the right phase. This was measured rather than
+assumed; see §7.
+
+Two real defects were found and fixed, and one trap was found and deliberately left alone.
+
+**Fixed — leakage was rate-dependent.** Each component sheds a fraction of its stored state per
+step so a floating charge decays rather than persisting forever. The factor was applied per
+*sub-tick*, so the decay rate per second of world time scaled with the sub-tick count:
+
+| Sub-ticks | Voltage time constant | Loss per real second |
+|---|---|---|
+| 1 | 5000 s | 0.020 % |
+| 8 | 625 s | 0.160 % |
+| 16 | 313 s | 0.320 % |
+
+A capacitor bank therefore started draining sixteen times faster the moment an alternator
+elsewhere on the grid spun up and raised the island's rate. It is now raised to the timestep
+ratio, `pow(0.99999, dt/0.05)`, making the loss a rate per unit time. At one sub-tick the
+exponent is exactly 1.0 and `Math.pow` returns the base unchanged, so **DC behaviour is
+bit-for-bit identical** — confirmed by the existing DC tests not moving.
+
+**Fixed — the trapezoidal branches were wrong.** All four components stored the step-*averaged*
+state variable in `postUpperSolve` where the companion model requires the *endpoint* value. For
+the capacitor, `C*(v_n - v_prev)/dt` is by the trapezoid rule exactly `(i_n + i_prev)/2` — half
+the required factor on the difference term, and missing `-i_prev` entirely. The expressions now
+store `current()` and `potentialDifference()`, which already are the endpoint values.
+
+**Not enabled — `TRAPEZOID_APPROX` stays false.** Even corrected, plain trapezoid is A-stable but
+not L-stable: it settles into a persistent point-to-point oscillation on stiff branches, and this
+mod's `CapacitorComponent` and `InductorComponent` bake in 0.01 Ω parasitics that put `dt/RC`
+around 10⁴. A 1 µF capacitor switched onto a rail would ring at ±200 µA forever — which the new
+RMS metering would faithfully report as a permanent phantom current, and which `RelaySwitchWire`
+would turn into relay chatter by comparing a sign-alternating current against a fixed threshold.
+Backward Euler's only real AC defect is a `+θ/2` phase error, 5.6° at the default 32 samples per
+cycle; raising `acSamplesPerCycle` halves it, is unconditionally stable, and needs no new code.
+Enabling trapezoid properly would want TR-BDF2 or a forced Euler step after every switching
+event.
+
+> Note for anyone revisiting this: `AlternatorCoupling` writes its own backward-Euler armature
+> inductance longhand (`R + L/dt`, `(L/dt)*i_prev`) and is **not** gated on `TRAPEZOID_APPROX`.
+> Flipping that flag would integrate `InductorWire` and the alternator's own reactance by
+> different methods.
+
 
 ---
 
@@ -318,6 +404,9 @@ alternating supply it is the more meaningful of the two.
 | `electricity/WorldNetworks.java` | `preTick()` now computes a per-island rate, applies the lockstep rule, and uses the fractional stepping schedule. |
 | `sim/AbstractElectricWire.java` | Two new accumulators; `rmsVoltage()`, `rmsCurrent()`, `apparentPower()`, `powerFactor()`. `postMicroTick()` now samples via `current()`. |
 | `sim/special/TransmissionLinePort.java` | Implements `ISubTickRate`, returns `requiresLockstep() == true`. |
+| `sim/node/ITimeAwareWire.java` | Rate-independent `leakageFactor()`; documents why `TRAPEZOID_APPROX` stays off, §3.9. |
+| `sim/special/{Capacitor,Inductor,CRSeries,LRSeries}Wire.java` | Corrected trapezoidal expressions; rate-independent leakage, §3.9. |
+| `electricity/creative/CreativeSourceBlockEntity.java` | Both creative sources are now real alternating components; AC works on the current source too, §3.8. |
 | `config/CSolver.java` | `acSamplesPerCycle` (32), `acMaxSubTicks` (16). |
 | `inductionrotor/CommutatorBlockEntity.java` | Picks the coupling class by block; pushes the sampling policy; persists `Phase`; does not flip terminal polarity for an alternator. |
 | `collections/ModdedBlocks.java`, `ModdedBlockEntities.java` | Registers the alternator, reusing the commutator's models and block-entity type. |
@@ -328,6 +417,9 @@ alternating supply it is the more meaningful of the two.
 |---|---|
 | `sim/solver/ISubTickRate.java` | Lets an element declare its sub-tick needs and its lockstep requirement. |
 | `sim/special/AlternatorCoupling.java` | The machine model. |
+| `sim/special/AcSampling.java` | Shared angle wrapping and sub-tick rate rule, §3.8. |
+| `sim/special/ACVoltageSourceCoupling.java` | Bench alternating voltage source. |
+| `sim/special/ACCurrentSourceNode.java` | Bench alternating current source. |
 | `inductionrotor/AlternatorBlock.java` | Empty subclass of `CommutatorBlock`; exists so the block entity can tell the two apart. |
 | `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
@@ -368,11 +460,24 @@ harness. **13 new tests, all passing.**
 | `resultIsStableAcrossRepeatedSolves` | No drift across 50 solves |
 | `reactiveNetworkStaysLinearAndStillIntegrates` | RC charges to 1-1/e in one time constant on the fast path |
 | `nonlinearNetworkIsExcludedFromTheFastPath` | A PN junction still registers a hook |
+| `inductorPresentsOmegaL` / `capacitorPresentsOneOverOmegaC` | Reactance matches theory |
+| `inductiveReactanceScalesWithFrequency` / `capacitiveReactanceFalls...` | ∝f and ∝1/f |
+| `reactiveComponentsCarryNoRealPower` | Voltage and current a quarter cycle apart |
+| `resistorIsInPhaseAndCarriesRealPower` | Control case: PF 1, P = Vrms²/R |
+| `seriesLcResonatesWhereTheoryPredicts` | Resonance at 1/(2π√(LC)) |
+| `leakageDoesNotDependOnSubTickRate` | Charge retention equal at 1, 8 and 16 sub-ticks |
+| `currentSourceDrivesItsSetCurrentThroughAnyLoad` | Current fixed, voltage scales with load |
+| `phaseOffsetsMakeABalancedThreePhaseSet` | Three sources 120° apart sum to zero |
+| `offsetShiftsTheWaveformWithoutChangingItsSwing` | DC offset arithmetic |
+| `retuningFrequencyDoesNotStepTheWaveform` | Integrated phase stays continuous |
 
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to 76 / 61. **Zero new failures.**
+63 tests / 48 passing to **93 / 78**. **Zero new failures.**
+
+That the existing DC tests did not move is itself the check on the leakage change: `Math.pow`
+with an exponent of exactly 1.0 returns its base, so at one sub-tick the arithmetic is unchanged.
 
 That matters for the fast path specifically: most of the passing tests are linear networks that
 now take it, and their numbers did not move.

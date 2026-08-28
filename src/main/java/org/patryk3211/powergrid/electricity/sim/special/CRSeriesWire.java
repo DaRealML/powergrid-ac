@@ -74,9 +74,10 @@ public class CRSeriesWire extends AbstractElectricWire implements IStaticResidua
     public void postUpperSolve() {
         if(isConverged()) {
             var Vcap = capacitorVoltage();
-            Iprev = TRAPEZOID_APPROX ? (Vcap - V) * capacitance / getDeltaTime() : 0;
-            // Save voltage with a bit of leakage
-            V = Vcap * 0.99999;
+            // Endpoint branch current, not the step average — see CapacitorWire.
+            Iprev = TRAPEZOID_APPROX ? current() : 0;
+            // Save voltage with a bit of leakage, at a rate independent of the sub-tick count.
+            V = Vcap * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
     }
 

@@ -243,6 +243,43 @@ public class ReactiveAcTest extends TestHelper {
         return L.rmsCurrent();
     }
 
+    /**
+     * Stored charge must bleed away at a rate set by elapsed world time, not by how finely the
+     * island happens to be stepped.
+     * <p>
+     * The components shed a fraction of their stored state each step so a floating charge does
+     * not persist forever. That fraction used to be applied per sub-tick, so an island stepped
+     * sixteen times per tick lost charge sixteen times faster per real second than an identical
+     * one stepped once — meaning a capacitor bank started draining measurably quicker the moment
+     * an alternator elsewhere on the grid spun up and raised the island's rate.
+     */
+    @Test
+    void leakageDoesNotDependOnSubTickRate() {
+        Assertions.assertEquals(retainedCharge(1), retainedCharge(16), 1e-4,
+                "A capacitor should hold its charge equally well at any sub-tick rate");
+        Assertions.assertEquals(retainedCharge(1), retainedCharge(8), 1e-4,
+                "A capacitor should hold its charge equally well at any sub-tick rate");
+    }
+
+    /** Fraction of its initial voltage a floating capacitor keeps after five seconds. */
+    private double retainedCharge(int subTicks) {
+        var net = new Network();
+        var ground = net.V(0);
+        var node = net.N();
+        var C = new CapacitorWire(100e-6, node, ground);
+        net.network.addWire(C);
+        // Large enough that real discharge is negligible over the window, leaving only the
+        // artificial leak: R*C here is 1e5 seconds.
+        net.W(1e9f, node, ground);
+
+        C.setVoltage(10);
+        // Five seconds of world time, whatever the sub-tick rate.
+        for(int i = 0; i < 100; ++i)
+            net.network.calculate(subTicks);
+
+        return node.getVoltage() / 10.0;
+    }
+
     @Test
     void sourceAmplitudeAndRmsAgree() {
         var rig = new Rig();

@@ -52,6 +52,12 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
     private double frequency;
     private double phaseOffset;
 
+    /**
+     * Constant added to the sine. Lets one source express a DC supply (amplitude zero), a pure
+     * alternating one (offset zero), or the rectifier-style mixture of both.
+     */
+    private double dcOffset;
+
     /** Integrated angle in radians, wrapped to {@code [0, 2*pi)}. */
     private double phase;
 
@@ -123,6 +129,14 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
             this.phase = AcSampling.wrapAngle(phase);
     }
 
+    public void setDcOffset(double dcOffset) {
+        this.dcOffset = dcOffset;
+    }
+
+    public double getDcOffset() {
+        return dcOffset;
+    }
+
     public void setSamplingPolicy(int samplesPerCycle, int maxSubTicks) {
         this.samplesPerCycle = Math.max(samplesPerCycle, 2);
         this.maxSubTicks = Math.max(maxSubTicks, 1);
@@ -137,7 +151,7 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
     public void preSolve() {
         var dt = network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
         phase = AcSampling.wrapAngle(phase + TWO_PI * frequency * dt);
-        setVoltage(amplitude * Math.sin(phase + phaseOffset));
+        setVoltage(dcOffset + amplitude * Math.sin(phase + phaseOffset));
     }
 
     @Override

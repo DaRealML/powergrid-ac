@@ -358,6 +358,8 @@ public class ElectricalNetwork implements IStamped {
         updateConductance(wire, wire.conductance());
         if(wire instanceof IOuterHook hook)
             outerHooks.add(hook);
+        if(wire instanceof ISubTickRate rate)
+            subTickRates.add(rate);
         multiHooks.add(wire);
         if(wire instanceof ISolverHook hook) {
             var isFull = true;
@@ -423,6 +425,8 @@ public class ElectricalNetwork implements IStamped {
         updateConductance(wire, -wire.conductance());
         if(wire instanceof IOuterHook hook)
             outerHooks.remove(hook);
+        if(wire instanceof ISubTickRate rate)
+            subTickRates.remove(rate);
         multiHooks.remove(wire);
         if(wire instanceof ISolverHook hook) {
             innerHooks.remove(hook);

@@ -73,8 +73,11 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
     @Override
     public void postUpperSolve() {
         if(isConverged()) {
-            Vprev = TRAPEZOID_APPROX ? inductance * (current() - I) / getDeltaTime() : 0;
-            I = current() * 0.99999;
+            // The inductor's own endpoint voltage, i.e. the branch voltage less the drop across
+            // the series resistance — not the step average the previous expression produced.
+            Vprev = TRAPEZOID_APPROX ? potentialDifference() - current() * resistance : 0;
+            // Save current with a bit of leakage, at a rate independent of the sub-tick count.
+            I = current() * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
     }
 
