@@ -128,6 +128,14 @@ public class MultimeterTrace {
         if(common == 0)
             return;
 
+        if(channelCount == 0)
+            return;
+
+        // Splicing 20 Hz history in front of solver-resolution samples would put two different
+        // time bases in one buffer, and the axis would be wrong for the older half of it.
+        if(!receivingSubTicks())
+            clear0();
+
         ticksSinceSubTick = 0;
         subTickRate = common;
 
@@ -153,6 +161,14 @@ public class MultimeterTrace {
         }
     }
 
+    /** Empty the sample buffers but keep the channel set, for a change of sample source. */
+    private static void clear0() {
+        for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
+            head[c] = 0;
+            filled[c] = 0;
+        }
+    }
+
     public static void clear() {
         for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
             head[c] = 0;
@@ -161,6 +177,11 @@ public class MultimeterTrace {
         }
         channelCount = 0;
         signature = 0;
+        // Reset the source tracking as well, or re-equipping within the grace window leaves
+        // receivingSubTicks() true while no packets are arriving and the 20 Hz path stands down
+        // against nothing — a visibly frozen trace.
+        ticksSinceSubTick = GRACE_TICKS + 1;
+        subTickRate = 1;
     }
 
     public static int channelCount() {
@@ -210,7 +231,11 @@ public class MultimeterTrace {
             return;
         }
 
-        var stackSignature = MultimeterItem.getModeData(stack).hashCode();
+        // Only the channel list, not the whole mode data: including the pending "Pos" key meant
+        // the first click of a voltage pair, and the later expiry of a stale one, each wiped
+        // every channel's history.
+        var stackSignature = MultimeterItem.getModeData(stack).get("Channels") == null
+                ? 0 : MultimeterItem.getModeData(stack).get("Channels").hashCode();
         if(stackSignature != signature || channels.size() != channelCount) {
             clear();
             signature = stackSignature;
@@ -221,15 +246,24 @@ public class MultimeterTrace {
 
         // Stand down while the server is streaming solver-resolution samples, so the two sources
         // never interleave into a trace with two different time bases.
+        var wasSubTick = receivingSubTicks();
         ++ticksSinceSubTick;
         if(receivingSubTicks())
             return;
+        if(wasSubTick) {
+            // Just fell back to the once-per-tick source; drop the finer history rather than
+            // continuing the same buffer at a different time base.
+            clear0();
+        }
         subTickRate = 1;
 
         for(int c = 0; c < channelCount; ++c) {
             var value = channels.get(c).measure(level);
+            // Write and advance even when the reading is unusable. Skipping the write used to
+            // skip the head increment too, so one channel fell behind the others and the shared
+            // time axis broke — the same defect that was fixed in the sub-tick path.
             if(!Float.isFinite(value))
-                continue;
+                value = 0;
             samples[c][head[c]] = value;
             head[c] = (head[c] + 1) % CAPACITY;
             if(filled[c] < CAPACITY)

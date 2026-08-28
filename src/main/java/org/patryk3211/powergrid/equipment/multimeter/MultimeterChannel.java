@@ -21,7 +21,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
+import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
+import org.patryk3211.powergrid.electricity.wire.powercord.CordEntity;
 import org.patryk3211.powergrid.electricity.wire.CircuitBoardEndpoint;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.wire.IWireEndpoint;
@@ -64,6 +66,9 @@ public class MultimeterChannel {
     private UUID wireId;
     private int entityId = -1;
     private Vec3 attachment = Vec3.ZERO;
+
+    /** Set when refresh() moved the cached entity id, so the owner knows to persist it. */
+    private boolean idChanged;
 
     private MultimeterChannel(int type) {
         this.type = type;
@@ -168,8 +173,41 @@ public class MultimeterChannel {
         var entity = level.getEntity(wireId);
         if(entity == null)
             return false;
-        entityId = entity.getId();
+        if(entity.getId() != entityId) {
+            entityId = entity.getId();
+            idChanged = true;
+        }
         return true;
+    }
+
+    /**
+     * Whether the cached entity id moved since this was last asked, clearing the flag.
+     * <p>
+     * Entity network ids change on chunk reload, restart and relog. The refreshed id has to be
+     * written back to the stack or the channel keeps the id it was created with and silently
+     * reads zero from then on, while still appearing connected.
+     */
+    public boolean consumeIdChanged() {
+        var changed = idChanged;
+        idChanged = false;
+        return changed;
+    }
+
+    /**
+     * The wire whose signed current this channel should read.
+     * <p>
+     * Not {@code BaseWireEntity.current()}: {@link org.patryk3211.powergrid.electricity.wire.powercord.CordEntity}
+     * implements it as {@code |i1| + |i2|}, which is a magnitude and would draw a rectified trace
+     * on an alternating supply exactly as {@code measuredCurrent()} did. A cord's two halves are
+     * in series and carry the same current, so one of them gives the signed value.
+     */
+    @Nullable
+    private static AbstractElectricWire signedWire(@Nullable Entity entity) {
+        if(entity instanceof WireEntity wire)
+            return wire.getWire();
+        if(entity instanceof CordEntity cord)
+            return cord.getWire1();
+        return null;
     }
 
     /** Whether this channel still refers to something that exists and is close enough. */
@@ -213,9 +251,7 @@ public class MultimeterChannel {
             return sampler;
         }
 
-        if(!(level.getEntity(entityId) instanceof WireEntity wireEntity))
-            return null;
-        var wire = wireEntity.getWire();
+        var wire = signedWire(level.getEntity(entityId));
         if(wire == null || wire.getNetwork() == null)
             return null;
         var sampler = ProbeSampler.current(wire);
@@ -244,11 +280,10 @@ public class MultimeterChannel {
                 return 0;
             return (float) (positiveNode.getVoltage() - negativeNode.getVoltage());
         }
-        if(level.getEntity(entityId) instanceof BaseWireEntity wire)
-            // Signed, not measuredCurrent(): that returns Math.abs(current()), which on an
-            // alternating supply folds the negative half of the cycle upwards and draws a
-            // full-wave-rectified trace instead of the waveform.
-            return wire.current();
-        return 0;
+        // Signed. Neither measuredCurrent() nor CordEntity.current() will do: the first is
+        // Math.abs(current()) and the second is |i1| + |i2|, and either would fold the negative
+        // half of an alternating cycle upwards into a rectified trace.
+        var wire = signedWire(level.getEntity(entityId));
+        return wire == null ? 0 : (float) wire.current();
     }
 }

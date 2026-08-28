@@ -340,6 +340,11 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
      * observer registered later would miss its buffer sizing and record nothing.
      */
     private void attachProbeSamplers() {
+        // Clear here as well as in the flush. If anything throws between the two, the observers
+        // registered last tick would still be attached and this tick would add more — and since
+        // the observer set is keyed by identity it would grow without bound.
+        for(var network : subnetworks)
+            network.clearObservers();
         probeSamplers.clear();
         if(!(world instanceof ServerLevel serverWorld))
             return;
@@ -374,6 +379,8 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
     private void flushProbeSamplers() {
         if(probeSamplers.isEmpty())
             return;
+        // Note the observers are also cleared at the start of the next attach, so an early exit
+        // here cannot strand them.
         var limit = ModdedConfigs.server().equipment.multimeterSubTickSamples.get();
 
         for(var entry : probeSamplers.entrySet()) {

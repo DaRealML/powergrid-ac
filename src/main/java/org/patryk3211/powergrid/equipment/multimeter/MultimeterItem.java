@@ -130,6 +130,14 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
     @Override
     public void inventoryTick(ItemStack stack, Level level, Entity entity, int slotId, boolean isSelected) {
         super.inventoryTick(stack, level, entity, slotId, isSelected);
+        // Server only. Item.inventoryTick runs on both sides, but the client cannot resolve a
+        // wire entity that is not tracked yet — the first ticks after joining, after a chunk
+        // reload, during entity-load lag — so validating there would drop channels from the
+        // client's copy of the stack while the server keeps them. Nothing ever corrects that,
+        // and from then on a payload index means a different channel on each side: wrong colour,
+        // wrong unit, missing probe leads.
+        if(!(level instanceof ServerLevel))
+            return;
         var data = getModeData(stack);
         float maxDistance = ModdedConfigs.server().equipment.multimeterDistance.getF();
 
@@ -138,9 +146,16 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
         var channels = getChannels(stack);
         if(!channels.isEmpty()) {
             var kept = new ArrayList<MultimeterChannel>(channels.size());
+            // Entity network ids change on chunk reload, restart and relog. refresh() rewrites
+            // the cached id on the deserialised channel, so unless that is written back the
+            // stack keeps the id from the moment the probe was made — and the channel then reads
+            // zero forever while still looking connected, because validity is checked against
+            // the refreshed in-memory copy.
+            var refreshed = false;
             for(var channel : channels) {
-                if(level instanceof ServerLevel serverLevel && !channel.refresh(serverLevel))
+                if(!channel.refresh((ServerLevel) level))
                     continue;
+                refreshed |= channel.consumeIdChanged();
                 if(channel.isValid(level, entity, maxDistance))
                     kept.add(channel);
             }
@@ -150,6 +165,12 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
                             .style(ChatFormatting.GRAY)
                             .component(), true);
                 saveChannels(stack, kept);
+                // saveChannels wrote through a different snapshot of the mode data, so the copy
+                // captured above is now stale and must not be written back over it.
+                data = getModeData(stack);
+            } else if(refreshed) {
+                saveChannels(stack, kept);
+                data = getModeData(stack);
             }
         }
 
@@ -194,18 +215,12 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
                 .getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY)
                 .copyTag();
 
-        CompoundTag modeData;
-        if (root.contains("ModeData", Tag.TAG_COMPOUND)) {
-            modeData = root.getCompound("ModeData");
-        } else {
-            modeData = new CompoundTag();
-            root.put("ModeData", modeData);
-
-            // IMPORTANT: write back because we created data
-            stack.set(DataComponents.CUSTOM_DATA, CustomData.of(root));
-        }
-
-        return modeData;
+        // Pure read. This is called from the client tick, the item renderer and inventoryTick on
+        // both sides; creating the tag here gave a pristine multimeter NBT just by existing in
+        // an inventory, and made a read look like a write to anything watching the stack.
+        if(root.contains("ModeData", Tag.TAG_COMPOUND))
+            return root.getCompound("ModeData");
+        return new CompoundTag();
     }
 
     public static void deleteModeData(ItemStack stack) {

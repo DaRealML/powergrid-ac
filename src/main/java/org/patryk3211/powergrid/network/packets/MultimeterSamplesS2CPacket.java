@@ -27,6 +27,10 @@ import org.patryk3211.powergrid.network.S2CPacket;
  * legitimately carry different sample counts in the same packet — two probes may sit on islands
  * being stepped at different rates — so every array is length-prefixed.
  * <p>
+ * Lengths are var-ints, not bytes: both the per-channel sample cap and the solver sub-tick
+ * ceiling are configurable with no upper bound, and a byte-truncated length would desynchronise
+ * the decoder on the netty thread — which disconnects the client rather than misdrawing a graph.
+ * <p>
  * Samples are floats rather than doubles. The plot is a couple of hundred pixels wide, so a
  * 24-bit mantissa is already far more than can be seen, and it halves the payload.
  */
@@ -38,10 +42,10 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
     }
 
     public MultimeterSamplesS2CPacket(FriendlyByteBuf buf) {
-        var count = buf.readByte();
+        var count = buf.readVarInt();
         channels = new float[count][];
         for(int c = 0; c < count; ++c) {
-            var length = buf.readByte() & 0xFF;
+            var length = buf.readVarInt();
             var samples = new float[length];
             for(int i = 0; i < length; ++i)
                 samples[i] = buf.readFloat();
@@ -51,9 +55,9 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
 
     @Override
     public void write(FriendlyByteBuf buf) {
-        buf.writeByte(channels.length);
+        buf.writeVarInt(channels.length);
         for(var samples : channels) {
-            buf.writeByte(samples.length);
+            buf.writeVarInt(samples.length);
             for(var sample : samples)
                 buf.writeFloat(sample);
         }

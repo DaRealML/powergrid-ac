@@ -111,7 +111,9 @@ public class ProbeSampler implements IMultiHooks {
         if(count == 0 || limit <= 0)
             return new float[0];
         var stride = Math.max(1, count / limit);
-        var length = (count + stride - 1) / stride;
+        // Capped explicitly: for limit < count < 2*limit the stride rounds to 1 and the naive
+        // length would exceed the limit this method promises.
+        var length = Math.min(limit, (count + stride - 1) / stride);
         var out = new float[length];
         for(int i = 0; i < length; ++i)
             out[i] = samples[i * stride];

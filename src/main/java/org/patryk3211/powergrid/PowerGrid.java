@@ -63,6 +63,7 @@ import org.patryk3211.powergrid.equipment.BoostRecipe;
 import org.patryk3211.powergrid.equipment.thunder.LightningRodMovementBehaviour;
 import org.patryk3211.powergrid.equipment.portablebattery.PortableBatteryItem;
 import org.patryk3211.powergrid.kinetics.punchcard.PunchCardReaderBlockEntity;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterWatchers;
 import org.patryk3211.powergrid.network.packets.NegotiateSyncC2SPacket;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.proxy.SubstituteBlockEntityProvider;
@@ -131,6 +132,9 @@ public class PowerGrid {
 
 	private static void playerQuit(ServerPlayer player) {
 		NegotiateSyncC2SPacket.SYNC_TYPES.remove(player);
+		// Otherwise a player who logs out with the multimeter graph open stays subscribed for the
+		// life of the JVM, and the server streams sub-tick samples to a client with no screen.
+		MultimeterWatchers.setWatching(player, false);
 	}
 
 	private static void playerJoin(ServerPlayer player) {
