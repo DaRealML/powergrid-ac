@@ -287,6 +287,14 @@ public class MultimeterTrace {
         return (float) Math.sqrt(sum / filled[channel]);
     }
 
+    /** The channel's samples as a plain array, oldest first, for analysis that is pure maths. */
+    public static float[] toArray(int channel) {
+        var out = new float[filled[channel]];
+        for(int i = 0; i < out.length; ++i)
+            out[i] = get(channel, i);
+        return out;
+    }
+
     /** Largest magnitude across every channel, so they can share one vertical scale. */
     public static float peakAcrossChannels() {
         var peak = 0f;

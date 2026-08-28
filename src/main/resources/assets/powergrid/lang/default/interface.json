@@ -41,6 +41,7 @@
 
   "powergrid.gui.alternator.pole_pairs": "Pole pairs",
   "powergrid.gui.multimeter.title": "Multimeter",
+  "powergrid.gui.multimeter.steady": "Steady (no alternating component)",
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
   "powergrid.gui.multimeter.current_vs_time": "Current over time",
   "powergrid.gui.multimeter.no_data": "Nothing probed",

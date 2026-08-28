@@ -43,7 +43,7 @@ import org.patryk3211.powergrid.utility.Unit;
 @Environment(EnvType.CLIENT)
 public class MultimeterScreen extends Screen {
     private static final int PANEL_WIDTH = 264;
-    private static final int PANEL_HEIGHT = 176;
+    private static final int PANEL_HEIGHT = 188;
     private static final int PADDING = 8;
     private static final int ROW_HEIGHT = 10;
 
@@ -140,8 +140,63 @@ public class MultimeterScreen extends Screen {
 
         drawTimeAxis(graphics, plotLeft, plotRight, plotBottom);
 
+        // One frequency estimate per frame, taken from the strongest channel and reused for
+        // every phasor, so relative phase between channels is measured against a common bin.
+        var sampleRate = (double) MultimeterTrace.sampleRate();
+        var reference = MultimeterPhasor.strongestChannel();
+        var frequency = reference < 0 ? 0 : MultimeterPhasor.estimateFrequency(MultimeterTrace.toArray(reference), sampleRate);
+        var referencePhase = frequency <= 0 ? 0
+                : MultimeterPhasor.goertzel(MultimeterTrace.toArray(reference), frequency, sampleRate).phaseDegrees();
+
         for(int c = 0; c < channels; ++c)
-            drawReadout(graphics, c, plotLeft, plotBottom + 12 + c * ROW_HEIGHT, plotRight);
+            drawReadout(graphics, c, plotLeft, plotBottom + 12 + c * ROW_HEIGHT, plotRight,
+                    frequency, sampleRate, referencePhase);
+
+        drawPhasorSummary(graphics, plotLeft, bottom - PADDING - 8, plotRight, frequency, sampleRate);
+    }
+
+    /**
+     * Frequency, and where a voltage and a current channel are both present, the complex
+     * impedance between them.
+     * <p>
+     * Impedance is the quantity a magnitude-only meter cannot give you: the sign of the reactance
+     * says whether a load is inductive or capacitive, which two RMS numbers never can. It is also
+     * exactly what a Smith chart plots, so the reflection coefficient is shown alongside it.
+     */
+    private void drawPhasorSummary(GuiGraphics graphics, int x, int y, int right,
+                                   double frequency, double sampleRate) {
+        if(frequency <= 0) {
+            graphics.drawString(font, Lang.translate("gui.multimeter.steady").component(),
+                    x, y, COLOUR_TEXT_DIM, false);
+            return;
+        }
+
+        var line = String.format("f %.2f Hz", frequency);
+
+        var voltage = -1;
+        var current = -1;
+        for(int c = 0; c < MultimeterTrace.channelCount(); ++c) {
+            if(MultimeterTrace.isCurrent(c)) {
+                if(current < 0) current = c;
+            } else if(voltage < 0) {
+                voltage = c;
+            }
+        }
+
+        if(voltage >= 0 && current >= 0) {
+            var v = MultimeterPhasor.goertzel(MultimeterTrace.toArray(voltage), frequency, sampleRate);
+            var i = MultimeterPhasor.goertzel(MultimeterTrace.toArray(current), frequency, sampleRate);
+            if(i.magnitude() > 1e-9) {
+                var z = MultimeterPhasor.impedance(v, i);
+                // Sign of the reactance is the whole point: + is inductive, - is capacitive.
+                line += String.format("   Z %.2f %s j%.2f Ω",
+                        z.real(), z.imaginary() >= 0 ? "+" : "-", Math.abs(z.imaginary()));
+                var gamma = MultimeterPhasor.reflectionCoefficient(z, 50);
+                line += String.format("   SWR %.2f", MultimeterPhasor.standingWaveRatio(gamma));
+            }
+        }
+
+        graphics.drawString(font, Lang.text(line).component(), x, y, COLOUR_TEXT_DIM, false);
     }
 
     private void drawGrid(GuiGraphics graphics, int plotLeft, int plotTop, int plotRight, int plotBottom) {
@@ -215,7 +270,8 @@ public class MultimeterScreen extends Screen {
      * One row per channel: a colour swatch matching its trace, then the instantaneous value,
      * the RMS, and the full-scale value that channel is drawn against.
      */
-    private void drawReadout(GuiGraphics graphics, int channel, int x, int y, int plotRight) {
+    private void drawReadout(GuiGraphics graphics, int channel, int x, int y, int plotRight,
+                             double frequency, double sampleRate, double referencePhase) {
         var colour = MultimeterTrace.colour(channel);
         graphics.fill(x, y + 1, x + 6, y + 7, colour);
 
@@ -230,8 +286,19 @@ public class MultimeterScreen extends Screen {
         graphics.drawString(font, format(channel, MultimeterTrace.rms(channel)),
                 x + 110 + font.width(rms) + 3, y, COLOUR_TEXT, false);
 
-        // Full scale, so a normalised trace still states its magnitude.
-        var scale = format(channel, MultimeterTrace.peak(channel));
-        graphics.drawString(font, scale, plotRight - font.width(scale) - 2, y, COLOUR_TEXT_DIM, false);
+        // Phase relative to the strongest channel. Absolute phase is meaningless on its own —
+        // there is no external reference — but the angle BETWEEN channels is the measurement
+        // that matters, and it is what tells a lagging current from a leading one.
+        if(frequency > 0) {
+            var phasor = MultimeterPhasor.goertzel(MultimeterTrace.toArray(channel), frequency, sampleRate);
+            var relative = phasor.phaseDegrees() - referencePhase;
+            while(relative <= -180) relative += 360;
+            while(relative > 180) relative -= 360;
+            var phase = Lang.text(String.format("%+.0f°", relative)).component();
+            graphics.drawString(font, phase, plotRight - font.width(phase) - 2, y, colour, false);
+        } else {
+            var scale = format(channel, MultimeterTrace.peak(channel));
+            graphics.drawString(font, scale, plotRight - font.width(scale) - 2, y, COLOUR_TEXT_DIM, false);
+        }
     }
 }
