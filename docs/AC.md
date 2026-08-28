@@ -22,6 +22,7 @@ shipped defaults every DC network is solved exactly as it was before.
 | Reactive components under AC | `CapacitorWire`, `InductorWire`, `CRSeriesWire`, `LRSeriesWire` | Already correct; two defects fixed — §3.9 |
 | Pole-pair slider | `AlternatorPolePairsBehaviour` | Compiles; not runtime-tested — §5.1 |
 | Multimeter trace screen | `MultimeterTrace`, `MultimeterScreen` | Compiles; not runtime-tested — §5.2 |
+| Phasors / complex impedance | `MultimeterPhasor` | Measurement only, not a solver — §3.10 |
 | Rectification | *nothing added* — `PNJunctionWire` already does it | — |
 
 The magnetic (T-model) transformer from the feasibility assessment is **not** included. See §9.
@@ -283,6 +284,42 @@ event.
 > inductance longhand (`R + L/dt`, `(L/dt)*i_prev`) and is **not** gated on `TRAPEZOID_APPROX`.
 > Flipping that flag would integrate `InductorWire` and the alternator's own reactance by
 > different methods.
+### 3.10 Self-excited machines
+
+A shunt or compound wound generator takes its field current from its own output. On direct
+current that is a plain feedback loop:
+
+```
+lambda_{k+1} = g * lambda_k
+```
+
+Sampling the field instantaneously on an alternator makes it a *product* recursion instead:
+
+```
+lambda_{k+1} = g * lambda_k * sin(p * theta_k)
+```
+
+which fails in two independent ways. The geometric mean of `|sin|` over a cycle is exactly one
+half, so the loop gain is permanently halved — a build that self-excites on DC at a gain of 1.79
+sits at 0.90, below unity. And the sign reverses through every negative half cycle, which a field
+winding with a 10 ms time constant cannot follow. The field decays to its residual: a numerical
+replay of the discrete loop at shipped defaults gives **0.03 V rms against the DC machine's 69 V**.
+
+Physically the field circuit rectifies, and its L/R is far longer than one electrical cycle, so
+the field is a slow, one-signed quantity. It is modelled as one:
+
+```
+excitation += (dt / (tau + dt)) * (|lambda_instantaneous| - excitation)     tau = 0.25 s
+field       = excitation * (pi / 2)
+```
+
+All three steps are load-bearing. Rectifying alone leaves the gain under unity; low-passing alone
+averages the sign reversal to zero; and without the `pi/2` form factor the rectified mean is
+`2/pi` of the peak it should be.
+
+**Separately excited alternators were never affected.** That is also the diagnostic: a build that
+works with its field from a battery but not from its own output was hitting exactly this.
+
 
 
 ---
@@ -404,6 +441,32 @@ tracking clients every tick — that is why the needle on the item model works �
 > `DrillSpeedS2CPacket`. That also requires bumping `PacketSet.builder(MOD_ID, 17)`, and a
 > version mismatch disconnects clients, so it was left out of this change.
 
+### 5.3 Phasors, impedance and Smith-chart data
+
+Because the meter now captures the waveform, a single-bin transform over it yields phase and
+complex impedance for a handful of multiply-accumulates. The screen shows per-channel phase
+relative to the strongest channel, and where a voltage and a current channel are both present,
+`Z = R + jX` with the reflection coefficient and SWR beside it.
+
+**This is measurement, not a second solver, and the distinction is the design.** Phasor and
+Laplace methods describe a *linear, time-invariant, single-frequency steady state*. This
+simulator guarantees none of those: diodes, transistors and tubes are nonlinear; switches, relays
+and a player flipping a lever are transients; two alternators may run at genuinely different
+speeds; and DC and AC share one grid. Solving in the frequency domain would mean a second solver
+valid only on the least interesting subset of circuits, plus the logic to detect when it applies,
+plus the time-domain solver kept for everything else. Extracting phasors from the waveform the
+solver already produced assumes nothing about the circuit — if the signal is not sinusoidal the
+fundamental is simply one component of it.
+
+Goertzel rather than an FFT: only one bin is wanted, it is O(N) in two state variables, and the
+bin need not fall on a harmonic of the window length — which matters, because the grid frequency
+is whatever the machinery happens to be turning at. Frequency is estimated from zero crossings of
+the strongest channel and reused for every channel, so relative phase shares one reference.
+
+The sign of the reactance is the payoff: it distinguishes an inductive load from a capacitive one,
+which two RMS magnitudes never can. `(Z - Z0)/(Z + Z0)` **is** the Smith chart coordinate, so a
+graphical chart is now only a rendering job on top of numbers that already exist.
+
 ---
 
 ## 6. Files changed
@@ -483,11 +546,14 @@ harness. **13 new tests, all passing.**
 | `phaseOffsetsMakeABalancedThreePhaseSet` | Three sources 120° apart sum to zero |
 | `offsetShiftsTheWaveformWithoutChangingItsSwing` | DC offset arithmetic |
 | `retuningFrequencyDoesNotStepTheWaveform` | Integrated phase stays continuous |
+| `PhasorTest` (9 tests) | Amplitude recovery, DC rejection, the 90° convention, resistive and reactive impedance signs, frequency estimation, SWR, non-integer cycle counts |
 
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **93 / 78**. **Zero new failures.**
+63 tests / 48 passing to **102 / 88**. **Zero new failures**, and one pre-existing failure fixed:
+guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
+`SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
 That the existing DC tests did not move is itself the check on the leakage change: `Math.pow`
 with an exponent of exactly 1.0 returns its base, so at one sub-tick the arithmetic is unchanged.
