@@ -258,15 +258,24 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
                     .component(), true);
             return InteractionResultHolder.success(player.getItemInHand(usedHand));
         }
-        // Right-click in the air with a connected meter opens the trace graph. Client-only:
-        // the history lives on the client and there is nothing for the server to arbitrate.
-        // Guarded on having a probe attached so an unconnected meter still behaves as before.
-        if(usedHand == InteractionHand.MAIN_HAND && getMode(player.getItemInHand(usedHand)) >= 0) {
-            if(level.isClientSide)
-                openTraceScreen();
+        // Right-click in the air with a connected meter opens the trace graph. Client-only: the
+        // history lives on the client and there is nothing for the server to arbitrate.
+        //
+        // The "in the air" test is load-bearing. useOn returns PASS for every block that is not
+        // a circuit board, and for a terminal missed by a pixel, and vanilla falls through from
+        // PASS to use() — so without it, right-clicking plain stone would open the screen.
+        if(level.isClientSide && usedHand == InteractionHand.MAIN_HAND
+                && getMode(player.getItemInHand(usedHand)) >= 0 && isLookingAtAir()) {
+            openTraceScreen();
             return InteractionResultHolder.success(player.getItemInHand(usedHand));
         }
         return super.use(level, player, usedHand);
+    }
+
+    @Environment(EnvType.CLIENT)
+    private static boolean isLookingAtAir() {
+        var hit = Minecraft.getInstance().hitResult;
+        return hit == null || hit.getType() == HitResult.Type.MISS;
     }
 
     @Environment(EnvType.CLIENT)

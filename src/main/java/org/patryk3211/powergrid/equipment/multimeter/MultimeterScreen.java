@@ -75,6 +75,12 @@ public class MultimeterScreen extends Screen {
         return unit.formatWithPrefixes(value).component();
     }
 
+    /**
+     * Note the absence of a {@code super.render(...)} call. {@link Screen#render} <em>starts</em>
+     * by drawing the blurred menu backdrop, so calling it after the plot would blit that dark
+     * tile straight over the finished graph and run the blur a second time. The backdrop is
+     * drawn here explicitly instead, and this screen registers no widgets for super to render.
+     */
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics, mouseX, mouseY, partialTick);
@@ -100,7 +106,6 @@ public class MultimeterScreen extends Screen {
         if(MultimeterTrace.isEmpty()) {
             var message = Lang.translate("gui.multimeter.no_data").component();
             graphics.drawCenteredString(font, message, (left + right) / 2, (top + bottom) / 2, COLOUR_TEXT_DIM);
-            super.render(graphics, mouseX, mouseY, partialTick);
             return;
         }
 
@@ -108,8 +113,6 @@ public class MultimeterScreen extends Screen {
         var range = drawTrace(graphics, plotLeft, plotTop, plotRight, plotBottom);
         drawScale(graphics, left, plotTop, plotBottom, right, range);
         drawReadout(graphics, left + PADDING, bottom - PADDING - 9);
-
-        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     private void drawGrid(GuiGraphics graphics, int plotLeft, int plotTop, int plotRight, int plotBottom) {
@@ -149,7 +152,9 @@ public class MultimeterScreen extends Screen {
         var previousY = 0;
         for(int i = 0; i < count; ++i) {
             var slot = MultimeterTrace.CAPACITY - count + i;
-            var x = plotLeft + slot * plotWidth / (MultimeterTrace.CAPACITY - 1);
+            // Spans plotWidth - 1 so the newest sample lands one pixel inside the frame rather
+            // than painting over the plot's right border.
+            var x = plotLeft + slot * (plotWidth - 1) / (MultimeterTrace.CAPACITY - 1);
             var normalised = Mth.clamp(MultimeterTrace.get(i) / range, -1f, 1f);
             var y = zeroY - Math.round(normalised * (plotHeight / 2f - 1));
 
@@ -160,6 +165,10 @@ public class MultimeterScreen extends Screen {
                 var lo = Math.min(previousY, y);
                 var hi = Math.max(previousY, y);
                 graphics.fill(previousX, lo, Math.max(x, previousX + 1), hi + 1, COLOUR_TRACE);
+            } else if(count == 1) {
+                // A lone sample has no segment to draw, which would otherwise leave the plot
+                // blank for one tick after the probe is moved.
+                graphics.fill(x, y, x + 1, y + 1, COLOUR_TRACE);
             }
             previousX = x;
             previousY = y;
@@ -189,7 +198,7 @@ public class MultimeterScreen extends Screen {
         var column = (PANEL_WIDTH - PADDING * 2) / 3;
         drawStat(graphics, x, y, "gui.multimeter.now", MultimeterTrace.latest());
         drawStat(graphics, x + column, y, "gui.multimeter.rms", MultimeterTrace.rms());
-        drawStat(graphics, x + column * 2, y, "gui.multimeter.peak", MultimeterTrace.maximum());
+        drawStat(graphics, x + column * 2, y, "gui.multimeter.peak", MultimeterTrace.peak());
     }
 
     private void drawStat(GuiGraphics graphics, int x, int y, String key, float value) {

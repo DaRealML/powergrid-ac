@@ -88,8 +88,11 @@ public class AlternatorPolePairsBehaviour extends ScrollValueBehaviour {
     @Override
     public ValueSettingsBoard createBoard(Player player, BlockHitResult hitResult) {
         // The board sweeps 0..maxValue, so it is offset by one against the stored value.
-        return new ValueSettingsBoard(label, MAX_POLE_PAIRS - MIN_POLE_PAIRS, 1,
-                ImmutableList.of(Component.literal("")),
+        // The row needs a real label: an empty component still reserves a small plate beside
+        // the bar, which then renders blank. The milestone interval spaces the notch markers
+        // and is also the step size for a shift-drag, so 1 would make shift do nothing.
+        return new ValueSettingsBoard(label, MAX_POLE_PAIRS - MIN_POLE_PAIRS, 4,
+                ImmutableList.of(Lang.translateDirect("gui.alternator.pole_pairs")),
                 new ValueSettingsFormatter(settings -> Component.literal(describe(settings.value() + MIN_POLE_PAIRS))));
     }
 
@@ -103,6 +106,8 @@ public class AlternatorPolePairsBehaviour extends ScrollValueBehaviour {
 
     @Override
     public ValueSettings getValueSettings() {
-        return new ValueSettings(0, value - MIN_POLE_PAIRS);
+        // Through getPolePairs() rather than the raw field, so a value of 0 from an older save
+        // cannot produce a negative column index.
+        return new ValueSettings(0, getPolePairs() - MIN_POLE_PAIRS);
     }
 }

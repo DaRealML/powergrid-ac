@@ -18,6 +18,8 @@ package org.patryk3211.powergrid.equipment.multimeter;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 
+import java.lang.ref.WeakReference;
+
 /**
  * Rolling history of what the multimeter is reading, kept on the client so the graph screen has
  * something to draw.
@@ -62,6 +64,12 @@ public class MultimeterTrace {
     /** Identity of the probed target, so re-probing elsewhere starts a fresh trace. */
     private static int target;
 
+    /**
+     * The world these samples came from. Weak so that holding a trace can never keep a
+     * disconnected level alive; only its identity is ever compared.
+     */
+    private static WeakReference<Level> origin = new WeakReference<>(null);
+
     public static void clear() {
         head = 0;
         filled = 0;
@@ -94,6 +102,14 @@ public class MultimeterTrace {
 
     /** Record one reading, resetting the history if the probe moved to a different target. */
     public static void sample(Level level, ItemStack stack, MultimeterItem multimeter) {
+        // Disconnecting and rejoining, or moving to another world, leaves the held stack and its
+        // probe data untouched — so without this the old readings would be drawn as continuous
+        // with the new ones.
+        if(origin.get() != level) {
+            clear();
+            origin = new WeakReference<>(level);
+        }
+
         var stackMode = multimeter.getMode(stack);
         if(stackMode < 0) {
             clear();
@@ -136,6 +152,16 @@ public class MultimeterTrace {
         for(int i = 0; i < filled; ++i)
             max = Math.max(max, get(i));
         return filled == 0 ? 0 : max;
+    }
+
+    /**
+     * Largest magnitude in the window, regardless of sign.
+     * <p>
+     * Not {@link #maximum()}: with the probe leads reversed on a DC circuit every sample is
+     * negative, and the signed maximum would report the reading closest to zero as the peak.
+     */
+    public static float peak() {
+        return Math.max(Math.abs(minimum()), Math.abs(maximum()));
     }
 
     public static float mean() {
