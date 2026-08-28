@@ -205,12 +205,11 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     }
 
     private double deltaTime() {
-        return network == null ? 0.05 : network.getDeltaTime();
+        return network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
     }
 
     private static double wrap(double angle) {
-        var wrapped = angle % TWO_PI;
-        return wrapped < 0 ? wrapped + TWO_PI : wrapped;
+        return AcSampling.wrapAngle(angle);
     }
 
     /**
@@ -231,24 +230,11 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
     @Override
     public int requiredSubTicks() {
-        // Electrical frequency in Hz. Below one cycle per world tick there is nothing to
-        // resolve, so a stopped or slow machine asks for nothing and costs nothing.
+        // Electrical frequency in Hz. A stopped or slow machine asks for nothing and costs
+        // nothing; the rounding and ceiling rules live in AcSampling so this and the bench AC
+        // source cannot drift apart.
         var frequency = Math.abs(acRotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
-        if(frequency <= 0)
-            return 1;
-
-        // Samples needed across one world tick = samples per cycle * cycles per world tick.
-        var needed = samplesPerCycle * frequency * 0.05;
-
-        // Round up to a power of two. Two reasons: every rate then divides the world tick
-        // evenly so the stepping schedule is uniform, and the rate only changes at octave
-        // boundaries instead of on every small speed change. That matters because changing the
-        // sub-tick count changes dt, which re-derives every capacitor and inductor conductance
-        // and dirties the matrix.
-        var rate = 1;
-        while(rate < needed && rate < maxSubTicks)
-            rate <<= 1;
-        return Math.min(rate, maxSubTicks);
+        return AcSampling.subTicksFor(frequency, samplesPerCycle, maxSubTicks);
     }
 
     @Override
