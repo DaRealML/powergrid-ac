@@ -21,174 +21,191 @@ import net.minecraft.world.level.Level;
 import java.lang.ref.WeakReference;
 
 /**
- * Rolling history of what the multimeter is reading, kept on the client so the graph screen has
- * something to draw.
+ * Rolling history of every channel the multimeter is watching, kept on the client so the graph
+ * screen has something to draw.
  * <p>
- * This lives entirely client-side and is never saved or sent anywhere. It can afford to, because
- * node voltages are already synchronised to tracking clients every tick — which is the same
- * reason the needle on the item model works — so
- * {@link MultimeterItem#getMeasurement(Level, ItemStack)} returns a real value on the client with
- * no extra networking.
+ * Entirely client-side and never saved or sent anywhere. It can afford to be, because node
+ * voltages are already synchronised to tracking clients every tick — the same reason the needle
+ * on the item model works — so {@link MultimeterChannel#measure(Level)} returns a real value on
+ * the client with no extra networking.
  *
- * <h2>Sample rate, and what it can and cannot show</h2>
- * One sample per client tick, so <b>20 Hz</b>. That is the rate at which the underlying value
- * reaches the client at all; the solver may be stepping an AC island 8 or 16 times per tick
- * internally, but only the end-of-tick state is synchronised.
+ * <h2>Sample rate</h2>
+ * One sample per client tick, so <b>20 Hz</b> — the rate at which the underlying value reaches
+ * the client at all. The solver may step an AC island 8 or more times per tick internally, but
+ * only the end-of-tick state is synchronised.
  * <p>
- * For direct current, and for an alternator at the default single pole pair — about 4.5 Hz at a
- * shaft's 272 rpm ceiling — 20 Hz is comfortably above the Nyquist limit and the trace is a
- * faithful, if coarse, picture of the waveform. Raising pole pairs pushes the electrical
- * frequency up until it crosses 10 Hz, beyond which <b>this graph will alias</b> and show a
- * believable waveform at the wrong frequency. Seeing the true sub-tick waveform needs the
- * dedicated sampling hardware — the plotter or the CRT — which sits inside the circuit and
- * records every solver sub-tick.
+ * For direct current, and for an alternator at the default single pole pair (about 4.5 Hz at a
+ * shaft's speed ceiling), that is comfortably above the Nyquist limit and the trace is faithful.
+ * Above roughly 10 Hz <b>this graph aliases</b> and will show a believable waveform at the wrong
+ * frequency; the in-circuit plotter and CRT record every solver sub-tick and are the instruments
+ * for that.
  */
 public class MultimeterTrace {
     /** Ten seconds at one sample per client tick. */
     public static final int CAPACITY = 200;
 
-    /** Seconds of history the buffer holds when full. */
+    /** Seconds of history a full buffer holds. */
     public static final float WINDOW_SECONDS = CAPACITY / 20f;
 
-    private static final float[] samples = new float[CAPACITY];
+    /** Distinct, colour-blind-friendly trace colours, in channel order. */
+    public static final int[] CHANNEL_COLOURS = {
+            0xFF46D8A0,  // green
+            0xFF5AA9E6,  // blue
+            0xFFE8B84B,  // amber
+            0xFFE0685A,  // red
+    };
 
-    /** Index the next sample will be written to. */
-    private static int head;
+    private static final float[][] samples =
+            new float[MultimeterChannel.MAX_CHANNELS][CAPACITY];
 
-    /** How many entries are valid, up to {@link #CAPACITY}. */
-    private static int filled;
+    /** Per-channel write cursor and fill count. */
+    private static final int[] head = new int[MultimeterChannel.MAX_CHANNELS];
+    private static final int[] filled = new int[MultimeterChannel.MAX_CHANNELS];
 
-    /** Mode of the stack being traced: 0 voltage, 1 current, -1 none. */
-    private static int mode = -1;
+    /** Whether each channel reads current rather than voltage, for unit formatting. */
+    private static final boolean[] currentChannel = new boolean[MultimeterChannel.MAX_CHANNELS];
 
-    /** Identity of the probed target, so re-probing elsewhere starts a fresh trace. */
-    private static int target;
+    /** How many channels the meter is presently watching. */
+    private static int channelCount;
 
-    /**
-     * The world these samples came from. Weak so that holding a trace can never keep a
-     * disconnected level alive; only its identity is ever compared.
-     */
+    /** Identity of the probe set, so re-probing starts fresh rather than splicing. */
+    private static int signature;
+
+    /** The world these samples came from; weak so a trace can never keep a level alive. */
     private static WeakReference<Level> origin = new WeakReference<>(null);
 
     public static void clear() {
-        head = 0;
-        filled = 0;
-        mode = -1;
-        target = 0;
+        for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
+            head[c] = 0;
+            filled[c] = 0;
+            currentChannel[c] = false;
+        }
+        channelCount = 0;
+        signature = 0;
     }
 
-    public static int getMode() {
-        return mode;
-    }
-
-    public static int size() {
-        return filled;
+    public static int channelCount() {
+        return channelCount;
     }
 
     public static boolean isEmpty() {
-        return filled == 0;
+        return channelCount == 0 || filled[0] == 0;
+    }
+
+    public static int size(int channel) {
+        return filled[channel];
+    }
+
+    public static boolean isCurrent(int channel) {
+        return currentChannel[channel];
+    }
+
+    public static int colour(int channel) {
+        return CHANNEL_COLOURS[channel % CHANNEL_COLOURS.length];
     }
 
     /**
-     * Samples in chronological order, oldest first.
+     * Samples of one channel in chronological order, oldest first.
      *
-     * @param index 0 is the oldest retained sample, {@code size() - 1} the newest
+     * @param index 0 is the oldest retained sample, {@code size(channel) - 1} the newest
      */
-    public static float get(int index) {
-        // Once the buffer has wrapped, head is the oldest entry; before that it is the count.
-        var start = filled < CAPACITY ? 0 : head;
-        return samples[(start + index) % CAPACITY];
+    public static float get(int channel, int index) {
+        // Before the buffer wraps, head is the count and index 0 is the oldest; after, head is
+        // itself the oldest entry.
+        var start = filled[channel] < CAPACITY ? 0 : head[channel];
+        return samples[channel][(start + index) % CAPACITY];
     }
 
-    /** Record one reading, resetting the history if the probe moved to a different target. */
+    /** Record one reading per channel, resetting if the probe set changed. */
     public static void sample(Level level, ItemStack stack, MultimeterItem multimeter) {
-        // Disconnecting and rejoining, or moving to another world, leaves the held stack and its
-        // probe data untouched — so without this the old readings would be drawn as continuous
-        // with the new ones.
+        // Rejoining, or moving to another world, leaves the held stack untouched — so without
+        // this the old readings would be drawn as continuous with the new ones.
         if(origin.get() != level) {
             clear();
             origin = new WeakReference<>(level);
         }
 
-        var stackMode = multimeter.getMode(stack);
-        if(stackMode < 0) {
+        var channels = MultimeterItem.getChannels(stack);
+        if(channels.isEmpty()) {
             clear();
             return;
         }
 
-        var stackTarget = MultimeterItem.getModeData(stack).hashCode();
-        if(stackMode != mode || stackTarget != target) {
+        var stackSignature = MultimeterItem.getModeData(stack).hashCode();
+        if(stackSignature != signature || channels.size() != channelCount) {
             clear();
-            mode = stackMode;
-            target = stackTarget;
+            signature = stackSignature;
+            channelCount = Math.min(channels.size(), MultimeterChannel.MAX_CHANNELS);
+            for(int c = 0; c < channelCount; ++c)
+                currentChannel[c] = channels.get(c).isCurrent();
         }
 
-        var value = multimeter.getMeasurement(level, stack);
-        if(!Float.isFinite(value))
-            return;
-
-        samples[head] = value;
-        head = (head + 1) % CAPACITY;
-        if(filled < CAPACITY)
-            ++filled;
+        for(int c = 0; c < channelCount; ++c) {
+            var value = channels.get(c).measure(level);
+            if(!Float.isFinite(value))
+                continue;
+            samples[c][head[c]] = value;
+            head[c] = (head[c] + 1) % CAPACITY;
+            if(filled[c] < CAPACITY)
+                ++filled[c];
+        }
     }
 
-    /** Most recent reading, or zero if nothing has been recorded. */
-    public static float latest() {
-        if(filled == 0)
+    public static float latest(int channel) {
+        if(filled[channel] == 0)
             return 0;
-        return samples[(head - 1 + CAPACITY) % CAPACITY];
+        return samples[channel][(head[channel] - 1 + CAPACITY) % CAPACITY];
     }
 
-    public static float minimum() {
+    public static float minimum(int channel) {
+        if(filled[channel] == 0)
+            return 0;
         var min = Float.POSITIVE_INFINITY;
-        for(int i = 0; i < filled; ++i)
-            min = Math.min(min, get(i));
-        return filled == 0 ? 0 : min;
+        for(int i = 0; i < filled[channel]; ++i)
+            min = Math.min(min, get(channel, i));
+        return min;
     }
 
-    public static float maximum() {
+    public static float maximum(int channel) {
+        if(filled[channel] == 0)
+            return 0;
         var max = Float.NEGATIVE_INFINITY;
-        for(int i = 0; i < filled; ++i)
-            max = Math.max(max, get(i));
-        return filled == 0 ? 0 : max;
+        for(int i = 0; i < filled[channel]; ++i)
+            max = Math.max(max, get(channel, i));
+        return max;
     }
 
     /**
-     * Largest magnitude in the window, regardless of sign.
-     * <p>
-     * Not {@link #maximum()}: with the probe leads reversed on a DC circuit every sample is
-     * negative, and the signed maximum would report the reading closest to zero as the peak.
+     * Largest magnitude in the window, regardless of sign — not {@link #maximum(int)}, which
+     * with reversed probe leads on DC would report the reading closest to zero as the peak.
      */
-    public static float peak() {
-        return Math.max(Math.abs(minimum()), Math.abs(maximum()));
-    }
-
-    public static float mean() {
-        if(filled == 0)
-            return 0;
-        var sum = 0.0;
-        for(int i = 0; i < filled; ++i)
-            sum += get(i);
-        return (float) (sum / filled);
+    public static float peak(int channel) {
+        return Math.max(Math.abs(minimum(channel)), Math.abs(maximum(channel)));
     }
 
     /**
      * Root mean square across the window.
      * <p>
-     * For a steady direct measurement this equals the magnitude of the reading. For an
-     * alternating one it is the value a real meter would display, and the number that actually
-     * determines heating in a load — which is why it is worth showing next to the instantaneous
-     * value rather than instead of it.
+     * For a steady reading this is its magnitude. For an alternating one it is what a real meter
+     * displays and what determines heating in a load, which is why it sits beside the
+     * instantaneous value rather than replacing it.
      */
-    public static float rms() {
-        if(filled == 0)
+    public static float rms(int channel) {
+        if(filled[channel] == 0)
             return 0;
         var sum = 0.0;
-        for(int i = 0; i < filled; ++i) {
-            var v = get(i);
+        for(int i = 0; i < filled[channel]; ++i) {
+            var v = get(channel, i);
             sum += (double) v * v;
         }
-        return (float) Math.sqrt(sum / filled);
+        return (float) Math.sqrt(sum / filled[channel]);
+    }
+
+    /** Largest magnitude across every channel, so they can share one vertical scale. */
+    public static float peakAcrossChannels() {
+        var peak = 0f;
+        for(int c = 0; c < channelCount; ++c)
+            peak = Math.max(peak, peak(c));
+        return peak;
     }
 }

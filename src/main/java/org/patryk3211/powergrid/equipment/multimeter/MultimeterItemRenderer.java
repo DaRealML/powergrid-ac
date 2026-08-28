@@ -102,6 +102,12 @@ public class MultimeterItemRenderer extends CustomRenderedItemModelRenderer {
     }
 
     /* -------=========   Probe Rendering   =========------- */
+    /** Halves a colour's RGB, keeping alpha, to mark the negative lead of a pair. */
+    private static int dim(int argb) {
+        var alpha = argb & 0xFF000000;
+        return alpha | ((argb >> 1) & 0x7F7F7F);
+    }
+
     public static void renderProbe(Vec3 point, SuperRenderTypeBuffer buffer, PoseStack matrixStack, ClientLevel world, LocalPlayer player, int color) {
         HangingWireRenderer.renderFromPositions(matrixStack, buffer.getBuffer(RenderType.entitySolid(TEXTURE)),
                 Vec3.ZERO,
@@ -115,24 +121,38 @@ public class MultimeterItemRenderer extends CustomRenderedItemModelRenderer {
         matrixStack.pushPose();
         matrixStack.translate(origin.x - cameraPos.x, origin.y - cameraPos.y, origin.z - cameraPos.z);
         var data = multimeter.getModeData(stack);
-        switch(multimeter.getMode(stack)) {
-            case 0 -> {
-                var pos = WireEndpointType.deserialize(data.getCompound("Pos"));
-                if(pos != null && pos.isValid(world)) {
-                    var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, pos.getExactPosition(world));
-                    renderProbe(position.subtract(origin), buffer, matrixStack, world, player, 0xFFFF4040);
-                }
-                var neg = WireEndpointType.deserialize(data.getCompound("Neg"));
-                if(neg != null && neg.isValid(world)) {
-                    var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, neg.getExactPosition(world));
-                    renderProbe(position.subtract(origin), buffer, matrixStack, world, player, 0xFF202020);
-                }
+
+        // A voltage pair waiting for its second click. Drawn white so it reads as provisional
+        // rather than as a channel that is already measuring.
+        if(data.contains("Pos")) {
+            var pending = WireEndpointType.deserialize(data.getCompound("Pos"));
+            if(pending != null && pending.isValid(world)) {
+                var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, pending.getExactPosition(world));
+                renderProbe(position.subtract(origin), buffer, matrixStack, world, player, 0xFFFFFFFF);
             }
-            case 1 -> {
-                if(data.contains("X")) {
-                    var pos = new Vec3(data.getDouble("X"), data.getDouble("Y"), data.getDouble("Z"));
-                    renderProbe(SableCompanion.INSTANCE.projectOutOfSubLevel(world, pos).subtract(origin), buffer, matrixStack, world, player, 0xFF202020);
-                }
+        }
+
+        // Every live channel, in the colour its trace is drawn in on the graph, so a lead in the
+        // world can be matched to a curve on the screen.
+        var channels = MultimeterItem.getChannels(stack);
+        for(int c = 0; c < channels.size(); ++c) {
+            var channel = channels.get(c);
+            var colour = MultimeterTrace.colour(c);
+            if(channel.isCurrent()) {
+                var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, channel.getAttachment());
+                renderProbe(position.subtract(origin), buffer, matrixStack, world, player, colour);
+                continue;
+            }
+            var positive = channel.getPositive();
+            if(positive != null && positive.isValid(world)) {
+                var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, positive.getExactPosition(world));
+                renderProbe(position.subtract(origin), buffer, matrixStack, world, player, colour);
+            }
+            var negative = channel.getNegative();
+            if(negative != null && negative.isValid(world)) {
+                var position = SableCompanion.INSTANCE.projectOutOfSubLevel(world, negative.getExactPosition(world));
+                // Same channel, dimmed, so the two leads of a pair are distinguishable.
+                renderProbe(position.subtract(origin), buffer, matrixStack, world, player, dim(colour));
             }
         }
         matrixStack.popPose();

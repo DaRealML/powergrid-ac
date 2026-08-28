@@ -20,6 +20,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterChannel;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
 import org.patryk3211.powergrid.network.C2SPacket;
 
@@ -49,16 +50,12 @@ public class MultimeterDataC2SPacket implements C2SPacket {
         if(!(stack.getItem() instanceof MultimeterItem multimeter))
             return;
         var level = player.serverLevel();
-        var entity = level.getEntity(wire);
-        if(entity == null)
+        if(!(level.getEntity(wire) instanceof BaseWireEntity wireEntity))
             return;
+        // Keeps the existing channels rather than clearing the mode data.
         if(multimeter.getMode(stack) != 1)
-            multimeter.setMode(stack, 1);
-        var data = MultimeterItem.getModeData(stack);
-        data.putFloat("X", point.x);
-        data.putFloat("Y", point.y);
-        data.putFloat("Z", point.z);
-        data.putUUID("UUID", entity.getUUID());
-        MultimeterItem.saveModeData(stack, data);
+            MultimeterItem.setModeKeepingData(stack, 1);
+        MultimeterItem.addChannel(stack,
+                MultimeterChannel.current(wireEntity, new Vec3(point.x, point.y, point.z)));
     }
 }

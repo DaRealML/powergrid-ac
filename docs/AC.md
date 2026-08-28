@@ -364,18 +364,31 @@ out from under the rest of the grid.
 
 ### 5.2 Multimeter trace screen
 
-Right-click in the air holding a connected multimeter to open a plot of the probed value against
-time — voltage in mode 0, current in mode 1. Shift-right-click still clears the probe as before.
+Right-click in the air holding a connected multimeter to open a plot of everything it is
+watching against time. Shift-right-click still clears it as before.
 
-The graph is **entirely client-side**. Node voltages are already synchronised to tracking clients
-every tick — that is why the needle on the item model works — so `getMeasurement()` returns a real
-value on the client and no new networking, packet, or menu was needed. `MultimeterTrace` is a
-200-sample ring buffer filled from the existing `MultimeterItemRenderer.clientTick` hook, and
-resets when the probe moves or the meter is put away.
+**The meter holds up to four channels at once.** Clicking two terminals creates a voltage
+channel; clicking a wire creates a current channel. Each new probe appends, and a fifth drops the
+oldest — refusing instead would be hard to tell apart from a missed click. Every channel is
+validated independently each tick, so walking away from one probe drops that one and leaves the
+rest measuring.
 
-Alongside the trace it shows the instantaneous value, the **RMS** over the window, and the peak.
-RMS is what a real meter displays and what determines how hard a load actually works, so on an
-alternating supply it is the more meaningful of the two.
+Channels live in the item's NBT rather than only on the client, which they have to: for a trace
+to stay *live* the server must be measuring it. `MultimeterChannel` owns one probe — its
+serialisation, its distance and validity checks, and its reading — replacing the loose `Pos` /
+`Neg` / `UUID` keys that could only ever describe one probe. Those keys survive as the holding
+place for a voltage pair between its first and second click.
+
+**Each channel is drawn on its own vertical scale**, like the per-channel gain on a real
+oscilloscope. That is not a luxury here: a voltage channel and a current channel share no
+meaningful axis, and a 200 V trace would flatten a 2 A one onto the zero line. Each trace is
+normalised to its own peak and its full-scale value is printed in its own colour, so shapes stay
+comparable and magnitudes are stated rather than implied. Probe leads render in the world in
+their channel's colour, so a lead can be matched to a curve.
+
+The graph is otherwise **entirely client-side**. Node voltages are already synchronised to
+tracking clients every tick — that is why the needle on the item model works — so a channel's
+`measure()` returns a real value on the client and no new packet or menu was needed.
 
 > **Sample rate, and an honest limit.** One sample per client tick, so **20 Hz** — that is the
 > rate at which the value reaches the client at all, regardless of how finely the solver is

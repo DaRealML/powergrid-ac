@@ -24,6 +24,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -55,6 +56,7 @@ import org.patryk3211.powergrid.network.packets.MultimeterDataC2SPacket;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class MultimeterItem extends Item implements IHaveElectricProperties {
@@ -111,16 +113,15 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
     public InteractionResult useOnWire(Player player, ItemStack stack, InteractionHand hand, BaseWireEntity wireEntity) {
         if(hand != InteractionHand.MAIN_HAND)
             return InteractionResult.PASS;
-        if(getMode(stack) != 1) {
-            // Enable current mode.
-            setMode(stack, 1);
-        }
+        if(getMode(stack) != 1)
+            setModeKeepingData(stack, 1);
         if(player.level().isClientSide) {
+            // The attachment point comes from the client's hit result, so the client adds the
+            // channel for immediate feedback and the packet makes the server authoritative.
             var point = getAttachmentPoint();
-            var data = getModeData(stack);
-            data.putDouble("X", point.x);
-            data.putDouble("Y", point.y);
-            data.putDouble("Z", point.z);
+            if(point == null)
+                return InteractionResult.PASS;
+            addChannel(stack, MultimeterChannel.current(wireEntity, point));
             ModdedPackets.sendToServer(new MultimeterDataC2SPacket(point, wireEntity));
         }
         return InteractionResult.CONSUME;
@@ -131,61 +132,35 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
         super.inventoryTick(stack, level, entity, slotId, isSelected);
         var data = getModeData(stack);
         float maxDistance = ModdedConfigs.server().equipment.multimeterDistance.getF();
-        switch(getMode(stack)) {
-            case 0 -> {
-                var pos = WireEndpointType.deserialize(data.getCompound("Pos"));
-                var neg = WireEndpointType.deserialize(data.getCompound("Neg"));
-                if(pos != null) {
-                    var posPos = pos.getExactPosition(level);
-                    if(entity.distanceToSqr(posPos) > maxDistance * maxDistance || !pos.isValid(level)) {
-                        if(entity instanceof Player player)
-                            player.displayClientMessage(Lang.translate("message.multimeter_disconnected")
-                                    .style(ChatFormatting.GRAY)
-                                    .component(), true);
-                        data.remove("Pos");
-                        saveModeData(stack, data);
-                    }
-                }
-                if(neg != null) {
-                    var negPos = neg.getExactPosition(level);
-                    if(entity.distanceToSqr(negPos) > maxDistance * maxDistance || !neg.isValid(level)) {
-                        if(entity instanceof Player player)
-                            player.displayClientMessage(Lang.translate("message.multimeter_disconnected")
-                                    .style(ChatFormatting.GRAY)
-                                    .component(), true);
-                        data.remove("Neg");
-                        saveModeData(stack, data);
-                    }
-                }
+
+        // Every channel is checked, not just the most recent one: walking away from one probe
+        // should drop that probe and leave the others measuring.
+        var channels = getChannels(stack);
+        if(!channels.isEmpty()) {
+            var kept = new ArrayList<MultimeterChannel>(channels.size());
+            for(var channel : channels) {
+                if(level instanceof ServerLevel serverLevel && !channel.refresh(serverLevel))
+                    continue;
+                if(channel.isValid(level, entity, maxDistance))
+                    kept.add(channel);
             }
-            case 1 -> {
-                if(!level.isClientSide) {
-                    if(data.contains("UUID")) {
-                        var genericEntity = ((ServerLevel) level).getEntity(data.getUUID("UUID"));
-                        if(genericEntity != null) {
-                            data.putInt("EID", genericEntity.getId());
-                            saveModeData(stack, data);
-                        } else {
-                            if(entity instanceof Player player)
-                                player.displayClientMessage(Lang.translate("message.multimeter_disconnected")
-                                        .style(ChatFormatting.GRAY)
-                                        .component(), true);
-                            // Wipe all data
-                            deleteModeData(stack);
-                        }
-                    }
-                }
-                if(data.contains("X")) {
-                    var point = new Vec3(data.getDouble("X"), data.getDouble("Y"), data.getDouble("Z"));
-                    if(entity.distanceToSqr(point) > maxDistance * maxDistance) {
-                        if(entity instanceof Player player)
-                            player.displayClientMessage(Lang.translate("message.multimeter_disconnected")
-                                    .style(ChatFormatting.GRAY)
-                                    .component(), true);
-                        // Wipe all data
-                        deleteModeData(stack);
-                    }
-                }
+            if(kept.size() != channels.size()) {
+                if(entity instanceof Player player)
+                    player.displayClientMessage(Lang.translate("message.multimeter_disconnected")
+                            .style(ChatFormatting.GRAY)
+                            .component(), true);
+                saveChannels(stack, kept);
+            }
+        }
+
+        // Only a half-assembled voltage pair lives in the loose keys now; a completed probe is
+        // a channel and was validated above.
+        var pending = data.contains("Pos") ? WireEndpointType.deserialize(data.getCompound("Pos")) : null;
+        if(pending != null) {
+            var at = pending.getExactPosition(level);
+            if(entity.distanceToSqr(at) > maxDistance * maxDistance || !pending.isValid(level)) {
+                data.remove("Pos");
+                saveModeData(stack, data);
             }
         }
     }
@@ -241,6 +216,58 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
         stack.set(DataComponents.CUSTOM_DATA, CustomData.of(root));
     }
 
+    /**
+     * The channels this meter is watching, oldest first.
+     * <p>
+     * Stored as a list inside the existing mode data rather than as loose keys, so several
+     * probes can be live at once. The loose {@code Pos}/{@code Neg} keys are still used, but
+     * only to hold a voltage pair while it is being assembled — a channel is created once both
+     * ends have been clicked.
+     */
+    public static List<MultimeterChannel> getChannels(ItemStack stack) {
+        var data = getModeData(stack);
+        var channels = new ArrayList<MultimeterChannel>();
+        if(!data.contains("Channels"))
+            return channels;
+        var list = data.getList("Channels", Tag.TAG_COMPOUND);
+        for(int i = 0; i < list.size(); ++i) {
+            var channel = MultimeterChannel.deserialize(list.getCompound(i));
+            if(channel != null)
+                channels.add(channel);
+        }
+        return channels;
+    }
+
+    public static void saveChannels(ItemStack stack, List<MultimeterChannel> channels) {
+        var data = getModeData(stack);
+        var list = new ListTag();
+        for(var channel : channels)
+            list.add(channel.serialize());
+        data.put("Channels", list);
+        saveModeData(stack, data);
+    }
+
+    /**
+     * Append a channel, dropping the oldest once the meter is full.
+     * <p>
+     * Dropping the oldest rather than refusing means probing a fifth point does something
+     * sensible instead of silently nothing, which is hard to distinguish from a missed click.
+     */
+    public static void addChannel(ItemStack stack, MultimeterChannel channel) {
+        var channels = getChannels(stack);
+        channels.add(channel);
+        while(channels.size() > MultimeterChannel.MAX_CHANNELS)
+            channels.remove(0);
+        saveChannels(stack, channels);
+    }
+
+    /** Sets the mode without wiping the mode data, which would take the channel list with it. */
+    public static void setModeKeepingData(ItemStack stack, int mode) {
+        var tag = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
+        tag.putInt("Mode", mode);
+        stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+    }
+
     public static void saveModeData(ItemStack stack, CompoundTag modeData) {
         CompoundTag root = stack
                 .getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY)
@@ -284,76 +311,53 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
     }
 
     private InteractionResult onTerminal(Level level, IWireEndpoint endpoint, ItemStack stack) {
-        if(getMode(stack) != 0) {
-            setMode(stack, 0);
-        }
+        // Keep the existing channels: setMode() clears the whole mode data, which would discard
+        // every probe just because the previous one happened to be a current measurement.
+        if(getMode(stack) != 0)
+            setModeKeepingData(stack, 0);
         var data = getModeData(stack);
         if(data.contains("Pos")) {
             var current = WireEndpointType.deserialize(data.getCompound("Pos"));
             if(endpoint.equals(current)) {
+                // Clicking the pending endpoint again cancels it.
                 data.remove("Pos");
                 saveModeData(stack, data);
                 return InteractionResult.SUCCESS;
             }
         }
-        if(data.contains("Neg")) {
-            var current = WireEndpointType.deserialize(data.getCompound("Neg"));
-            if(endpoint.equals(current)) {
+        if(data.contains("Pos")) {
+            // Second click completes the pair, which becomes a live channel. The loose keys are
+            // only ever a half-assembled probe, never a measurement in their own right.
+            var positive = WireEndpointType.deserialize(data.getCompound("Pos"));
+            if(positive != null) {
+                data.remove("Pos");
                 data.remove("Neg");
                 saveModeData(stack, data);
-                return InteractionResult.SUCCESS;
+                addChannel(stack, MultimeterChannel.voltage(positive, endpoint));
+                return InteractionResult.CONSUME;
             }
         }
-        if(data.contains("Pos") && data.contains("Neg"))
-            return InteractionResult.PASS;
-        if(data.contains("Pos")) {
-            data.put("Neg", endpoint.serialize());
-        } else {
-            data.put("Pos", endpoint.serialize());
-        }
+        data.put("Pos", endpoint.serialize());
         saveModeData(stack, data);
         return InteractionResult.CONSUME;
     }
 
+    /**
+     * Present reading of the first channel, in volts or amperes depending on its type.
+     * <p>
+     * Kept as the single-value accessor the needle, the HUD line and the goggle text already
+     * use; multi-channel consumers ask for a channel explicitly.
+     */
     public float getMeasurement(Level level, ItemStack stack) {
-        var data = getModeData(stack);
-        return switch(getMode(stack)) {
-            case 0 -> {
-                var pos = WireEndpointType.deserialize(data.getCompound("Pos"));
-                var neg = WireEndpointType.deserialize(data.getCompound("Neg"));
-                if(pos == null || neg == null)
-                    yield 0;
-                if(!pos.isValid(level) || !neg.isValid(level))
-                    yield 0;
-                double posV = 0, negV = 0;
-                if(data.contains("PosV")) {
-                    posV = data.getFloat("PosV");
-                } else {
-                    var posNode = pos instanceof CircuitBoardEndpoint e ? e.getGenericNode(level) : pos.getNode(level);
-                    if(posNode == null)
-                        yield 0;
-                    posV = posNode.getVoltage();
-                }
-                if(data.contains("NegV")) {
-                    negV = data.getFloat("NegV");
-                } else {
-                    var negNode = neg instanceof CircuitBoardEndpoint e ? e.getGenericNode(level) : neg.getNode(level);
-                    if(negNode == null)
-                        yield 0;
-                    negV = negNode.getVoltage();
-                }
-                yield (float) (posV - negV);
-            }
-            case 1 -> {
-                var lineId = data.getInt("EID");
-                var entity = level.getEntity(lineId);
-                if(entity instanceof BaseWireEntity wire) {
-                    yield wire.measuredCurrent();
-                }
-                yield 0;
-            }
-            default -> 0;
-        };
+        return getMeasurement(level, stack, 0);
+    }
+
+    /** Present reading of one channel, or zero if there is no such channel. */
+    public float getMeasurement(Level level, ItemStack stack, int channel) {
+        var channels = getChannels(stack);
+        if(channel < 0 || channel >= channels.size())
+            return 0;
+        return channels.get(channel).measure(level);
     }
 
     public Component getText(Level level, Player user, ItemStack stack) {
