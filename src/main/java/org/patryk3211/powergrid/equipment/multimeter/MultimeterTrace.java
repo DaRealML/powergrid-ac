@@ -115,22 +115,42 @@ public class MultimeterTrace {
     public static void acceptSubTickSamples(float[][] perChannel) {
         if(perChannel.length == 0)
             return;
+
+        // Every channel must advance by the SAME number of samples, or the horizontal axis stops
+        // meaning the same instant for each of them. Probes can legitimately return different
+        // counts — two islands may be stepped at different rates, and a probe whose target could
+        // not be resolved returns none at all — and letting each buffer advance at its own pace
+        // makes the traces drift apart over time. Phase alignment between channels is the entire
+        // reason to have more than one, so they are resampled onto a common count first.
+        var common = 0;
+        for(var samples : perChannel)
+            common = Math.max(common, samples.length);
+        if(common == 0)
+            return;
+
         ticksSinceSubTick = 0;
-        var longest = 0;
-        for(int c = 0; c < perChannel.length && c < channelCount; ++c) {
-            var samples = perChannel[c];
-            longest = Math.max(longest, samples.length);
-            for(var value : samples) {
+        subTickRate = common;
+
+        for(int c = 0; c < channelCount; ++c) {
+            var samples = c < perChannel.length ? perChannel[c] : new float[0];
+            for(int i = 0; i < common; ++i) {
+                float value;
+                if(samples.length == 0) {
+                    // Nothing captured: hold the last known value so this channel still advances
+                    // in step rather than freezing while the others scroll past it.
+                    value = latest(c);
+                } else {
+                    // Nearest-neighbour stretch of a coarser channel onto the common time base.
+                    value = samples[i * samples.length / common];
+                }
                 if(!Float.isFinite(value))
-                    continue;
+                    value = 0;
                 MultimeterTrace.samples[c][head[c]] = value;
                 head[c] = (head[c] + 1) % CAPACITY;
                 if(filled[c] < CAPACITY)
                     ++filled[c];
             }
         }
-        if(longest > 0)
-            subTickRate = longest;
     }
 
     public static void clear() {

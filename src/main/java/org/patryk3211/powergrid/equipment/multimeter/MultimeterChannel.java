@@ -245,7 +245,10 @@ public class MultimeterChannel {
             return (float) (positiveNode.getVoltage() - negativeNode.getVoltage());
         }
         if(level.getEntity(entityId) instanceof BaseWireEntity wire)
-            return wire.measuredCurrent();
+            // Signed, not measuredCurrent(): that returns Math.abs(current()), which on an
+            // alternating supply folds the negative half of the cycle upwards and draws a
+            // full-wave-rectified trace instead of the waveform.
+            return wire.current();
         return 0;
     }
 }
