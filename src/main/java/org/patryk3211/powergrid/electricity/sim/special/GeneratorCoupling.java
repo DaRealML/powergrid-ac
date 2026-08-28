@@ -71,7 +71,12 @@ public class GeneratorCoupling extends VoltageSourceCoupling implements IOuterHo
 
     @Override
     public void preSolve() {
-        setField(fieldStrength.get());
+        // The provider is installed just after construction, but buildCircuit runs from inside
+        // the block entity's super() call — so there is a window where this coupling can be
+        // solved before it has one. A machine with no field provider simply keeps the field it
+        // was given rather than throwing.
+        if(fieldStrength != null)
+            setField(fieldStrength.get());
         setVoltage(field * rotor.getAngularVelocityRadians());
     }
 

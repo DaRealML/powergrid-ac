@@ -228,6 +228,48 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         super.setResistance(effective);
     }
 
+    /**
+     * Excitation time constant in seconds. Long compared with one electrical cycle, because a
+     * field winding's own L/R is.
+     */
+    private static final double FIELD_TAU = 0.25;
+
+    /**
+     * Mean of {@code |sin|} over a cycle is {@code 2/pi}, so a rectified average has to be
+     * scaled by its reciprocal to recover the peak the field would have had.
+     */
+    private static final double FIELD_FORM_FACTOR = Math.PI / 2;
+
+    /** Smoothed field, the slow DC quantity a real excitation circuit settles to. */
+    private double excitation;
+
+    /**
+     * Turn an instantaneous field reading into the slowly varying excitation a real machine has.
+     * <p>
+     * This exists because a <em>self-excited</em> alternator — shunt or compound wound, taking
+     * its field current from its own output — otherwise cannot build up at all. Sampling the
+     * field instantaneously makes the excitation loop a product recursion,
+     * {@code lambda -> g * lambda * sin(p*theta)}, where the DC machine's is simply
+     * {@code lambda -> g * lambda}. Two things then go wrong: the geometric mean of
+     * {@code |sin|} over a cycle is exactly one half, so the loop gain is permanently halved and
+     * a build that self-excites on DC at a gain of 1.79 sits at 0.90 on AC — below unity; and the
+     * sign reverses through every negative half cycle, which a winding with a 10 ms time constant
+     * cannot follow. The field decays to its residual and the machine produces almost nothing.
+     * <p>
+     * Physically the field circuit rectifies, and its L/R is far longer than one electrical
+     * cycle, so the field is a slow, one-signed quantity. All three steps below are load-bearing:
+     * rectifying alone leaves the gain under unity, low-passing alone averages the sign reversal
+     * to zero, and without the form factor the rectified mean is {@code 2/pi} of the peak.
+     * <p>
+     * Separately excited alternators — field fed from a battery or another DC source — were never
+     * affected, and are unchanged by this.
+     */
+    private double excite(double instantaneous, double dt) {
+        var alpha = dt / (FIELD_TAU + dt);
+        excitation += alpha * (Math.abs(instantaneous) - excitation);
+        return excitation * FIELD_FORM_FACTOR;
+    }
+
     @Override
     public int requiredSubTicks() {
         // Electrical frequency in Hz. A stopped or slow machine asks for nothing and costs
@@ -239,10 +281,10 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
     @Override
     public void preSolve() {
-        if(acFieldStrength != null)
-            acField = acFieldStrength.get();
-
         var dt = deltaTime();
+        if(acFieldStrength != null)
+            acField = (float) excite(acFieldStrength.get(), dt);
+
         var omega = acRotor.getAngularVelocityRadians();
 
         // Advance the clock first, then evaluate the waveform at the new angle. Unconditional
