@@ -18,6 +18,7 @@ public class CEquipment extends ConfigBase {
     public final ConfigInt portableBatteryEnchantCapacity = i(20000, 1, "portableBatteryEnchantCapacity", Comments.portableBatteryEnchantCapacity);
 
     public final ConfigFloat multimeterDistance = f(5, 1, "multimeterDistance", Comments.multimeterDistance);
+    public final ConfigInt multimeterSubTickSamples = i(32, 0, "multimeterSubTickSamples", Comments.multimeterSubTickSamples);
     public final ConfigFloat multimeterVoltage = f(500, 1, "multimeterVoltage", Comments.multimeterVoltage);
     public final ConfigFloat multimeterCurrent = f(50, 1, "multimeterCurrent", Comments.multimeterCurrent);
 
@@ -41,6 +42,7 @@ public class CEquipment extends ConfigBase {
         public static final String portableBatteryEnchantCapacity = "Portable Battery energy capacity increase per level of Capacity enchant";
 
         public static final String multimeterDistance = "Max multimeter distance";
+        public static final String multimeterSubTickSamples = "Maximum solver samples per channel per tick streamed to a player with the multimeter graph open, giving the graph true sub-tick resolution instead of one reading per tick. Set to 0 to disable the stream entirely and fall back to 20 Hz. Only sent while a graph screen is actually open, so this costs nothing otherwise. 32 per channel across 4 channels is about 10 kB/s per watching player.";
         public static final String multimeterVoltage = "Max multimeter voltage";
         public static final String multimeterCurrent = "Max multimeter current";
     }

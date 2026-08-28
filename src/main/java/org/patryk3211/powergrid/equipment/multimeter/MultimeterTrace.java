@@ -74,6 +74,65 @@ public class MultimeterTrace {
     /** The world these samples came from; weak so a trace can never keep a level alive. */
     private static WeakReference<Level> origin = new WeakReference<>(null);
 
+    /**
+     * Ticks since sub-tick samples last arrived from the server.
+     * <p>
+     * While they are arriving the once-per-client-tick path stands down, so the two do not
+     * interleave and produce a trace at two different time bases. A short grace period covers a
+     * dropped or late packet without flickering between the two sources.
+     */
+    private static final int GRACE_TICKS = 5;
+
+    private static int ticksSinceSubTick = GRACE_TICKS + 1;
+
+    /** Seconds of history held when the server is streaming {@code n} samples per world tick. */
+    public static float windowSeconds() {
+        if(!receivingSubTicks())
+            return WINDOW_SECONDS;
+        var perTick = Math.max(subTickRate, 1);
+        return CAPACITY / (20f * perTick);
+    }
+
+    /** Samples per world tick most recently received, for the time axis. */
+    private static int subTickRate = 1;
+
+    public static boolean receivingSubTicks() {
+        return ticksSinceSubTick <= GRACE_TICKS;
+    }
+
+    /** Effective sample rate in Hz — twenty world ticks a second times the samples in each. */
+    public static int sampleRate() {
+        return 20 * Math.max(subTickRate, 1);
+    }
+
+    /**
+     * Append one world tick of solver-resolution samples, one array per channel.
+     * <p>
+     * This is the high-resolution path: rather than one reading per client tick, the server sends
+     * what the solver actually computed inside the tick, so a waveform that would alias at 20 Hz
+     * is drawn as it really is.
+     */
+    public static void acceptSubTickSamples(float[][] perChannel) {
+        if(perChannel.length == 0)
+            return;
+        ticksSinceSubTick = 0;
+        var longest = 0;
+        for(int c = 0; c < perChannel.length && c < channelCount; ++c) {
+            var samples = perChannel[c];
+            longest = Math.max(longest, samples.length);
+            for(var value : samples) {
+                if(!Float.isFinite(value))
+                    continue;
+                MultimeterTrace.samples[c][head[c]] = value;
+                head[c] = (head[c] + 1) % CAPACITY;
+                if(filled[c] < CAPACITY)
+                    ++filled[c];
+            }
+        }
+        if(longest > 0)
+            subTickRate = longest;
+    }
+
     public static void clear() {
         for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
             head[c] = 0;
@@ -139,6 +198,13 @@ public class MultimeterTrace {
             for(int c = 0; c < channelCount; ++c)
                 currentChannel[c] = channels.get(c).isCurrent();
         }
+
+        // Stand down while the server is streaming solver-resolution samples, so the two sources
+        // never interleave into a trace with two different time bases.
+        ++ticksSinceSubTick;
+        if(receivingSubTicks())
+            return;
+        subTickRate = 1;
 
         for(int c = 0; c < channelCount; ++c) {
             var value = channels.get(c).measure(level);

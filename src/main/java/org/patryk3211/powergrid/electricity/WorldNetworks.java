@@ -31,6 +31,10 @@ import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.PowerGrid;
 import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.collections.ModdedPackets;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterWatchers;
+import org.patryk3211.powergrid.equipment.multimeter.ProbeSampler;
+import org.patryk3211.powergrid.network.packets.MultimeterSamplesS2CPacket;
 import org.patryk3211.powergrid.config.CSolver;
 import org.patryk3211.powergrid.electricity.base.ElectricBehaviour;
 import org.patryk3211.powergrid.electricity.base.IMultipartSync;
@@ -297,6 +301,8 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
             }
         }
 
+        attachProbeSamplers();
+
         for(var network : subnetworks) {
             network.prepare(network.getSubTicks());
         }
@@ -316,7 +322,82 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         perf.end();
     }
 
+    /**
+     * Samplers currently riding the solve, per player, in that player's channel order.
+     * <p>
+     * Rebuilt from scratch every tick. That is what keeps this safe against the network topology
+     * changing underneath it: islands merge and split whenever a player edits the grid, and an
+     * observer that had to be migrated through every one of those paths would be a standing
+     * source of stale references. A fresh lookup each tick has none of that surface.
+     */
+    private final Map<ServerPlayer, List<ProbeSampler>> probeSamplers = new HashMap<>();
+
+    /**
+     * Hook a sub-tick sampler into whichever island each watching player's probes sit on.
+     * <p>
+     * Must run after island discovery and sub-tick rates are settled, but before
+     * {@code prepare()} — that is the call which dispatches {@code IMultiHooks.prepare}, so an
+     * observer registered later would miss its buffer sizing and record nothing.
+     */
+    private void attachProbeSamplers() {
+        probeSamplers.clear();
+        if(!(world instanceof ServerLevel serverWorld))
+            return;
+        if(MultimeterWatchers.isEmpty())
+            return;
+        if(ModdedConfigs.server().equipment.multimeterSubTickSamples.get() <= 0)
+            return;
+
+        for(var player : serverWorld.players()) {
+            if(!MultimeterWatchers.isWatching(player))
+                continue;
+            var stack = player.getMainHandItem();
+            if(!(stack.getItem() instanceof MultimeterItem))
+                continue;
+            var channels = MultimeterItem.getChannels(stack);
+            if(channels.isEmpty())
+                continue;
+
+            var samplers = new ArrayList<ProbeSampler>(channels.size());
+            for(var channel : channels)
+                samplers.add(channel.attachSampler(serverWorld));
+            probeSamplers.put(player, samplers);
+        }
+    }
+
+    /**
+     * Send each watching player the samples their own probes captured, then unhook everything.
+     * <p>
+     * The held stack is the subscription, so logging out, swapping the item or dying all clean
+     * up on their own with no registry to maintain.
+     */
+    private void flushProbeSamplers() {
+        if(probeSamplers.isEmpty())
+            return;
+        var limit = ModdedConfigs.server().equipment.multimeterSubTickSamples.get();
+
+        for(var entry : probeSamplers.entrySet()) {
+            var samplers = entry.getValue();
+            var payload = new float[samplers.size()][];
+            var any = false;
+            for(int i = 0; i < samplers.size(); ++i) {
+                var sampler = samplers.get(i);
+                payload[i] = sampler == null ? new float[0] : sampler.snapshot(limit);
+                any |= payload[i].length > 0;
+            }
+            // An island stepped once per tick produces nothing sub-tick, and the client falls
+            // back to its own 20 Hz sampling — so send nothing rather than an empty packet.
+            if(any)
+                ModdedPackets.sendToClient(new MultimeterSamplesS2CPacket(payload), entry.getKey());
+        }
+
+        for(var network : subnetworks)
+            network.clearObservers();
+        probeSamplers.clear();
+    }
+
     public void postTick() {
+        flushProbeSamplers();
         if(world instanceof ServerLevel serverWorld) {
             // Check for line parts existence
             var checkIter = checkForExistence.entrySet().iterator();

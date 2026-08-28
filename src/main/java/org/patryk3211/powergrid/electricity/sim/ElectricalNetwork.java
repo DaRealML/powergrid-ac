@@ -54,6 +54,17 @@ public class ElectricalNetwork implements IStamped {
     protected final Set<ISolverHook> leafInnerHooks = new ReferenceOpenHashSet<>();
     protected final Set<IStaticResidual> residuals = new ReferenceOpenHashSet<>();
     protected final Set<ISubTickRate> subTickRates = new ReferenceOpenHashSet<>();
+
+    /**
+     * Transient per-sub-tick observers that are neither nodes nor wires.
+     * <p>
+     * Deliberately not persisted and not carried across a merge or split: an observer is
+     * expected to be registered afresh each world tick by whatever owns it, before
+     * {@link #prepare(int)} runs. That is what makes it safe — an island can be merged, split or
+     * rebuilt between ticks and the observer simply re-resolves the network it belongs to,
+     * instead of the network having to guess which of several new islands an observer followed.
+     */
+    protected final Set<IMultiHooks> observers = new ReferenceOpenHashSet<>();
     protected final Map<IElectricNode, IElectricNode> leafNodes = new Reference2ReferenceOpenHashMap<>();
 
     private int sourceCount;
@@ -152,6 +163,22 @@ public class ElectricalNetwork implements IStamped {
                 return true;
         }
         return false;
+    }
+
+    /**
+     * Register a per-sub-tick observer for this tick only. Must be called before
+     * {@link #prepare(int)}, which is what dispatches {@link IMultiHooks#prepare(int)}.
+     */
+    public void addObserver(IMultiHooks observer) {
+        observers.add(observer);
+    }
+
+    public void removeObserver(IMultiHooks observer) {
+        observers.remove(observer);
+    }
+
+    public void clearObservers() {
+        observers.clear();
     }
 
     public int getSubTicks() {
@@ -786,6 +813,8 @@ public class ElectricalNetwork implements IStamped {
         if(multiTicks > 1 || currentMultiTick > 1) {
             for (var hook : multiHooks)
                 hook.prepare(multiTicks);
+            for (var observer : observers)
+                observer.prepare(multiTicks);
         }
         if(sourceCount == 0) {
             for(var hook : outerHooks)
@@ -826,6 +855,8 @@ public class ElectricalNetwork implements IStamped {
         if(currentMultiTick > 1) {
             for (var hook : multiHooks)
                 hook.postMicroTick();
+            for (var observer : observers)
+                observer.postMicroTick();
         }
         PERF.end();
     }

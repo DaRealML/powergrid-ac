@@ -23,7 +23,9 @@ import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
 import org.patryk3211.powergrid.electricity.wire.CircuitBoardEndpoint;
+import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.wire.IWireEndpoint;
+import org.patryk3211.powergrid.electricity.wire.WireEntity;
 import org.patryk3211.powergrid.electricity.wire.WireEndpointType;
 
 import java.util.UUID;
@@ -181,6 +183,50 @@ public class MultimeterChannel {
             return false;
         }
         return holder.distanceToSqr(anchor(level)) <= maxDistance * maxDistance;
+    }
+
+    /**
+     * Build a sub-tick sampler for this channel and attach it to the island it is watching, or
+     * return null if the target cannot be resolved right now.
+     * <p>
+     * Resolved fresh every tick rather than cached: the electrical network a probe belongs to is
+     * not stable, since islands merge and split whenever a player edits the grid.
+     */
+    @Nullable
+    public ProbeSampler attachSampler(Level level) {
+        if(type == TYPE_VOLTAGE) {
+            if(positive == null || negative == null)
+                return null;
+            if(!positive.isValid(level) || !negative.isValid(level))
+                return null;
+            var positiveNode = resolveNode(level, positive);
+            var negativeNode = resolveNode(level, negative);
+            if(positiveNode == null || negativeNode == null)
+                return null;
+            // The two ends may sit in different islands; sample in the one holding the positive
+            // lead, which is where the waveform of interest is.
+            var network = positiveNode.getNetwork();
+            if(network == null)
+                return null;
+            var sampler = ProbeSampler.voltage(positiveNode, negativeNode);
+            network.addObserver(sampler);
+            return sampler;
+        }
+
+        if(!(level.getEntity(entityId) instanceof WireEntity wireEntity))
+            return null;
+        var wire = wireEntity.getWire();
+        if(wire == null || wire.getNetwork() == null)
+            return null;
+        var sampler = ProbeSampler.current(wire);
+        wire.getNetwork().addObserver(sampler);
+        return sampler;
+    }
+
+    @Nullable
+    private static IElectricNode resolveNode(Level level, IWireEndpoint endpoint) {
+        // A circuit-board endpoint does not implement getNode and would throw.
+        return endpoint instanceof CircuitBoardEndpoint e ? e.getGenericNode(level) : endpoint.getNode(level);
     }
 
     /** The present reading: volts for a voltage channel, amperes for a current one. */

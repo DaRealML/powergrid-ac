@@ -21,6 +21,8 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import org.patryk3211.powergrid.collections.ModdedPackets;
+import org.patryk3211.powergrid.network.packets.MultimeterWatchC2SPacket;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
@@ -59,6 +61,25 @@ public class MultimeterScreen extends Screen {
         super(Component.empty());
     }
 
+    /**
+     * Ask the server for solver-resolution samples while this screen is open.
+     * <p>
+     * Nothing else can display a waveform — the needle and the HUD line physically cannot — so
+     * subscribing here means the stream costs nothing whenever nobody is looking, which is
+     * almost always.
+     */
+    @Override
+    protected void init() {
+        super.init();
+        ModdedPackets.sendToServer(new MultimeterWatchC2SPacket(true));
+    }
+
+    @Override
+    public void removed() {
+        super.removed();
+        ModdedPackets.sendToServer(new MultimeterWatchC2SPacket(false));
+    }
+
     @Override
     public boolean isPauseScreen() {
         return false;
@@ -90,6 +111,14 @@ public class MultimeterScreen extends Screen {
 
         graphics.drawString(font, Lang.translate("gui.multimeter.title").component(),
                 left + PADDING, top + PADDING, COLOUR_TEXT, false);
+
+        // State the sample rate: a 20 Hz trace and a solver-resolution one look alike but mean
+        // very different things, and only the latter can be trusted above about 10 Hz.
+        var rate = MultimeterTrace.receivingSubTicks()
+                ? Lang.text(MultimeterTrace.sampleRate() + " Hz").component()
+                : Lang.text("20 Hz").component();
+        graphics.drawString(font, rate, right - PADDING - font.width(rate), top + PADDING,
+                COLOUR_TEXT_DIM, false);
 
         if(MultimeterTrace.isEmpty()) {
             graphics.drawCenteredString(font, Lang.translate("gui.multimeter.no_data").component(),
@@ -175,7 +204,7 @@ public class MultimeterScreen extends Screen {
 
     private void drawTimeAxis(GuiGraphics graphics, int plotLeft, int plotRight, int plotBottom) {
         // Time runs left to right with the newest sample at the right edge.
-        var oldest = Lang.text(String.format("-%.0f s", MultimeterTrace.WINDOW_SECONDS)).component();
+        var oldest = Lang.text(String.format("-%.1f s", MultimeterTrace.windowSeconds())).component();
         graphics.drawString(font, oldest, plotLeft + 2, plotBottom + 3, COLOUR_TEXT_DIM, false);
 
         var now = Lang.text("0 s").component();
