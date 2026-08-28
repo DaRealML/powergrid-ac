@@ -52,7 +52,13 @@ public final class AcSampling {
      * @param maxSubTicks     hard ceiling, the real cost limit for AC
      */
     public static int subTicksFor(double frequency, int samplesPerCycle, int maxSubTicks) {
-        var ceiling = Math.max(maxSubTicks, 1);
+        // Floor the ceiling to a power of two as well as the rate. The stepping schedule in
+        // WorldNetworks advances an island whenever (i+1)*n/max crosses an integer, which gives
+        // exactly n steps for any n — but evenly spaced ones only when n divides max. A rate
+        // that does not, say a configured ceiling of 100, would space its sub-ticks unevenly
+        // while every companion model still assumes a fixed dt. A configured 100 therefore
+        // behaves as 64 rather than silently producing a non-uniform timestep.
+        var ceiling = Integer.highestOneBit(Math.max(maxSubTicks, 1));
         if(!(frequency > 0))
             return 1;
 

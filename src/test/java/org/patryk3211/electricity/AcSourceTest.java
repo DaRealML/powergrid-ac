@@ -175,6 +175,16 @@ public class AcSourceTest extends TestHelper {
 
         current.setSamplingPolicy(32, 4);
         Assertions.assertEquals(4, current.requiredSubTicks(), "Ceiling should be honoured");
+
+        // A ceiling that is not a power of two is floored to one, because the stepping schedule
+        // only spaces sub-ticks evenly when the rate divides the world tick.
+        var wide = new ACCurrentSourceNode(1, 50);
+        wide.setSamplingPolicy(32, 100);
+        Assertions.assertEquals(64, wide.requiredSubTicks(),
+                "A ceiling of 100 should behave as 64, not produce a non-power-of-two rate");
+        wide.setSamplingPolicy(32, 128);
+        Assertions.assertEquals(128, wide.requiredSubTicks(),
+                "50 Hz at 32 samples/cycle needs 128 sub-ticks");
     }
 
     @Test
