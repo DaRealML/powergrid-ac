@@ -28,6 +28,7 @@ public class CElectricity extends ConfigBase {
     public final ConfigInt growthLampChance = i(50, 0, "growthLampChance", Comments.growthLampChance);
 
     public final ConfigBool motorDynamicResistance = b(true, "motorDynamicResistance", Comments.motorDynamicResistance);
+    public final ConfigFloat motorTimeConstant = f(0.01f, 0, "motorTimeConstant", Comments.motorTimeConstant);
 
     public final ConfigFloat forgeEnergyPerVolt = f(2, 0, "forgeEnergyPerVolt", Comments.forgeEnergyPerVolt);
     public final ConfigFloat forgeEnergyPerWatt = f(10, 0, "forgeEnergyPerWatt", Comments.forgeEnergyPerWatt);
@@ -107,6 +108,7 @@ public class CElectricity extends ConfigBase {
         public static final String growthLampChance = "Chance value for the growth lamp to tick a random block in its area (lower value = higher chance), this value is divided by lamp's power level";
 
         public static final String motorDynamicResistance = "Vary motor resistance based on stress consumption";
+        public static final String motorTimeConstant = "Electrical time constant L/R of a motor coil, in seconds. This is what gives a motor inductive reactance (X = 2*pi*f*L) and therefore a lagging power factor on alternating supplies; 0.01 matches the generator winding. Set to 0 for a purely resistive motor, which is how motors behaved before this was added.";
 
         public static final String forgeEnergyPerVolt = "Conversion rate of volts to Forge Energy (controls buffer size and max transfer rate)";
         public static final String forgeEnergyPerWatt = "Conversion rate of watts to Forge Energy (controls the actual energy cost of a unit of FE)";

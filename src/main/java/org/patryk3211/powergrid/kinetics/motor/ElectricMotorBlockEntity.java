@@ -31,7 +31,7 @@ import org.patryk3211.powergrid.electricity.base.ElectricBehaviour;
 import org.patryk3211.powergrid.electricity.base.IElectricEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
-import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.mixin.KineticBlockEntityAccessor;
 
 import java.util.List;
@@ -47,7 +47,7 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
     @Nullable
     protected ThermalBehaviour thermalBehaviour;
 
-    private ElectricWire coil;
+    private LRSeriesWire coil;
 
     private float generatedSpeed = 0;
 
@@ -155,8 +155,14 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
         assert level != null;
         if(!level.isClientSide || isVirtual()) {
             applyPower(coil);
-            var V = coil.potentialDifference();
-            avgSpeed += (float) (calculateSpeed(V * V / resistance(), torque()) * Math.signum(coil.current()));
+            // Only the resistive part of the branch voltage does mechanical work.
+            // potentialDifference() is the whole branch, and with the coil's inductance in
+            // series a growing share of that sits across L as supply frequency rises. At L = 0
+            // this reduces to potentialDifference() exactly -- including while the dynamic
+            // resistance option is scaling the coil -- so direct-current behaviour is unchanged.
+            var I = coil.current();
+            var V = I * coil.getResistance();
+            avgSpeed += (float) (calculateSpeed(V * V / resistance(), torque()) * Math.signum(I));
         }
         super.tick();
     }
@@ -181,6 +187,19 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        coil = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        // A motor coil is an inductor that happens to have resistance, not a resistor. Modelling
+        // it as an LR branch is what gives it inductive reactance X = 2*pi*f*L, and therefore a
+        // lagging power factor on an alternating supply -- a pure resistor draws current exactly
+        // in phase and reports a power factor of 1 whatever it is plugged into.
+        //
+        // The inductance is fixed by the windings, so it is derived once from the NOMINAL
+        // resistance and then left alone while the dynamic-resistance option scales R with shaft
+        // load: real windings do not gain turns when the motor is loaded. setResistance() on an
+        // LRSeriesWire preserves L, which is exactly that behaviour. The default time constant
+        // matches the generator winding, which builds its coil the same way.
+        var R = resistance();
+        var L = R * ModdedConfigs.server().electricity.motorTimeConstant.getF();
+        coil = new LRSeriesWire(L, R, builder.terminalNode(0), builder.terminalNode(1));
+        builder.add(coil);
     }
 }

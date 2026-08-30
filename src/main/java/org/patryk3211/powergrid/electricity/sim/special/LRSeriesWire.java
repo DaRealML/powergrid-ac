@@ -97,6 +97,21 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
             residual.add(node2.getIndex(),  Ieq);
     }
 
+    /**
+     * The series resistance alone.
+     * <p>
+     * Needed by anything that has to separate the resistive part of the branch voltage from the
+     * reactive one — {@link #potentialDifference()} is the whole branch, and under AC most of it
+     * can be sitting across the inductance.
+     */
+    public double getResistance() {
+        return resistance;
+    }
+
+    public double getInductance() {
+        return inductance;
+    }
+
     public void setLR(double L, double R) {
         var oldConductance = conductance();
         this.inductance = L;
