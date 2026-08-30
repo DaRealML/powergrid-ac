@@ -47,11 +47,25 @@ import java.lang.ref.WeakReference;
  * therefore draws as a staircase, which is an honest picture of how much it actually knows.
  */
 public class MultimeterTrace {
-    /** Ten seconds at one sample per client tick. */
-    public static final int CAPACITY = 200;
+    /**
+     * Ring capacity, in samples per channel.
+     * <p>
+     * Generous, because the sample rate is not fixed. At a solver rate of 2560 Hz the old
+     * 200-slot ring held 78 milliseconds, so a channel the server could only sample once per
+     * world tick had room for one or two distinct values across the entire plot and drew as a
+     * single step -- which reads as a broken probe rather than as a coarse one. Four thousand
+     * floats per channel is 64 kB for a full meter, which is nothing.
+     */
+    public static final int CAPACITY = 4096;
 
-    /** Seconds of history a full buffer holds. */
-    public static final float WINDOW_SECONDS = CAPACITY / 20f;
+    /**
+     * How much history the plot tries to show, whatever the sample rate.
+     * <p>
+     * A fixed sample count means the time axis silently rescales by two orders of magnitude when
+     * the solver starts sub-stepping. A fixed window keeps the horizontal axis meaning the same
+     * thing, and the ring only bounds it at the very highest rates.
+     */
+    public static final float TARGET_WINDOW_SECONDS = 2f;
 
     /** Distinct, colour-blind-friendly trace colours, in channel order. */
     public static final int[] CHANNEL_COLOURS = {
@@ -91,12 +105,22 @@ public class MultimeterTrace {
 
     private static int ticksSinceSubTick = GRACE_TICKS + 1;
 
-    /** Seconds of history held when the server is streaming {@code n} samples per world tick. */
+    /** Samples making up the target window at the present rate, bounded by the ring. */
+    public static int targetSamples() {
+        return Math.max(2, Math.min(CAPACITY, Math.round(TARGET_WINDOW_SECONDS * sampleRate())));
+    }
+
+    /** Samples of this channel actually on screen: the target window, or all there is so far. */
+    public static int visibleCount(int channel) {
+        return Math.min(filled[channel], targetSamples());
+    }
+
+    /** Seconds of history the plot is showing. */
     public static float windowSeconds() {
-        if(!receivingSubTicks())
-            return WINDOW_SECONDS;
-        var perTick = Math.max(subTickRate, 1);
-        return CAPACITY / (20f * perTick);
+        var rate = sampleRate();
+        if(rate <= 0)
+            return TARGET_WINDOW_SECONDS;
+        return targetSamples() / (float) rate;
     }
 
     /** Samples per world tick most recently received, for the time axis. */
@@ -104,6 +128,42 @@ public class MultimeterTrace {
 
     public static boolean receivingSubTicks() {
         return ticksSinceSubTick <= GRACE_TICKS;
+    }
+
+    /**
+     * Frozen: no new samples are appended from either source and the picture holds still.
+     * <p>
+     * A waveform scrolling past at 2560 Hz cannot be read, and the numbers under it change every
+     * frame. Freezing is what makes a transient examinable at all, which is why every real scope
+     * has the button.
+     */
+    private static boolean paused;
+
+    public static boolean isPaused() {
+        return paused;
+    }
+
+    public static void setPaused(boolean value) {
+        if(paused == value)
+            return;
+        paused = value;
+        if(!value) {
+            // Resuming would otherwise splice the frozen history straight onto live samples with
+            // however many seconds of world time missing in between, and the axis would be a
+            // lie across the join. The channels are kept; only the stale history goes.
+            clear0();
+        }
+    }
+
+    /**
+     * Samples the most recent packet carried for each channel, so a channel the server could
+     * only sample once per tick is visibly identified as such rather than just looking wrong.
+     */
+    private static final int[] channelSamples = new int[MultimeterChannel.MAX_CHANNELS];
+
+    /** Effective sample rate of one channel in Hz, which may be below the headline rate. */
+    public static int channelRate(int channel) {
+        return 20 * Math.max(channelSamples[channel], 1);
     }
 
     /** Effective sample rate in Hz — twenty world ticks a second times the samples in each. */
@@ -119,6 +179,8 @@ public class MultimeterTrace {
      * is drawn as it really is.
      */
     public static void acceptSubTickSamples(float[][] perChannel, float[] live) {
+        if(paused)
+            return;
         if(perChannel.length == 0)
             return;
 
@@ -157,6 +219,7 @@ public class MultimeterTrace {
 
         for(int c = 0; c < channelCount; ++c) {
             var samples = perChannel[c];
+            channelSamples[c] = samples.length;
             for(int i = 0; i < common; ++i) {
                 float value;
                 if(samples.length == 0) {
@@ -190,11 +253,13 @@ public class MultimeterTrace {
         }
     }
 
+
     public static void clear() {
         for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
             head[c] = 0;
             filled[c] = 0;
             currentChannel[c] = false;
+            channelSamples[c] = 0;
         }
         channelCount = 0;
         signature = 0;
@@ -246,6 +311,8 @@ public class MultimeterTrace {
 
     /** Record one reading per channel, resetting if the probe set changed. */
     public static void sample(Level level, ItemStack stack, MultimeterItem multimeter) {
+        if(paused)
+            return;
         // Rejoining, or moving to another world, leaves the held stack untouched — so without
         // this the old readings would be drawn as continuous with the new ones.
         if(origin.get() != level) {
@@ -286,6 +353,7 @@ public class MultimeterTrace {
         subTickRate = 1;
 
         for(int c = 0; c < channelCount; ++c) {
+            channelSamples[c] = 1;
             var value = channels.get(c).measure(level);
             // Write and advance even when the reading is unusable. Skipping the write used to
             // skip the head increment too, so one channel fell behind the others and the shared
@@ -305,11 +373,23 @@ public class MultimeterTrace {
         return samples[channel][(head[channel] - 1 + CAPACITY) % CAPACITY];
     }
 
+    /**
+     * Index of the oldest sample still on screen.
+     * <p>
+     * Every statistic below is taken over the visible window rather than the whole ring, so the
+     * numbers under the plot describe the picture above them. It also keeps the auto-scale
+     * responsive: a startup transient scrolls out of the window and stops squashing the
+     * steady-state waveform, instead of dominating the scale until the meter is put away.
+     */
+    private static int windowStart(int channel) {
+        return filled[channel] - visibleCount(channel);
+    }
+
     public static float minimum(int channel) {
         if(filled[channel] == 0)
             return 0;
         var min = Float.POSITIVE_INFINITY;
-        for(int i = 0; i < filled[channel]; ++i)
+        for(int i = windowStart(channel); i < filled[channel]; ++i)
             min = Math.min(min, get(channel, i));
         return min;
     }
@@ -318,7 +398,7 @@ public class MultimeterTrace {
         if(filled[channel] == 0)
             return 0;
         var max = Float.NEGATIVE_INFINITY;
-        for(int i = 0; i < filled[channel]; ++i)
+        for(int i = windowStart(channel); i < filled[channel]; ++i)
             max = Math.max(max, get(channel, i));
         return max;
     }
@@ -350,6 +430,26 @@ public class MultimeterTrace {
     }
 
     /**
+     * Full-scale value shared by every channel measuring the same quantity as this one.
+     * <p>
+     * Scaling each channel to its own peak makes every trace fill its lane, so two voltages an
+     * order of magnitude apart draw as the same height and the display actively misleads about
+     * amplitude. Sharing one scale across all the voltage channels, and another across all the
+     * current ones, restores the comparison. It is still per-unit rather than global, because
+     * volts and amps have no common axis and putting a 200 V trace and a 2 A one on one scale
+     * flattens the current onto the zero line.
+     */
+    public static float sharedScale(int channel) {
+        var wantCurrent = currentChannel[channel];
+        var peak = 0f;
+        for(int c = 0; c < channelCount; ++c)
+            if(currentChannel[c] == wantCurrent)
+                peak = Math.max(peak, peak(c));
+        var floor = wantCurrent ? FLOOR_AMPS : FLOOR_VOLTS;
+        return Math.max(peak * 1.1f, floor);
+    }
+
+    /**
      * Root mean square across the window.
      * <p>
      * For a steady reading this is its magnitude. For an alternating one it is what a real meter
@@ -357,22 +457,30 @@ public class MultimeterTrace {
      * instantaneous value rather than replacing it.
      */
     public static float rms(int channel) {
-        if(filled[channel] == 0)
+        var count = visibleCount(channel);
+        if(count == 0)
             return 0;
         var sum = 0.0;
-        for(int i = 0; i < filled[channel]; ++i) {
+        for(int i = windowStart(channel); i < filled[channel]; ++i) {
             var v = get(channel, i);
             sum += (double) v * v;
         }
-        return (float) Math.sqrt(sum / filled[channel]);
+        return (float) Math.sqrt(sum / count);
     }
 
-    /** The channel's samples as a plain array, oldest first, for analysis that is pure maths. */
+    /** The visible window's samples as a plain array, oldest first, for analysis that is pure maths. */
     public static float[] toArray(int channel) {
-        var out = new float[filled[channel]];
-        for(int i = 0; i < out.length; ++i)
-            out[i] = get(channel, i);
+        var count = visibleCount(channel);
+        var start = windowStart(channel);
+        var out = new float[count];
+        for(int i = 0; i < count; ++i)
+            out[i] = get(channel, start + i);
         return out;
+    }
+
+    /** One sample of the visible window, index 0 being its oldest. */
+    public static float visible(int channel, int index) {
+        return get(channel, windowStart(channel) + index);
     }
 
     /** Largest magnitude across every channel, so they can share one vertical scale. */
