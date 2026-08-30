@@ -103,20 +103,22 @@ public class ProbeSampler implements IMultiHooks {
      * Copy the captured samples, decimated to at most {@code limit} entries.
      * <p>
      * Decimated rather than truncated: taking the first {@code limit} samples would show only
-     * the head of each world tick and leave a discontinuity at every tick boundary. Sub-tick
-     * counts are always powers of two, so with a power-of-two limit the stride is exact and the
-     * spacing stays uniform.
+     * the head of each world tick and leave a discontinuity at every tick boundary.
+     * <p>
+     * The index is scaled proportionally rather than advanced by a fixed stride. A stride of
+     * {@code count / limit} only spans the tick when the limit divides the count; otherwise it
+     * runs out part-way through and the tail of every tick goes unsampled, putting a step at
+     * each tick boundary that reads as noise on the graph. Sub-tick counts are always powers of
+     * two but {@code limit} is a config value and need not be, so the stride form was a trap
+     * waiting for anyone who set it to, say, 10.
      */
     public float[] snapshot(int limit) {
         if(count == 0 || limit <= 0)
             return new float[0];
-        var stride = Math.max(1, count / limit);
-        // Capped explicitly: for limit < count < 2*limit the stride rounds to 1 and the naive
-        // length would exceed the limit this method promises.
-        var length = Math.min(limit, (count + stride - 1) / stride);
+        var length = Math.min(limit, count);
         var out = new float[length];
         for(int i = 0; i < length; ++i)
-            out[i] = samples[i * stride];
+            out[i] = samples[i * count / length];
         return out;
     }
 }

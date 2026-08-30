@@ -427,19 +427,59 @@ The graph is otherwise **entirely client-side**. Node voltages are already synch
 tracking clients every tick — that is why the needle on the item model works — so a channel's
 `measure()` returns a real value on the client and no new packet or menu was needed.
 
-> **Sample rate, and an honest limit.** One sample per client tick, so **20 Hz** — that is the
-> rate at which the value reaches the client at all, regardless of how finely the solver is
-> sub-stepping internally. For DC and for an alternator at the default single pole pair (~4.5 Hz)
-> that is comfortably above Nyquist and the trace is faithful. **Above about 10 Hz — roughly 3
-> pole pairs — this graph aliases** and will show a believable waveform at the wrong frequency.
-> True sub-tick waveforms need the in-circuit sampling hardware, the plotter or the CRT, which
-> record every solver sub-tick via `SamplingWire`.
->
-> Closing that gap would mean sampling the probed node per sub-tick server-side and streaming the
-> array to one player — roughly: a `addMultiHook`/`removeMultiHook` pair on `ElectricalNetwork`
-> so a probe can observe without stamping into the matrix, plus one S2C packet modelled on
-> `DrillSpeedS2CPacket`. That also requires bumping `PacketSet.builder(MOD_ID, 17)`, and a
-> version mismatch disconnects clients, so it was left out of this change.
+#### Two sample sources
+
+With the graph **closed**, the client reads each channel once per client tick — **20 Hz**, the
+rate at which the value reaches the client at all. For DC and for an alternator at the default
+single pole pair (~4.5 Hz) that is comfortably above Nyquist. **Above about 10 Hz — roughly 3
+pole pairs — that path aliases** and shows a believable waveform at the wrong frequency.
+
+With the graph **open**, the server streams what the solver actually computed inside each tick.
+`ProbeSampler` registers as a transient observer on whichever island each probe sits on, records
+a value at every solver step, and `MultimeterSamplesS2CPacket` carries the arrays to the one
+player watching. An island stepped 16× per tick therefore yields a 320 Hz trace. The stream is
+gated on an open screen (`MultimeterWatchers`) because nothing else can display a waveform, so it
+costs nothing whenever nobody is looking — which is almost always. `equipment.multimeterSubTickSamples`
+caps it per channel per tick; `0` disables it and falls back to 20 Hz.
+
+Observers are registered fresh **every world tick, before `prepare()`**, and cleared afterwards.
+Islands merge and split whenever a player edits the grid, so an observer that had to be migrated
+through all of those paths would be a standing source of stale references; a fresh lookup has
+none of that surface.
+
+#### Channel alignment, and why an empty channel is not free
+
+Every channel in one packet is stretched onto the largest sample count in that packet, so one
+horizontal position means one instant for all of them. Phase alignment between channels is the
+whole reason to have more than one.
+
+That makes a channel returning *no* samples a genuine failure rather than a loss of resolution:
+there is nothing to stretch. Observer dispatch was originally gated on the same
+`multiTicks > 1` condition as the per-component multi-tick hooks — correct for a component,
+which only needs a per-micro-tick callback when there is more than one micro-tick, and wrong for
+a probe, whose caller has already allocated it a slot in a packet. Probing a steady island and an
+alternating one at the same time put an empty array beside a full one, and the client, having
+stood the 20 Hz path down for *every* channel the moment *any* channel began streaming, had
+nothing left to update the steady one with. It drew as a flat zero line for as long as the pair
+was watched. Observers now dispatch on every island at every step, including sourceless ones,
+where the honest sample is the zero that is genuinely there. `ProbeSamplerTest` covers this.
+
+Where a probe genuinely cannot be resolved server-side for a tick, the client fills that channel
+from its own once-per-tick reading rather than holding the previous value.
+
+#### One lane per channel
+
+Per-channel scaling alone does not let you see several channels at once. Two probes on the same
+alternating circuit produce the *same normalised shape*, so drawing them about a shared zero line
+paints them on top of each other pixel for pixel — indistinguishable from a single channel. The
+plot is therefore divided into one horizontal lane per channel, which is what the vertical
+position control on a real scope is for. A header toggle switches to an overlaid view, which
+remains the better one for comparing phase by eye.
+
+The auto-scale is also floored by unit (0.05 V, 0.01 A). Pure auto-scaling normalises a channel
+sitting at essentially zero — an open probe, a branch carrying no current — to its own solver
+residual, filling the plot with a jagged mess that reads as a real signal. Below the floor the
+trace collapses towards the zero line, which is the truth.
 
 ### 5.3 Phasors, impedance and Smith-chart data
 
@@ -500,7 +540,7 @@ graphical chart is now only a rendering job on top of numbers that already exist
 | `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
 | `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
-| `test/.../AlternatorTest.java`, `LinearFastPathTest.java` | 13 tests, §7. |
+| `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java` | 45 tests, §7. |
 
 ### Why `AlternatorCoupling extends GeneratorCoupling`
 
@@ -519,7 +559,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **13 new tests, all passing.**
+harness. **45 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -547,11 +587,20 @@ harness. **13 new tests, all passing.**
 | `offsetShiftsTheWaveformWithoutChangingItsSwing` | DC offset arithmetic |
 | `retuningFrequencyDoesNotStepTheWaveform` | Integrated phase stays continuous |
 | `PhasorTest` (9 tests) | Amplitude recovery, DC rejection, the 90° convention, resistive and reactive impedance signs, frequency estimation, SWR, non-integer cycle counts |
+| `singleSteppedIslandStillYieldsOneSamplePerTick` | **A probe on a 1×-stepped island still reports** — the multi-channel blocker |
+| `sourcelessIslandStillAdvancesItsProbes` | A dead island reports its genuine zero rather than a gap |
+| `subSteppedIslandYieldsOneSamplePerStep` | 8 solver steps give 8 samples |
+| `currentProbeKeepsTheSignOfBothHalfCycles` | Sub-tick current samples are signed, not rectified |
+| `decimationSpansTheWholeTickForAnyLimit` | A limit that does not divide the count still reaches the tick's end |
+| `snapshotNeverExceedsItsLimit` | Cap, no padding, and `0` disables the stream |
+
+The first two of those fail on the code as it stood before this change, which is what makes them
+a regression test rather than a description.
 
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **102 / 88**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **108 / 94**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 

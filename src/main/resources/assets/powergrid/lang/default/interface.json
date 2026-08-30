@@ -48,6 +48,8 @@
   "powergrid.gui.multimeter.now": "Now",
   "powergrid.gui.multimeter.rms": "RMS",
   "powergrid.gui.multimeter.peak": "Peak",
+  "powergrid.gui.multimeter.stacked": "Stacked",
+  "powergrid.gui.multimeter.overlay": "Overlay",
 
   "powergrid.gui.hv_breaker.setting": "Trip current",
   "powergrid.gui.hv_breaker.status": "Status:",

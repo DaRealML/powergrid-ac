@@ -813,9 +813,17 @@ public class ElectricalNetwork implements IStamped {
         if(multiTicks > 1 || currentMultiTick > 1) {
             for (var hook : multiHooks)
                 hook.prepare(multiTicks);
-            for (var observer : observers)
-                observer.prepare(multiTicks);
         }
+        // Observers are NOT gated on the multi-tick rate, unlike multiHooks. A component only
+        // needs a per-micro-tick callback when the island is actually sub-stepping, but an
+        // observer is an external probe whose caller has already committed to one array slot
+        // per island per tick. Skipping an island stepped once per tick used to leave that
+        // probe's array empty while a faster island filled its own, and the client then had a
+        // channel with no samples in a packet that was sent anyway -- which it filled by
+        // holding the last value, i.e. a permanently flat zero trace. One sample per tick is
+        // the honest answer for a slow island; no samples at all is not.
+        for (var observer : observers)
+            observer.prepare(multiTicks);
         if(sourceCount == 0) {
             for(var hook : outerHooks)
                 hook.preSolve();
@@ -841,8 +849,14 @@ public class ElectricalNetwork implements IStamped {
         if(mna == null)
             return;
         ++stamp;
-        if(sourceCount == 0)
+        if(sourceCount == 0) {
+            // A sourceless island still owes its probes a sample. prepare() has already zeroed
+            // the state, so this records the zero that is genuinely there rather than leaving a
+            // gap that would desynchronise this channel from every other one on the time axis.
+            for (var observer : observers)
+                observer.postMicroTick();
             return;
+        }
         PERF.start();
         for (var hook : outerHooks)
             hook.preSolve();
@@ -855,9 +869,9 @@ public class ElectricalNetwork implements IStamped {
         if(currentMultiTick > 1) {
             for (var hook : multiHooks)
                 hook.postMicroTick();
-            for (var observer : observers)
-                observer.postMicroTick();
         }
+        for (var observer : observers)
+            observer.postMicroTick();
         PERF.end();
     }
 

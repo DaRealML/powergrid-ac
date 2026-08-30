@@ -29,16 +29,22 @@ import java.lang.ref.WeakReference;
  * on the item model works — so {@link MultimeterChannel#measure(Level)} returns a real value on
  * the client with no extra networking.
  *
- * <h2>Sample rate</h2>
- * One sample per client tick, so <b>20 Hz</b> — the rate at which the underlying value reaches
- * the client at all. The solver may step an AC island 8 or more times per tick internally, but
- * only the end-of-tick state is synchronised.
+ * <h2>Two sample sources</h2>
+ * With the graph screen closed, or with the sub-tick stream disabled in the config, the client
+ * reads each channel once per client tick — <b>20 Hz</b>, the rate at which the underlying value
+ * reaches the client at all. That is faithful for direct current and for an alternator at the
+ * default single pole pair (about 4.5 Hz at a shaft's speed ceiling), and <b>aliases</b> above
+ * roughly 10 Hz: it will draw a believable waveform at the wrong frequency.
  * <p>
- * For direct current, and for an alternator at the default single pole pair (about 4.5 Hz at a
- * shaft's speed ceiling), that is comfortably above the Nyquist limit and the trace is faithful.
- * Above roughly 10 Hz <b>this graph aliases</b> and will show a believable waveform at the wrong
- * frequency; the in-circuit plotter and CRT record every solver sub-tick and are the instruments
- * for that.
+ * With the graph open the server streams what the solver actually computed inside each tick, so
+ * an island stepped sixteen times yields sixteen samples and the waveform is drawn as it really
+ * is. The two never interleave: {@link #acceptSubTickSamples} takes over and the 20 Hz path
+ * stands down, because splicing them would put two different time bases in one buffer.
+ * <p>
+ * Channels can legitimately arrive at different rates in the same packet, since two probes may
+ * sit on islands the solver steps at different rates. They are resampled onto the fastest of
+ * them so that one horizontal position means one instant for every channel — a slow channel
+ * therefore draws as a staircase, which is an honest picture of how much it actually knows.
  */
 public class MultimeterTrace {
     /** Ten seconds at one sample per client tick. */
@@ -112,8 +118,21 @@ public class MultimeterTrace {
      * what the solver actually computed inside the tick, so a waveform that would alias at 20 Hz
      * is drawn as it really is.
      */
-    public static void acceptSubTickSamples(float[][] perChannel) {
+    public static void acceptSubTickSamples(float[][] perChannel, float[] live) {
         if(perChannel.length == 0)
+            return;
+
+        if(channelCount == 0)
+            return;
+
+        // The server built this payload from ITS copy of the channel list. For about a round
+        // trip after probing, the two disagree -- the client adds a channel optimistically and
+        // the server confirms it a tick later -- and mapping payload index i onto channel i
+        // across that gap writes one probe's samples into another probe's trace. That is
+        // indistinguishable from a wiring mistake in-world, so the packet is dropped instead.
+        // The cost is one tick of history; the fallback is the 20 Hz path, which is the safe
+        // direction to fail in.
+        if(perChannel.length != channelCount)
             return;
 
         // Every channel must advance by the SAME number of samples, or the horizontal axis stops
@@ -128,9 +147,6 @@ public class MultimeterTrace {
         if(common == 0)
             return;
 
-        if(channelCount == 0)
-            return;
-
         // Splicing 20 Hz history in front of solver-resolution samples would put two different
         // time bases in one buffer, and the axis would be wrong for the older half of it.
         if(!receivingSubTicks())
@@ -140,13 +156,18 @@ public class MultimeterTrace {
         subTickRate = common;
 
         for(int c = 0; c < channelCount; ++c) {
-            var samples = c < perChannel.length ? perChannel[c] : new float[0];
+            var samples = perChannel[c];
             for(int i = 0; i < common; ++i) {
                 float value;
                 if(samples.length == 0) {
-                    // Nothing captured: hold the last known value so this channel still advances
-                    // in step rather than freezing while the others scroll past it.
-                    value = latest(c);
+                    // Nothing captured: the probe's target could not be resolved server-side
+                    // this tick. Use the client's own once-per-tick reading rather than holding
+                    // the last value. Holding froze the trace permanently, because the 20 Hz
+                    // path below stands down for EVERY channel as soon as ANY channel starts
+                    // streaming -- so a channel that fell back to "hold" had nothing left to
+                    // update it, and sat at whatever it happened to contain (zero, after the
+                    // buffer reset that a change of source performs).
+                    value = c < live.length ? live[c] : latest(c);
                 } else {
                     // Nearest-neighbour stretch of a coarser channel onto the common time base.
                     value = samples[i * samples.length / common];
@@ -189,7 +210,14 @@ public class MultimeterTrace {
     }
 
     public static boolean isEmpty() {
-        return channelCount == 0 || filled[0] == 0;
+        if(channelCount == 0)
+            return true;
+        // Any channel with history is enough to draw. Testing filled[0] alone blanked the whole
+        // screen whenever the first channel happened to be the one that could not be resolved.
+        for(int c = 0; c < channelCount; ++c)
+            if(filled[c] > 0)
+                return false;
+        return true;
     }
 
     public static int size(int channel) {
@@ -301,6 +329,24 @@ public class MultimeterTrace {
      */
     public static float peak(int channel) {
         return Math.max(Math.abs(minimum(channel)), Math.abs(maximum(channel)));
+    }
+
+    /**
+     * Smallest full-scale value a channel is ever drawn against, by unit.
+     * <p>
+     * Pure auto-scaling has a failure mode that reads as a hardware fault: a channel sitting at
+     * essentially zero — an open probe, a branch carrying no current, a solver residual of a
+     * few microamps — gets normalised to its own noise and fills the plot with a jagged mess
+     * that looks like a real signal. A real scope has fixed volts-per-division for the same
+     * reason. Below the floor the trace collapses towards the zero line, which is the truth.
+     */
+    private static final float FLOOR_VOLTS = 0.05f;
+    private static final float FLOOR_AMPS = 0.01f;
+
+    /** Full-scale value this channel should be plotted against, floored out of the noise. */
+    public static float displayScale(int channel) {
+        var floor = currentChannel[channel] ? FLOOR_AMPS : FLOOR_VOLTS;
+        return Math.max(peak(channel) * 1.1f, floor);
     }
 
     /**

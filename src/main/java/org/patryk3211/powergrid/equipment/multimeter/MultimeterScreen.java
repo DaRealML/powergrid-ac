@@ -39,6 +39,18 @@ import org.patryk3211.powergrid.utility.Unit;
  * one into the zero line. Every channel is normalised to its own peak and its full-scale value
  * is printed in its own colour, so the shapes are comparable and the magnitudes are stated
  * rather than implied.
+ *
+ * <h2>…and, by default, its own lane</h2>
+ * Per-channel scaling alone is not enough to see several channels at once. Two probes on the
+ * same alternating circuit produce the same normalised shape, so drawing them about a shared
+ * zero line paints them on top of each other pixel for pixel and the display is
+ * indistinguishable from a single channel. The plot is therefore divided into one horizontal
+ * lane per channel, which is what the vertical position control on a real scope is for.
+ * <p>
+ * Overlaying them is still the better view for comparing phase by eye, so the header carries a
+ * toggle between the two. The choice is static rather than per-instance: it is a preference
+ * about how to look at things, and having it reset every time the screen is reopened would be
+ * an irritation rather than a safeguard.
  */
 @Environment(EnvType.CLIENT)
 public class MultimeterScreen extends Screen {
@@ -57,8 +69,34 @@ public class MultimeterScreen extends Screen {
     private static final int TIME_DIVISIONS = 10;
     private static final int VALUE_DIVISIONS = 4;
 
+    /** One lane per channel, rather than every channel about a shared zero line. */
+    private static boolean stacked = true;
+
+    /** Hit box of the stacked/overlay toggle, recomputed each frame; zero width when hidden. */
+    private int toggleX, toggleY, toggleWidth;
+
     public MultimeterScreen() {
         super(Component.empty());
+    }
+
+    /** Height of one channel's band of the plot. */
+    private static int laneHeight(int plotTop, int plotBottom, int channels) {
+        return stacked ? (plotBottom - plotTop) / Math.max(channels, 1) : plotBottom - plotTop;
+    }
+
+    private static int laneTop(int plotTop, int plotBottom, int channel, int channels) {
+        return stacked ? plotTop + channel * laneHeight(plotTop, plotBottom, channels) : plotTop;
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if(button == 0 && toggleWidth > 0
+                && mouseX >= toggleX && mouseX < toggleX + toggleWidth
+                && mouseY >= toggleY && mouseY < toggleY + 9) {
+            stacked = !stacked;
+            return true;
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
     }
 
     /**
@@ -120,6 +158,19 @@ public class MultimeterScreen extends Screen {
         graphics.drawString(font, rate, right - PADDING - font.width(rate), top + PADDING,
                 COLOUR_TEXT_DIM, false);
 
+        // Only offer the layout toggle when there is more than one channel to lay out.
+        toggleWidth = 0;
+        if(channels > 1) {
+            var mode = Lang.translate(stacked ? "gui.multimeter.stacked" : "gui.multimeter.overlay").component();
+            toggleWidth = font.width(mode);
+            toggleX = right - PADDING - font.width(rate) - 8 - toggleWidth;
+            toggleY = top + PADDING;
+            var hovered = mouseX >= toggleX && mouseX < toggleX + toggleWidth
+                    && mouseY >= toggleY && mouseY < toggleY + 9;
+            graphics.drawString(font, mode, toggleX, toggleY,
+                    hovered ? COLOUR_TEXT : COLOUR_TEXT_DIM, false);
+        }
+
         if(MultimeterTrace.isEmpty()) {
             graphics.drawCenteredString(font, Lang.translate("gui.multimeter.no_data").component(),
                     (left + right) / 2, (top + bottom) / 2, COLOUR_TEXT_DIM);
@@ -132,11 +183,16 @@ public class MultimeterScreen extends Screen {
         var plotRight = right - PADDING;
         var plotBottom = bottom - PADDING - 10 - channels * ROW_HEIGHT;
 
-        drawGrid(graphics, plotLeft, plotTop, plotRight, plotBottom);
-        graphics.hLine(plotLeft, plotRight, (plotTop + plotBottom) / 2, COLOUR_ZERO);
+        drawGrid(graphics, plotLeft, plotTop, plotRight, plotBottom, channels);
 
-        for(int c = 0; c < channels; ++c)
-            drawTrace(graphics, c, plotLeft, plotTop, plotRight, plotBottom);
+        for(int c = 0; c < channels; ++c) {
+            var laneTop = laneTop(plotTop, plotBottom, c, channels);
+            var laneBottom = laneTop + laneHeight(plotTop, plotBottom, channels);
+            // One zero line per lane. In overlay mode every lane is the whole plot, so this
+            // draws the single centre line over itself and costs nothing.
+            graphics.hLine(plotLeft, plotRight, (laneTop + laneBottom) / 2, COLOUR_ZERO);
+            drawTrace(graphics, c, plotLeft, laneTop, plotRight, laneBottom);
+        }
 
         drawTimeAxis(graphics, plotLeft, plotRight, plotBottom);
 
@@ -199,13 +255,18 @@ public class MultimeterScreen extends Screen {
         graphics.drawString(font, Lang.text(line).component(), x, y, COLOUR_TEXT_DIM, false);
     }
 
-    private void drawGrid(GuiGraphics graphics, int plotLeft, int plotTop, int plotRight, int plotBottom) {
+    private void drawGrid(GuiGraphics graphics, int plotLeft, int plotTop, int plotRight,
+                          int plotBottom, int channels) {
         for(int i = 1; i < TIME_DIVISIONS; ++i) {
             var x = plotLeft + (plotRight - plotLeft) * i / TIME_DIVISIONS;
             graphics.vLine(x, plotTop, plotBottom, COLOUR_GRID);
         }
-        for(int i = 1; i < VALUE_DIVISIONS; ++i) {
-            var y = plotTop + (plotBottom - plotTop) * i / VALUE_DIVISIONS;
+        // Stacked, the horizontal rules mark where one channel's band ends and the next begins,
+        // which is information. Overlaid, they are only a reading aid, so the usual even
+        // divisions are drawn instead.
+        var rules = stacked ? channels : VALUE_DIVISIONS;
+        for(int i = 1; i < rules; ++i) {
+            var y = plotTop + (plotBottom - plotTop) * i / rules;
             graphics.hLine(plotLeft, plotRight, y, COLOUR_GRID);
         }
         graphics.renderOutline(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop, COLOUR_BORDER);
@@ -219,8 +280,10 @@ public class MultimeterScreen extends Screen {
      * offset of a rectified signal immediately visible.
      */
     private void drawTrace(GuiGraphics graphics, int channel, int plotLeft, int plotTop, int plotRight, int plotBottom) {
-        // A floor keeps a dead-flat zero trace from being scaled up into noise.
-        var range = Math.max(MultimeterTrace.peak(channel) * 1.1f, 1e-6f);
+        // Floored by unit rather than at 1e-6: a channel sitting at essentially zero used to be
+        // normalised to its own solver residual and drawn as a screen-filling jagged mess that
+        // looked exactly like a real, badly behaved signal.
+        var range = MultimeterTrace.displayScale(channel);
         var count = MultimeterTrace.size(channel);
         if(count == 0)
             return;

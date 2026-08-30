@@ -17,6 +17,7 @@ package org.patryk3211.powergrid.network.packets;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterTrace;
 import org.patryk3211.powergrid.network.S2CPacket;
 
@@ -65,9 +66,24 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
 
     @Override
     public void handle(Minecraft mc) {
+        if(mc.player == null || mc.level == null)
+            return;
+        var stack = mc.player.getMainHandItem();
+        if(!(stack.getItem() instanceof MultimeterItem))
+            return;
+
+        // A channel whose probe the server could not resolve this tick arrives with no samples.
+        // Node voltages and wire currents are synchronised to tracking clients every tick — the
+        // same reason the needle on the item model works — so the client can still read that
+        // channel itself, at 20 Hz, and the trace uses this instead of freezing.
+        var probes = MultimeterItem.getChannels(stack);
+        var live = new float[probes.size()];
+        for(int c = 0; c < live.length; ++c)
+            live[c] = probes.get(c).measure(mc.level);
+
         // Appended here rather than polled from the client tick: this runs via mc.execute at an
         // arbitrary point in the frame, not tick-aligned, so polling would drop and duplicate
         // whole blocks of samples.
-        MultimeterTrace.acceptSubTickSamples(channels);
+        MultimeterTrace.acceptSubTickSamples(channels, live);
     }
 }
