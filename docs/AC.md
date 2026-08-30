@@ -21,7 +21,8 @@ shipped defaults every DC network is solved exactly as it was before.
 | AC current source | `ACCurrentSourceNode` | Backend-agnostic — §3.8 |
 | Reactive components under AC | `CapacitorWire`, `InductorWire`, `CRSeriesWire`, `LRSeriesWire` | Already correct; two defects fixed — §3.9 |
 | Pole-pair slider | `AlternatorPolePairsBehaviour` | Compiles; not runtime-tested — §5.1 |
-| Multimeter trace screen | `MultimeterTrace`, `MultimeterScreen` | Compiles; not runtime-tested — §5.2 |
+| Multimeter trace screen | `MultimeterTrace`, `MultimeterScreen` | In-game tested; five defects since fixed — §5.2 |
+| Motor inductive reactance | `ElectricMotorBlockEntity`, `ConstantSpeedMotorBlockEntity` | Backend-agnostic — §3.11 |
 | Phasors / complex impedance | `MultimeterPhasor` | Measurement only, not a solver — §3.10 |
 | Rectification | *nothing added* — `PNJunctionWire` already does it | — |
 
@@ -320,6 +321,50 @@ averages the sign reversal to zero; and without the `pi/2` form factor the recti
 **Separately excited alternators were never affected.** That is also the diagnostic: a build that
 works with its field from a battery but not from its own output was hitting exactly this.
 
+### 3.11 Motor coils
+
+Both motors modelled their coil as a plain resistor, which on an alternating supply is not a
+small simplification: a resistor presents the same impedance at every frequency, draws current
+exactly in phase, and reports a power factor of 1 whatever it is plugged into. A real machine
+winding is dominated by its inductance.
+
+The coil is now an `LRSeriesWire`, so it presents
+
+```
+|Z| = sqrt(R^2 + (omega * L)^2),        cos(phi) = R / |Z|
+```
+
+with `L = tau * R` and `tau` the configured `electricity.motorTimeConstant`, default **0.01 s** —
+the same electrical time constant the generator winding already uses, so the two machines are
+consistent with each other. Setting it to 0 restores a purely resistive coil exactly.
+
+The inductance is derived **once from the nominal resistance** and then held fixed while the
+`motorDynamicResistance` option scales R with shaft load. Real windings do not gain turns when
+the motor is loaded, and `LRSeriesWire.setResistance` preserves L, which is exactly that.
+
+> **The speed expression had to change with it.** It took the branch voltage from
+> `potentialDifference()`, which with an inductance in series also carries the reactive drop and
+> so overstates the work being done. It now takes the resistive part, `current() * R`. At
+> `L = 0` that is *identical* to the old expression — including while dynamic resistance is
+> scaling the coil, where the tempting substitution `I²R` would **not** have been, because the
+> original formula deliberately divides by the *nominal* resistance rather than the scaled one.
+
+Steady direct current is unchanged to within **two parts per million**. That residue is
+`ITimeAwareWire`'s existing per-step leakage, which every reactive component in the mod already
+carries: the LR fixed point is
+
+```
+I = V/R * (1 - rs) / (1 - leak * rs),      rs = L / (L + R * dt)
+```
+
+and with `leak = 1` the algebra gives exactly `V/R`.
+
+**What this does not do.** The motor is still a direct-current machine model. It has no
+back-EMF, and its direction still comes from `Math.signum` of the instantaneous current, so on an
+alternating supply the half cycles cancel and it jitters near zero rather than running. That was
+true before and adding reactance does not change it — motors do **not** now run on AC. Doing that
+properly means a torque model with slip, which is separate work.
+
 
 
 ---
@@ -467,6 +512,34 @@ where the honest sample is the zero that is genuinely there. `ProbeSamplerTest` 
 Where a probe genuinely cannot be resolved server-side for a tick, the client fills that channel
 from its own once-per-tick reading rather than holding the previous value.
 
+#### Controls
+
+| Control | Effect |
+|---|---|
+| **Space**, or the header control | Freezes both sample sources. A waveform scrolling past at 2560 Hz cannot be read, and freezing is what makes a transient examinable at all. Resuming drops the stale history rather than splicing it onto live samples with world time missing across the join. |
+| **Stacked / Overlay** | One lane per channel, or all channels about a shared zero line. |
+| **Shared scale / Own scale** | One vertical scale per *unit*, or per channel. |
+
+#### The window is a duration, not a sample count
+
+The ring holds 4096 samples per channel and the plot shows a fixed **two second** window. Both
+numbers matter. The ring used to be 200, which at a solver rate of 2560 Hz is 78 ms — so a
+channel the server could sample only once per world tick had room for one or two distinct values
+across the whole plot and drew as a single step, which reads as a broken probe rather than a
+coarse one. And a fixed *sample* count would silently rescale the time axis by two orders of
+magnitude the moment the solver began sub-stepping; a fixed *window* keeps the horizontal axis
+meaning the same thing.
+
+Drawing reduces the samples falling in each pixel column to their minimum and maximum and draws
+that span. That is how scope software renders a waveform too fast to plot point by point — it
+shows the envelope rather than an arbitrary one of the samples — and it keeps the cost
+proportional to the plot rather than to the buffer. Statistics are taken over the visible window
+too, so the numbers under the plot describe the picture above them, and a startup transient stops
+dominating the scale once it has scrolled off.
+
+Where a channel is sampled slower than the shared time axis, its own rate is printed on its row,
+so a staircase identifies itself as a coarse probe.
+
 #### One lane per channel
 
 Per-channel scaling alone does not let you see several channels at once. Two probes on the same
@@ -476,10 +549,31 @@ plot is therefore divided into one horizontal lane per channel, which is what th
 position control on a real scope is for. A header toggle switches to an overlaid view, which
 remains the better one for comparing phase by eye.
 
+#### Scaling, and why per-channel autoscaling is not the default
+
+Normalising each channel to its own peak makes *every* trace fill its lane, so two voltages an
+order of magnitude apart draw as the same height and the display actively misleads about
+amplitude. Channels measuring the same quantity therefore share one scale by default, and
+per-channel autoscaling is a toggle — it remains the only way to see a small signal beside a
+large one, but it is a deliberate choice rather than the resting state. This is the same trap a
+scope's fixed volts-per-division setting exists to avoid. Either way the **full-scale value is
+printed on every row**, so the height of a trace is never the only evidence of its size.
+
+Scales are shared per *unit*, not globally: volts and amps have no common axis, and one scale
+across both flattens a 2 A trace onto the zero line beside a 200 V one.
+
 The auto-scale is also floored by unit (0.05 V, 0.01 A). Pure auto-scaling normalises a channel
 sitting at essentially zero — an open probe, a branch carrying no current — to its own solver
 residual, filling the plot with a jagged mess that reads as a real signal. Below the floor the
 trace collapses towards the zero line, which is the truth.
+
+#### Text placement
+
+Readout rows lay their columns out by measuring — the right group from the right edge inwards,
+the left group from the left edge outwards, the left stopping where the right begins — and the
+phasor summary is assembled from segments and truncated to the panel. Fixed pixel offsets were
+what let a four-digit reading run into the label beside it, and a blindly concatenated summary
+line was what let it draw across the row below.
 
 ### 5.3 Phasors, impedance and Smith-chart data
 
@@ -540,7 +634,7 @@ graphical chart is now only a rendering job on top of numbers that already exist
 | `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
 | `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
-| `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java` | 45 tests, §7. |
+| `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java`, `MotorReactanceTest.java`, `ReactivePhaseTest.java` | 54 tests, §7. |
 
 ### Why `AlternatorCoupling extends GeneratorCoupling`
 
@@ -559,7 +653,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **45 new tests, all passing.**
+harness. **54 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -587,6 +681,14 @@ harness. **45 new tests, all passing.**
 | `offsetShiftsTheWaveformWithoutChangingItsSwing` | DC offset arithmetic |
 | `retuningFrequencyDoesNotStepTheWaveform` | Integrated phase stays continuous |
 | `PhasorTest` (9 tests) | Amplitude recovery, DC rejection, the 90° convention, resistive and reactive impedance signs, frequency estimation, SWR, non-integer cycle counts |
+| `motorCoilPresentsInductiveReactance` | Motor coil is sqrt(R² + X²), not R |
+| `motorPowerFactorLagsUnderAc` | cos(phi) = R/\|Z\|; not purely resistive |
+| `reactanceRisesWithFrequency` | Doubling f doubles X |
+| `steadyDirectCurrentIsUnchanged` | DC still V/R to within the 2 ppm leakage floor |
+| `zeroTimeConstantIsExactlyTheOldResistor` | The config escape hatch is an exact restoration |
+| `capacitorStraightAcrossTheSourceIsInPhaseAndShouldBe` | The reading reported as a bug, and why it is not one |
+| `rcDividerLagsBy45Degrees` / `rlDividerLeadsBy45Degrees` | Textbook ±45° where the shift can actually appear |
+| `dividerMidpointSitsAtOneOverRootTwo` | Reactive divider gives 1/√2, not 1/2 |
 | `singleSteppedIslandStillYieldsOneSamplePerTick` | **A probe on a 1×-stepped island still reports** — the multi-channel blocker |
 | `sourcelessIslandStillAdvancesItsProbes` | A dead island reports its genuine zero rather than a gap |
 | `subSteppedIslandYieldsOneSamplePerStep` | 8 solver steps give 8 samples |
@@ -600,7 +702,7 @@ a regression test rather than a description.
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **108 / 94**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **117 / 103**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
