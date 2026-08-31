@@ -19,6 +19,7 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
+import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterChannel;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
@@ -44,18 +45,50 @@ public class MultimeterDataC2SPacket implements C2SPacket {
         buf.writeInt(wire);
     }
 
+    /**
+     * Push the server's copy of the held stack back to the client.
+     * <p>
+     * Every path out of this method that does not add the channel has to do this. The client adds
+     * the channel optimistically in {@code MultimeterItem.useOnWire} for immediate feedback and has
+     * no way to learn the server refused: the server's stack is unchanged, so
+     * {@code broadcastChanges} — which only sends a slot whose contents stop matching
+     * {@code remoteSlots} — sends nothing, and the two copies stay one channel apart forever. That
+     * is not cosmetic. {@code MultimeterTrace.acceptSubTickSamples} drops every payload whose
+     * channel count disagrees with the client's, so from that moment the graph is stuck on the
+     * 20 Hz fallback for as long as the meter holds those probes.
+     */
+    private static void resync(ServerPlayer player) {
+        player.containerMenu.sendAllDataToRemote();
+    }
+
     @Override
     public void handle(ServerPlayer player) {
         var stack = player.getMainHandItem();
+        // No resync here: if the server's main hand is not a multimeter the two copies of the slot
+        // already differ, and broadcastChanges corrects it on its own.
         if(!(stack.getItem() instanceof MultimeterItem multimeter))
             return;
         var level = player.serverLevel();
-        if(!(level.getEntity(wire) instanceof BaseWireEntity wireEntity))
+        if(!(level.getEntity(wire) instanceof BaseWireEntity wireEntity)) {
+            resync(player);
             return;
+        }
+
+        // Nothing above this line used to be checked: an entity id and a point, both chosen by the
+        // client, went straight into a channel. Level.getEntity(int) resolves ANY entity loaded in
+        // the dimension, tracked or not, so enumerating ids gave a live current readout of every
+        // wire on the server from any distance — and the range check meant to stop that was
+        // measured against the very point the client had just supplied.
+        var maxDistance = ModdedConfigs.server().equipment.multimeterDistance.getF();
+        if(!MultimeterChannel.inReachOf(player, wireEntity, maxDistance)) {
+            resync(player);
+            return;
+        }
+
         // Keeps the existing channels rather than clearing the mode data.
         if(multimeter.getMode(stack) != 1)
             MultimeterItem.setModeKeepingData(stack, 1);
-        MultimeterItem.addChannel(stack,
-                MultimeterChannel.current(wireEntity, new Vec3(point.x, point.y, point.z)));
+        MultimeterItem.addChannel(stack, MultimeterChannel.current(wireEntity,
+                MultimeterChannel.clampToWire(wireEntity, new Vec3(point.x, point.y, point.z))));
     }
 }

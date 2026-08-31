@@ -71,7 +71,10 @@ public enum WireEndpointType {
             return null;
         var all = values();
         var index = tag.getInt("Type");
-        if(index >= all.length)
+        // Both ends. The upper bound alone left all[-1], and this is reached straight off the
+        // wire — EndpointTrackingC2SPacket decodes client-supplied NBT through here — so a crafted
+        // {Type: -1} threw ArrayIndexOutOfBoundsException out of a server packet handler.
+        if(index < 0 || index >= all.length)
             return null;
         var type = all[index];
         var endpoint = type.factory.get();

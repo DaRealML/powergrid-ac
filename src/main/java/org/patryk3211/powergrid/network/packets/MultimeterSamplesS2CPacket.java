@@ -15,8 +15,10 @@
  */
 package org.patryk3211.powergrid.network.packets;
 
+import io.netty.handler.codec.DecoderException;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
+import org.patryk3211.powergrid.equipment.multimeter.MultimeterChannel;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterTrace;
 import org.patryk3211.powergrid.network.S2CPacket;
@@ -43,10 +45,26 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
     }
 
     public MultimeterSamplesS2CPacket(FriendlyByteBuf buf) {
+        // Both var-ints size an allocation, so both are bounded BEFORE anything is allocated. A
+        // negative one is perfectly legal on the wire and throws NegativeArraySizeException; a
+        // large one reserves gigabytes off a packet of a few bytes. DecoderException is what
+        // FriendlyByteBuf itself throws for malformed input, and this decode runs inside the
+        // payload handler, so NeoForge logs it and drops the packet — the graph misses one tick,
+        // which is exactly what the 20 Hz fallback exists for.
         var count = buf.readVarInt();
+        if(count < 0 || count > MultimeterChannel.MAX_CHANNELS)
+            throw new DecoderException("Multimeter samples: channel count " + count
+                    + " outside 0.." + MultimeterChannel.MAX_CHANNELS);
         channels = new float[count][];
         for(int c = 0; c < count; ++c) {
             var length = buf.readVarInt();
+            // Two bounds, both real rather than arbitrary: a channel cannot hold more samples than
+            // there are bytes left to read them from, and cannot usefully hold more than the ring
+            // they are about to go into.
+            var limit = Math.min(MultimeterTrace.CAPACITY, buf.readableBytes() / Float.BYTES);
+            if(length < 0 || length > limit)
+                throw new DecoderException("Multimeter samples: channel " + c + " declares "
+                        + length + " samples, outside 0.." + limit);
             var samples = new float[length];
             for(int i = 0; i < length; ++i)
                 samples[i] = buf.readFloat();

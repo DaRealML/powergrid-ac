@@ -51,6 +51,11 @@ public class EndpointTrackingC2SPacket implements C2SPacket {
 
     @Override
     public void handle(ServerPlayer player) {
+        // Now that deserialize() correctly rejects an out-of-range type it can return null, and
+        // WorldNetworks.tracking would happily computeIfAbsent under a null key — not a crash,
+        // but an unbounded accumulation a client can drive.
+        if(endpoint == null)
+            return;
         var level = player.level();
         var global = GlobalElectricNetworks.getWorldNetworks((LevelAccessor) level);
         if(global != null)

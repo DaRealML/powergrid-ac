@@ -17,8 +17,10 @@ package org.patryk3211.powergrid.equipment.multimeter;
 
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
@@ -210,6 +212,65 @@ public class MultimeterChannel {
         return null;
     }
 
+    /**
+     * How far outside a wire's own bounding box a probe may sit and still count as being on it.
+     * <p>
+     * A hanging wire's server-side box spans its two terminals and nothing else, but the catenary
+     * hangs <em>below</em> that line. Only the client inflates the box down to the sag —
+     * {@code calculateClientBoundingBox} is client-only — and the raycast that produced the
+     * attachment point ran against the client's box, so a legitimate click on the bottom of a long
+     * slack run genuinely lands outside the server's. The deepest sag any registered wire reaches
+     * is about 2.4 blocks (iron at its 64-block span), so four covers it with room to spare.
+     */
+    private static final double ATTACH_TOLERANCE = 4;
+
+    /** The volume a current probe on this wire may legitimately sit in. */
+    private static AABB probeVolume(BaseWireEntity wire) {
+        return wire.getBoundingBox().inflate(ATTACH_TOLERANCE);
+    }
+
+    /**
+     * Whether {@code holder} is close enough to this wire to have a probe on it.
+     * <p>
+     * Measured against the wire's own geometry and nothing the client supplied — which is the
+     * entire point. The attachment point used to be both the value the client chose freely and the
+     * value the reach check was measured against, so a client could name any entity id, hand in a
+     * point at its own feet, and have the server certify its own range check.
+     * <p>
+     * Not {@code position()}: on a block wire that is the start of the segment run, and on a
+     * hanging wire or cord it is the horizontal midpoint pinned to the first terminal's height,
+     * which on a sloped span is not on the wire at all. The bounding box is the only thing that
+     * covers the whole conductor in every case.
+     */
+    public static boolean inReachOf(Entity holder, BaseWireEntity wire, float maxDistance) {
+        return probeVolume(wire).distanceToSqr(holder.position()) <= maxDistance * maxDistance;
+    }
+
+    /**
+     * Where a probe clicked at {@code point} should actually be recorded.
+     * <p>
+     * Clamped rather than rejected, because the anchor is only ever drawn — {@link #inReachOf} is
+     * what bounds the probe — and a wire inside a sublevel is a case where the client's hit point
+     * and the entity's box are not certainly in the same coordinate space. Misplacing a drawn lead
+     * is a strictly better failure than refusing a legitimate probe.
+     */
+    public static Vec3 clampToWire(BaseWireEntity wire, Vec3 point) {
+        if(probeVolume(wire).contains(point))
+            return point;
+        var box = wire.getBoundingBox();
+        return new Vec3(clampFinite(point.x, box.minX, box.maxX),
+                clampFinite(point.y, box.minY, box.maxY),
+                clampFinite(point.z, box.minZ, box.maxZ));
+    }
+
+    /**
+     * {@code Mth.clamp} passes NaN through — {@code NaN < min} is false and {@code Math.min(NaN,
+     * max)} is NaN — so a NaN coordinate would survive the clamp and land in the anchor.
+     */
+    private static double clampFinite(double value, double min, double max) {
+        return Double.isNaN(value) ? (min + max) * 0.5 : Mth.clamp(value, min, max);
+    }
+
     /** Whether this channel still refers to something that exists and is close enough. */
     public boolean isValid(Level level, Entity holder, float maxDistance) {
         if(type == TYPE_VOLTAGE) {
@@ -217,10 +278,16 @@ public class MultimeterChannel {
                 return false;
             if(!positive.isValid(level) || !negative.isValid(level))
                 return false;
-        } else if(level.getEntity(entityId) == null) {
-            return false;
+            return holder.distanceToSqr(anchor(level)) <= maxDistance * maxDistance;
         }
-        return holder.distanceToSqr(anchor(level)) <= maxDistance * maxDistance;
+        // Not "the entity still exists and the stored anchor is still near me". Entity ids are
+        // recycled, so it also has to still BE a wire; and the reach is re-measured against the
+        // wire's present position, because the stored anchor never moves — a wire carried off on a
+        // sublevel, or re-strung between other terminals, would otherwise leave a probe reading
+        // forever from a point that is still sitting next to the holder.
+        if(!(level.getEntity(entityId) instanceof BaseWireEntity wireEntity))
+            return false;
+        return inReachOf(holder, wireEntity, maxDistance);
     }
 
     /**
