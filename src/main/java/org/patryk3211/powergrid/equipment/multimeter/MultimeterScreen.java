@@ -103,6 +103,19 @@ public class MultimeterScreen extends Screen {
     private final Toggle pauseToggle = new Toggle();
     private final Toggle layoutToggle = new Toggle();
     private final Toggle scaleToggle = new Toggle();
+    private final Toggle timebaseToggle = new Toggle();
+
+    /**
+     * Selectable timebases, shortest last, with 0 meaning automatic.
+     * <p>
+     * Automatic aims at {@link #AUTO_CYCLES} cycles of whatever frequency is measured, which is
+     * the setting a person would reach for anyway; the fixed steps are there for when the
+     * automatic choice is fighting a signal that is not a clean sinusoid.
+     */
+    private static final float[] TIMEBASES = { 0, 2f, 1f, 0.5f, 0.2f, 0.1f, 0.05f, 0.02f };
+
+    /** Cycles the automatic timebase tries to fit across the plot. */
+    private static final float AUTO_CYCLES = 8;
 
     public MultimeterScreen() {
         super(Component.empty());
@@ -130,6 +143,15 @@ public class MultimeterScreen extends Screen {
             }
             if(scaleToggle.contains(mouseX, mouseY)) {
                 sharedScale = !sharedScale;
+                return true;
+            }
+            if(timebaseToggle.contains(mouseX, mouseY)) {
+                var current = MultimeterTrace.isAutoWindow() ? 0 : MultimeterTrace.windowRequest();
+                var index = 0;
+                for(int i = 0; i < TIMEBASES.length; ++i)
+                    if(Math.abs(TIMEBASES[i] - current) < 1e-4)
+                        index = i;
+                MultimeterTrace.setWindowRequest(TIMEBASES[(index + 1) % TIMEBASES.length]);
                 return true;
             }
         }
@@ -202,6 +224,22 @@ public class MultimeterScreen extends Screen {
         return unit.formatWithPrefixes(value).component();
     }
 
+    /** The timebase control's caption: the window it selects, or what automatic chose. */
+    private Component timebaseLabel() {
+        if(MultimeterTrace.isAutoWindow())
+            return Lang.translate("gui.multimeter.timebase_auto")
+                    .add(Lang.text(" " + formatSeconds(MultimeterTrace.windowSeconds()))).component();
+        return Lang.text(formatSeconds(MultimeterTrace.windowSeconds())).component();
+    }
+
+    private static String formatSeconds(float seconds) {
+        if(seconds >= 1)
+            return String.format("%.1f s", seconds);
+        if(seconds >= 0.001f)
+            return String.format("%.0f ms", seconds * 1000);
+        return String.format("%.0f us", seconds * 1e6);
+    }
+
     /** Draw a control, remember where it landed, and return the x it starts at. */
     private int control(GuiGraphics graphics, Toggle toggle, Component label, int x, int y,
                         int mouseX, int mouseY, int colour) {
@@ -253,9 +291,11 @@ public class MultimeterScreen extends Screen {
         cursor = control(graphics, layoutToggle,
                 Lang.translate(stacked ? "gui.multimeter.stacked" : "gui.multimeter.overlay").component(),
                 cursor, controlY, mouseX, mouseY, COLOUR_TEXT_DIM);
-        control(graphics, scaleToggle,
+        cursor = control(graphics, scaleToggle,
                 Lang.translate(sharedScale ? "gui.multimeter.shared_scale" : "gui.multimeter.own_scale").component(),
                 cursor, controlY, mouseX, mouseY, COLOUR_TEXT_DIM);
+        control(graphics, timebaseToggle, timebaseLabel(), cursor, controlY, mouseX, mouseY,
+                COLOUR_TEXT_DIM);
 
         if(MultimeterTrace.isEmpty()) {
             // "Nothing probed" blames the probes for what is often a deliberate wipe — resuming
@@ -276,21 +316,42 @@ public class MultimeterScreen extends Screen {
 
         drawGrid(graphics, plotLeft, plotTop, plotRight, plotBottom, channels);
 
-        // Computed once per frame and handed down. The scale and the window array used to be
-        // recomputed inside drawTrace, drawReadout and drawPhasorSummary; with a 4096-sample ring
-        // and four channels that came to a few hundred thousand ring reads and something like
-        // 128 kB of garbage every frame. The drawing loop was always proportional to the plot,
-        // but these were proportional to the buffer, which this screen made twenty times larger.
+        // Order matters here. The phasor windows are independent of the timebase, so they are
+        // taken first; the frequency they yield sets the automatic timebase; and only then are the
+        // scales computed, because those read the visible window the timebase just decided.
+        //
+        // All of it is computed once per frame and handed down. The scale and the window array
+        // used to be recomputed inside drawTrace, drawReadout and drawPhasorSummary; with a
+        // 4096-sample ring and four channels that came to a few hundred thousand ring reads and
+        // something like 128 kB of garbage every frame.
+        var sampleRate = (double) MultimeterTrace.sampleRate();
+        var windows = new float[channels][];
+        for(int c = 0; c < channels; ++c)
+            windows[c] = MultimeterTrace.analysisArray(c);
+
+        // One frequency estimate per frame, taken from the strongest channel and reused for
+        // every phasor, so relative phase between channels is measured against a common bin.
+        var reference = MultimeterPhasor.strongestChannel();
+        var frequency = reference < 0 || reference >= channels ? 0
+                : MultimeterPhasor.estimateFrequency(windows[reference], sampleRate);
+        var referencePhase = frequency <= 0 ? 0
+                : MultimeterPhasor.goertzel(windows[reference], frequency, sampleRate).phaseDegrees();
+
+        // Fit a readable number of cycles across the plot. Without this a 47 Hz waveform on a
+        // two-second window is seventy-five cycles in three hundred pixels — four pixels a cycle,
+        // which is not a trace, it is a moire pattern against the pixel grid.
+        if(MultimeterTrace.isAutoWindow())
+            MultimeterTrace.setAutoWindow(frequency > 0
+                    ? (float) (AUTO_CYCLES / frequency)
+                    : MultimeterTrace.MAX_WINDOW_SECONDS);
+
         var voltScale = MultimeterTrace.sharedScaleForUnit(false);
         var ampScale = MultimeterTrace.sharedScaleForUnit(true);
         var scales = new float[channels];
-        var windows = new float[channels][];
-        for(int c = 0; c < channels; ++c) {
+        for(int c = 0; c < channels; ++c)
             scales[c] = sharedScale
                     ? (MultimeterTrace.isCurrent(c) ? ampScale : voltScale)
                     : MultimeterTrace.displayScale(c);
-            windows[c] = MultimeterTrace.toArray(c);
-        }
 
         for(int c = 0; c < channels; ++c) {
             var laneTop = laneTop(plotTop, plotBottom, c, channels);
@@ -302,15 +363,6 @@ public class MultimeterScreen extends Screen {
         }
 
         drawTimeAxis(graphics, plotLeft, plotRight, plotBottom);
-
-        // One frequency estimate per frame, taken from the strongest channel and reused for
-        // every phasor, so relative phase between channels is measured against a common bin.
-        var sampleRate = (double) MultimeterTrace.sampleRate();
-        var reference = MultimeterPhasor.strongestChannel();
-        var frequency = reference < 0 || reference >= channels ? 0
-                : MultimeterPhasor.estimateFrequency(windows[reference], sampleRate);
-        var referencePhase = frequency <= 0 ? 0
-                : MultimeterPhasor.goertzel(windows[reference], frequency, sampleRate).phaseDegrees();
 
         var rowTop = plotBottom + ROW_HEIGHT + 2;
         for(int c = 0; c < channels; ++c)

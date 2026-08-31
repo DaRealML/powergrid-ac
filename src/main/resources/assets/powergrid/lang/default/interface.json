@@ -55,6 +55,7 @@
   "powergrid.gui.multimeter.paused": "Paused",
   "powergrid.gui.multimeter.shared_scale": "Shared scale",
   "powergrid.gui.multimeter.own_scale": "Own scale",
+  "powergrid.gui.multimeter.timebase_auto": "Auto",
 
   "powergrid.gui.hv_breaker.setting": "Trip current",
   "powergrid.gui.hv_breaker.status": "Status:",

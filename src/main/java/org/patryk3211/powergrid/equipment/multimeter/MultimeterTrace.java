@@ -59,13 +59,66 @@ public class MultimeterTrace {
     public static final int CAPACITY = 4096;
 
     /**
-     * How much history the plot tries to show, whatever the sample rate.
+     * How much history the plot can show, whatever the sample rate.
      * <p>
      * A fixed sample count means the time axis silently rescales by two orders of magnitude when
      * the solver starts sub-stepping. A fixed window keeps the horizontal axis meaning the same
      * thing, and the ring only bounds it at the very highest rates.
      */
-    public static final float TARGET_WINDOW_SECONDS = 2f;
+    public static final float MAX_WINDOW_SECONDS = 2f;
+
+    /** Shortest window worth offering: one 50 ms world tick, give or take. */
+    public static final float MIN_WINDOW_SECONDS = 0.02f;
+
+    /**
+     * Requested display window in seconds, or zero for automatic.
+     * <p>
+     * A fixed two-second window is unreadable as soon as the signal is fast. At 2560 Hz it holds
+     * 4096 samples, and a 47 Hz waveform then occupies about four pixels per cycle across
+     * seventy-five cycles — which no rendering technique can make legible, because the
+     * information simply is not there at that scale. Every oscilloscope has a timebase control
+     * for exactly this reason, and this is it.
+     */
+    private static float windowRequest;
+
+    /** Window chosen automatically from the measured frequency, when the request is automatic. */
+    private static float autoWindow = MAX_WINDOW_SECONDS;
+
+    public static boolean isAutoWindow() {
+        return windowRequest <= 0;
+    }
+
+    public static float windowRequest() {
+        return windowRequest;
+    }
+
+    /** Zero selects automatic; anything else is taken literally, within the ring's reach. */
+    public static void setWindowRequest(float seconds) {
+        windowRequest = seconds <= 0 ? 0
+                : Math.min(Math.max(seconds, MIN_WINDOW_SECONDS), MAX_WINDOW_SECONDS);
+    }
+
+    /**
+     * Fewest samples the automatic timebase will leave on the plot.
+     * <p>
+     * Shrinking the window only helps when there are samples to spare. On the 20 Hz fallback a
+     * 47 Hz signal is aliased beyond recovery anyway, and a window sized to eight of its apparent
+     * cycles would hold three samples — three points stretched across three hundred pixels, which
+     * is worse than the long window it replaced. Below this floor the timebase stops shrinking and
+     * the trace shows the envelope instead, which is all that rate can honestly support.
+     */
+    private static final int MIN_PLOT_SAMPLES = 32;
+
+    /** Set from the measured frequency each frame while the timebase is automatic. */
+    public static void setAutoWindow(float seconds) {
+        var floor = Math.max(MIN_WINDOW_SECONDS, MIN_PLOT_SAMPLES / (float) sampleRate());
+        autoWindow = Math.min(Math.max(seconds, floor), MAX_WINDOW_SECONDS);
+    }
+
+    /** The window actually in force. */
+    public static float effectiveWindowSeconds() {
+        return isAutoWindow() ? autoWindow : windowRequest;
+    }
 
     /** Distinct, colour-blind-friendly trace colours, in channel order. */
     public static final int[] CHANNEL_COLOURS = {
@@ -107,7 +160,26 @@ public class MultimeterTrace {
 
     /** Samples making up the target window at the present rate, bounded by the ring. */
     public static int targetSamples() {
-        return Math.max(2, Math.min(CAPACITY, Math.round(TARGET_WINDOW_SECONDS * sampleRate())));
+        return Math.max(2, Math.min(CAPACITY, Math.round(effectiveWindowSeconds() * sampleRate())));
+    }
+
+    /**
+     * The longest slice the ring can offer, for measurement rather than for drawing.
+     * <p>
+     * Frequency and phase want as many cycles as possible; the plot wants few enough to see. Tying
+     * both to one window means that shortening the timebase to read a waveform also degrades the
+     * numbers printed under it, and at the shortest settings leaves fewer than two zero crossings,
+     * at which point {@code estimateFrequency} gives up entirely. So the phasor maths keeps its
+     * own window and only the drawing follows the timebase.
+     */
+    public static float[] analysisArray(int channel) {
+        var want = Math.min(filled[channel], Math.min(CAPACITY,
+                Math.round(MAX_WINDOW_SECONDS * sampleRate())));
+        var start = filled[channel] - want;
+        var out = new float[want];
+        for(int i = 0; i < want; ++i)
+            out[i] = get(channel, start + i);
+        return out;
     }
 
     /** Samples of this channel actually on screen: the target window, or all there is so far. */
@@ -119,7 +191,7 @@ public class MultimeterTrace {
     public static float windowSeconds() {
         var rate = sampleRate();
         if(rate <= 0)
-            return TARGET_WINDOW_SECONDS;
+            return effectiveWindowSeconds();
         return targetSamples() / (float) rate;
     }
 

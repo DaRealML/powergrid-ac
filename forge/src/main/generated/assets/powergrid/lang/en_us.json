@@ -515,6 +515,7 @@
   "powergrid.gui.multimeter.shared_scale": "Shared scale",
   "powergrid.gui.multimeter.stacked": "Stacked",
   "powergrid.gui.multimeter.steady": "Steady (no alternating component)",
+  "powergrid.gui.multimeter.timebase_auto": "Auto",
   "powergrid.gui.multimeter.title": "Multimeter",
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
   "powergrid.gui.multimeter.waiting": "Waiting for samples",
