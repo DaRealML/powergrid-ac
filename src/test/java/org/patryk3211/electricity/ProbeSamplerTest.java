@@ -123,40 +123,71 @@ public class ProbeSamplerTest extends TestHelper {
         Assertions.assertTrue(negative, "No negative half-cycle was sampled — the trace is rectified");
     }
 
+    /**
+     * A tick's worth of samples from a supply that actually moves within the tick.
+     * <p>
+     * The decimation tests are worthless on a steady signal: every sample in the tick is the same
+     * number, so any choice of indices passes and the test cannot tell the proportional mapping
+     * from the fixed stride it replaced. One cycle per world tick makes each index distinct.
+     */
+    private static ProbeSampler varyingTick(int subTicks) {
+        var net = new Network();
+        var ground = net.V(0);
+        var terminal = new FloatingNode();
+        // 20 Hz is exactly one electrical cycle per 50 ms world tick.
+        var source = new ACVoltageSourceCoupling(terminal, null, 0.001f, 10, 20);
+        net.network.addNode(terminal);
+        net.network.addNode(source);
+        net.W(10f, terminal, ground);
+
+        var probe = ProbeSampler.voltage(terminal, ground);
+        net.network.addObserver(probe);
+        net.network.calculate(subTicks);
+        return probe;
+    }
+
     @Test
     void decimationSpansTheWholeTickForAnyLimit() {
         // A fixed stride of count/limit stops part-way through whenever the limit does not divide
         // the count, leaving the tail of every tick unsampled and a step at each tick boundary.
-        var net = new Network();
-        var source = net.V(10);
-        var ground = net.V(0);
-        net.W(100f, source, ground);
-
-        var probe = ProbeSampler.voltage(source, ground);
-        net.network.addObserver(probe);
-        net.network.calculate(16);
+        var probe = varyingTick(16);
 
         // 10 does not divide 16, which is exactly the case the stride form got wrong.
         var snapshot = probe.snapshot(10);
         Assertions.assertEquals(10, snapshot.length, "Snapshot should fill the limit it was given");
-
-        // The last picked index must lie in the final tenth of the tick, not two thirds through.
-        Assertions.assertEquals(probe.sample(9 * 16 / 10), snapshot[9], 1e-9,
-                "Decimation should reach the end of the tick");
         Assertions.assertEquals(probe.sample(0), snapshot[0], 1e-9,
                 "Decimation should start at the beginning of the tick");
+
+        // The proportional mapping puts the last pick at index 9*16/10 = 14, in the final tenth
+        // of the tick. The stride form used a stride of max(1, 16/10) = 1 and so returned index
+        // 9 — barely half way — leaving the last quarter of every tick unsampled.
+        Assertions.assertEquals(probe.sample(14), snapshot[9], 1e-9,
+                "Decimation should reach the end of the tick");
+        Assertions.assertNotEquals(probe.sample(9), snapshot[9],
+                "This is the assertion that fails against the stride form; if it passes, the "
+                        + "signal is not varying within the tick and the test proves nothing");
+    }
+
+    @Test
+    void decimationIsUnchangedWhenTheLimitDividesTheCount() {
+        // The scope of the change, stated as a test: where the limit divides the count the stride
+        // was already exact, and the proportional form must agree with it rather than shifting
+        // every existing sample by one.
+        var probe = varyingTick(16);
+        var snapshot = probe.snapshot(4);
+
+        Assertions.assertEquals(4, snapshot.length, "Limit below the count should cap");
+        for(int i = 0; i < 4; ++i)
+            Assertions.assertEquals(probe.sample(i * 4), snapshot[i], 1e-9,
+                    "A dividing limit should still pick every fourth sample");
     }
 
     @Test
     void snapshotNeverExceedsItsLimit() {
-        var net = new Network();
-        var source = net.V(10);
-        var ground = net.V(0);
-        net.W(100f, source, ground);
-
-        var probe = ProbeSampler.voltage(source, ground);
-        net.network.addObserver(probe);
-        net.network.calculate(16);
+        // A contract guard rather than a regression test: these three lengths are the same under
+        // the stride form, and are pinned so that a future rewrite cannot quietly overrun the cap
+        // or pad a short tick.
+        var probe = varyingTick(16);
 
         Assertions.assertEquals(4, probe.snapshot(4).length, "Limit below the count should cap");
         Assertions.assertEquals(16, probe.snapshot(32).length, "Limit above the count should not pad");

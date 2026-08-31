@@ -653,7 +653,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **54 new tests, all passing.**
+harness. **55 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -696,13 +696,19 @@ harness. **54 new tests, all passing.**
 | `decimationSpansTheWholeTickForAnyLimit` | A limit that does not divide the count still reaches the tick's end |
 | `snapshotNeverExceedsItsLimit` | Cap, no padding, and `0` disables the stream |
 
-The first two of those fail on the code as it stood before this change, which is what makes them
-a regression test rather than a description.
+`singleSteppedIslandStillYieldsOneSamplePerTick` and `sourcelessIslandStillAdvancesItsProbes`
+fail against the pre-change dispatch, and `decimationSpansTheWholeTickForAnyLimit` fails against
+the pre-change `snapshot()` — verified by reconstructing each old form and re-running, not by
+inspection. That is what makes them regression tests rather than descriptions.
+
+> The decimation cases originally drove a **DC** divider, so every sample in the tick was the
+> same number and any choice of indices passed. They proved nothing about the change they were
+> named for until they were rebuilt on a supply that moves within the tick.
 
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **117 / 103**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **118 / 104**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 

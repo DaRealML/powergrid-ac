@@ -617,6 +617,11 @@ public class ElectricalNetwork implements IStamped {
         outerHooks.clear();
         multiHooks.clear();
         innerHooks.clear();
+        // Observers document themselves as never carried across a merge or a split, and until the
+        // dispatch was ungated that was true by accident: a cleared network has sourceCount == 0
+        // and currentMultiTick == 1, so neither loop was reached. Now that they run on every
+        // island every step, an observer left here would go on sampling an emptied network.
+        observers.clear();
         residuals.clear();
         subTickRates.clear();
         leafNodes.clear();

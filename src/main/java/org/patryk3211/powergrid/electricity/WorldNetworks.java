@@ -392,8 +392,9 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
                 payload[i] = sampler == null ? new float[0] : sampler.snapshot(limit);
                 any |= payload[i].length > 0;
             }
-            // An island stepped once per tick produces nothing sub-tick, and the client falls
-            // back to its own 20 Hz sampling — so send nothing rather than an empty packet.
+            // Every attached probe now yields at least one sample per tick, so this no longer
+            // filters out slow islands — it fires only when EVERY channel failed to resolve
+            // server-side, which is exactly the case the client's own 20 Hz reading covers.
             if(any)
                 ModdedPackets.sendToClient(new MultimeterSamplesS2CPacket(payload), entry.getKey());
         }
