@@ -426,6 +426,76 @@ copper, so holding L fixed against it — correct for a winding — inverts the 
 it needs the slip model above. Before this change the power factor was 1 everywhere, which was
 wrong but not inverted.
 
+### 3.12 Coils, and why a winding is not a resistor
+
+Eleven things in the mod were coils modelled as plain resistors: the electromagnet, the contactor
+coil, the alarm bell solenoid, the carbon pile coil, the servo coil, the fan and pump motors, the
+modular display coil in both its block and component forms, and the relay and double-relay coils.
+Only the two motors and the generator winding were LR branches — so the comment in
+`ElectricMotorBlockEntity` explaining why a winding cannot be a resistor sat three directories from
+an electromagnet that was one.
+
+A resistor presents the same impedance at every frequency, draws current exactly in phase, and has
+no inrush. Against the real thing, at the shipped `coilTimeConstant` of 0.01 s:
+
+| f | \|Z\|/R | Power factor | Current vs. resistive model | Real power vs. resistive model |
+|---:|---:|---:|---:|---:|
+| 4.53 Hz | 1.04 | 0.962 | 0.96 | 0.93 |
+| 72.5 Hz | 4.67 | **0.214** | **0.21** | **0.046** |
+
+At the top of the alternator's range the resistive model draws **4.7× too much current** and
+dissipates **22× too much power**, while reporting a power factor of 1.00 against a true 0.21.
+
+`CircuitBuilder.connectCoil` gives them all the same treatment, deriving the inductance from the
+resistance through `electricity.coilTimeConstant` so the electrical time constant is one number for
+the whole mod rather than a constant per block. Setting it to `0` yields `L = 0`, which is a plain
+resistor again and restores the previous behaviour exactly.
+
+**The dedicated inductor component was also a wire.** Its default was 100 µH, which across
+4.5–72.5 Hz is 0.003–0.046 Ω — below the component's own 0.01 Ω parasitic resistance for most of
+the band, so under four pole pairs it was more resistor than inductor. In series with a 20 Ω bulb
+it changed the load current by 0.19% at the very top of the range. The default is now **0.1 H**
+(2.8–46 Ω), the same order as the loads it is meant to interact with and as the motor coil's own
+0.256 H. The range is untouched: 0.1 µH really is a wire and 1 H really is a choke, and both are
+honest answers to what a player asked for.
+
+The capacitor needed no change. At its 100 µF default it already reduces load current by 49–94%
+across the same band.
+
+### 3.13 Thresholds, and the zero crossing
+
+Every threshold in the mod compared the **instantaneous** current. That is correct on a steady
+supply and wrong on an alternating one, because the current passes through zero twice per cycle
+*whatever its amplitude*:
+
+| Device | Rule | Consequence on AC |
+|---|---|---|
+| Relay | `\|i\| < dropOut`, per sub-tick | Released 71% of the time at pull-in current, 30% at twice it — buzzing at 2f |
+| Contactor | same rule, once per world tick | A 4.5–72.5 Hz waveform sampled at 20 Hz: pull-in aliased into an arbitrary beat |
+| Fuse | `\|i\| > rating` | A fuse is thermal, so its rating is RMS; it blew AC circuits at 0.707 of nameplate |
+| Electric fan | `speed = i × 64`, negatives allowed | Lurched forwards and backwards, exactly as the motors did |
+
+All four now compare `AbstractElectricWire.lastRmsCurrent()`, and getting that right took two
+attempts. **A single tick's RMS is not enough.** A world tick spans a whole number of electrical
+cycles only at 20, 40 and 60 Hz; at 4.53 Hz it covers 0.23 of one, so the per-tick RMS swings
+
+| f | cycles per tick | per-tick RMS range | ratio |
+|---:|---:|---|---:|
+| 4.53 Hz | 0.23 | 0.390 – 0.921 A | **2.36 : 1** |
+| 20 Hz | 1.00 | 0.707 – 0.707 A | 1.00 : 1 |
+| 72.5 Hz | 3.63 | 0.696 – 0.718 A | 1.03 : 1 |
+
+— which would still cross a drop-out threshold set at 0.9 of nominal. `lastRmsCurrent()` therefore
+filters the per-tick RMS with a five-tick time constant, longer than a cycle at the slowest
+frequency the mod produces. On a steady supply the filter is bypassed entirely and the value is
+exactly `|i|`, so direct-current behaviour is unchanged.
+
+> **A note on vocabulary.** Upstream uses **multi-tick** for the feature and its count
+> (`solver.multiTicks`, `prepare(int multiTicks)`, `currentMultiTick`) and **micro-tick** for one
+> individual step of it (`postMicroTick()`, fired after each). This work introduced a third
+> synonym, **sub-tick**, which now outnumbers both. They all mean the same thing: one of the N
+> solves a network performs inside a 50 ms world tick.
+
 
 
 ---
@@ -588,9 +658,30 @@ from its own once-per-tick reading rather than holding the previous value.
 
 | Control | Effect |
 |---|---|
+| **Timebase** | Selects how much time the plot spans, or `Auto`. Automatic fits eight cycles of the measured frequency, which holds about 38 pixels per cycle from 4.5 Hz to 72.5 Hz at every sub-tick rate. |
 | **Space**, or the header control | Freezes both sample sources. A waveform scrolling past at 2560 Hz cannot be read, and freezing is what makes a transient examinable at all. Resuming drops the stale history rather than splicing it onto live samples with world time missing across the join. |
 | **Stacked / Overlay** | One lane per channel, or all channels about a shared zero line. |
 | **Shared scale / Own scale** | One vertical scale per *unit*, or per channel. |
+
+#### The window is a duration, and it is selectable
+
+A fixed two-second window is unreadable as soon as the signal is fast. At 2560 Hz it holds 4096
+samples, so a 47 Hz waveform occupies about **four pixels per cycle across seventy-five cycles** —
+which is not a trace but a moiré pattern against the pixel grid, because the information needed to
+draw it is not present at that scale. Per-pixel min/max reduction draws the envelope correctly and
+cannot help: each column spans a quarter of a cycle and the column heights beat against the grid.
+
+Every oscilloscope has a timebase control for exactly this. Automatic aims at eight cycles of the
+measured frequency; the fixed steps, 2 s down to 20 ms, are for signals the frequency estimator
+cannot follow.
+
+Two details that are not obvious. The automatic window is **floored at 32 samples**, because
+shrinking only helps when there are samples to spare — on the 20 Hz fallback a 47 Hz signal is
+aliased beyond recovery anyway, and eight of its apparent cycles is three samples across three
+hundred pixels, worse than the window it replaced. And the **phasor maths keeps its own window**
+rather than following the timebase: frequency and phase want as many cycles as possible while the
+plot wants few enough to see, and tying both to one window meant shortening the timebase to read a
+waveform also degraded the numbers printed under it.
 
 #### The window is a duration, not a sample count
 
@@ -725,7 +816,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **55 new tests, all passing.**
+harness. **69 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -780,7 +871,7 @@ inspection. That is what makes them regression tests rather than descriptions.
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **118 / 104**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **132 / 118**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
