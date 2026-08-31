@@ -22,6 +22,8 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
+import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
+import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
 import org.patryk3211.powergrid.electricity.wire.powercord.CordEntity;
 import org.patryk3211.powergrid.electricity.wire.CircuitBoardEndpoint;
@@ -252,11 +254,39 @@ public class MultimeterChannel {
         }
 
         var wire = signedWire(level.getEntity(entityId));
-        if(wire == null || wire.getNetwork() == null)
+        if(wire == null)
+            return null;
+        var network = resolveNetwork(wire);
+        if(network == null)
             return null;
         var sampler = ProbeSampler.current(wire);
-        wire.getNetwork().addObserver(sampler);
+        network.addObserver(sampler);
         return sampler;
+    }
+
+    /**
+     * The island a wire is solved in, which for a wire entity is not the wire's own network.
+     * <p>
+     * Every wire entity's wire is a {@link TransmissionLinePart} server-side —
+     * {@code WireEntity.makeWire} takes it from {@code GlobalElectricNetworks.makeConnection} —
+     * and that class overrides {@code setNetwork} to throw, on the grounds that a part is never
+     * directly in a network. Since {@code AbstractElectricWire.network} is written nowhere else,
+     * {@code getNetwork()} on a part is permanently null.
+     * <p>
+     * Asking the part for its network therefore failed for <em>every</em> current probe, so
+     * {@code attachSampler} returned null, the server sent an empty array for that channel, and
+     * the client fell back to its own 20 Hz reading — which, stretched onto a voltage channel
+     * sampled 128 times a tick, drew the current as a staircase. The line itself <em>is</em> a
+     * wire in the island, so that is what has to be asked.
+     */
+    @Nullable
+    private static ElectricalNetwork resolveNetwork(AbstractElectricWire wire) {
+        var network = wire.getNetwork();
+        if(network != null)
+            return network;
+        if(wire instanceof TransmissionLinePart part && part.getLine() != null)
+            return part.getLine().getNetwork();
+        return null;
     }
 
     @Nullable

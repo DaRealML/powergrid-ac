@@ -357,13 +357,44 @@ carries: the LR fixed point is
 I = V/R * (1 - rs) / (1 - leak * rs),      rs = L / (L + R * dt)
 ```
 
-and with `leak = 1` the algebra gives exactly `V/R`.
+and with `leak = 1` the algebra gives exactly `V/R`. Note that two ppm is the error in the
+*current*; the speed term goes as I², so its error is **4 ppm**. Both are some three orders of
+magnitude below the nearest integer RPM.
 
 **What this does not do.** The motor is still a direct-current machine model. It has no
 back-EMF, and its direction still comes from `Math.signum` of the instantaneous current, so on an
 alternating supply the half cycles cancel and it jitters near zero rather than running. That was
 true before and adding reactance does not change it — motors do **not** now run on AC. Doing that
 properly means a torque model with slip, which is separate work.
+
+#### Two limitations worth knowing before trusting a number
+
+**The reactance is only as good as the sampling, and the shipped defaults are coarse.**
+`acSamplesPerCycle` is 32 and `acMaxSubTicks` is 16, so an island is solved at most 16 times per
+world tick. With `rotorRPMMax = 272` and up to 16 pole pairs the electrical frequency reaches
+72.5 Hz — about **4.4 solver samples per cycle**. Backward Euler then overstates both the
+impedance and the real power. Measured against the shipped motor resistance of 25.6 Ω:
+
+| Pole pairs | f (Hz) | samples/cycle | PF theory | PF measured | Real power error |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 4.5 | 35.3 | 0.962 | 0.964 | −2% |
+| 2 | 9.1 | 35.3 | 0.869 | 0.880 | −2% |
+| 4 | 18.1 | 17.6 | 0.660 | 0.733 | +3% |
+| 8 | 36.3 | 8.8 | 0.402 | 0.648 | **+46%** |
+| 16 | 72.5 | 4.4 | 0.214 | 0.763 | **+239%** |
+
+Below about 4 pole pairs the model is sound. Above it the reported power factor drifts back
+towards a resistor's and the figure handed to `ThermalBehaviour` is not trustworthy. Raise
+`acMaxSubTicks` to run motors from high pole-pair alternators.
+`reactanceDegradesAtTheShippedSubTickCeiling` pins this rather than leaving it to be discovered.
+
+**The load/power-factor relationship is inverted relative to a real machine.** L is fixed while
+`motorDynamicResistance` scales R from 25.6 Ω at full load to 512 Ω at idle, so power factor
+*improves* as the motor unloads (0.21 loaded, 0.98 idle at 72.5 Hz). Real induction machines are
+the opposite. The cause is that R here stands for the whole machine load rather than winding
+copper, so holding L fixed against it — correct for a winding — inverts the relationship. Fixing
+it needs the slip model above. Before this change the power factor was 1 everywhere, which was
+wrong but not inverted.
 
 
 
@@ -511,6 +542,17 @@ where the honest sample is the zero that is genuinely there. `ProbeSamplerTest` 
 
 Where a probe genuinely cannot be resolved server-side for a tick, the client fills that channel
 from its own once-per-tick reading rather than holding the previous value.
+
+> **Current probes never resolved at all, and that is why they drew as staircases.** Server-side
+> every wire entity's wire is a `TransmissionLinePart` — `WireEntity.makeWire` takes it from
+> `GlobalElectricNetworks.makeConnection`. That class overrides `setNetwork` to throw, on the
+> grounds that a part is never *directly* in a network, and `AbstractElectricWire.network` is
+> written nowhere else, so `getNetwork()` on a part is permanently null. `attachSampler` asked the
+> part for its network and therefore bailed for **every** current channel, in every configuration.
+> The server sent an empty array, the client fell back to its own 20 Hz reading, and stretched onto
+> a voltage channel sampled 128 times a tick that drew as one step per world tick. The line itself
+> *is* a wire in the island (`TransmissionLine extends ElectricWire`, added via `addWire`), so the
+> island is now resolved through `part.getLine()`.
 
 #### Controls
 
