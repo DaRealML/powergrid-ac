@@ -27,6 +27,7 @@ import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.utility.Lang;
 
 import javax.annotation.Nullable;
@@ -39,7 +40,7 @@ import static org.patryk3211.powergrid.electricity.pump.ElectricPumpBlock.isPump
  * @see com.simibubi.create.content.fluids.pump.PumpBlockEntity
  */
 public class ElectricPumpBlockEntity extends ElectricBlockEntity implements IHaveGoggleInformation {
-    protected ElectricWire pumpElement;
+    protected LRSeriesWire pumpElement;
     private int prevSpeed;
 
     Couple<MutableBoolean> sidesToUpdate = Couple.create(MutableBoolean::new);
@@ -64,7 +65,7 @@ public class ElectricPumpBlockEntity extends ElectricBlockEntity implements IHav
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        pumpElement = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        pumpElement = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
     }
 
     public void tick() {

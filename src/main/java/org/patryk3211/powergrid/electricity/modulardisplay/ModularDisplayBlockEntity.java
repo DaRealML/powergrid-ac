@@ -371,7 +371,7 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
         for (int s = 0; s < SLOT_COUNT; s++) {
             var coilNode = builder.addInternalNode();
 
-            wires[w1] = builder.connect(25, builder.terminalNode(p), coilNode);
+            wires[w1] = builder.connectCoil(25, builder.terminalNode(p), coilNode);
             wires[w2] = builder.connectSwitch(0.1f, negative, coilNode, false);
             wires[w3] = builder.connectSwitch(0.1f, builder.terminalNode(r), coilNode, false);
             p += 2; r += 2; w1 += 3; w2 += 3; w3 += 3;

@@ -28,7 +28,21 @@ import org.patryk3211.powergrid.circuits.thermal.ThermalBuilder;
 import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 
 public class InductorComponent extends OrientableComponent {
-    public static final FloatProperty INDUCTANCE = new FloatProperty(PowerGrid.MOD_ID, "inductor_value", 0.0001f, 1e-7f, 1.0f);
+    /**
+     * Henries. The default was 100 uH, which at this mod's frequencies is a wire.
+     * <p>
+     * An alternator runs between 4.5 Hz and 72.5 Hz, so 100 uH presents 0.003 to 0.05 ohms --
+     * below the component's own 0.01 ohm parasitic resistance for most of that band, and under
+     * a fifth of a percent of a light bulb. Measured against a 20 ohm bulb it changed the load
+     * current by 0.19% at the very top of the range: indistinguishable from a piece of wire, and
+     * the reason inductors were reported as having no reactance.
+     * <p>
+     * 0.1 H puts the reactance at 2.8 to 46 ohms across the same band -- the same order as the
+     * loads it is meant to interact with, and the same order as the motor coil's own 0.256 H. The
+     * range is left alone: 0.1 uH really is a wire and 1 H really is a choke, and both are honest
+     * answers to what a player asked for.
+     */
+    public static final FloatProperty INDUCTANCE = new FloatProperty(PowerGrid.MOD_ID, "inductor_value", 0.1f, 1e-7f, 1.0f);
     private static final CurrentProperty CURRENT = new CurrentProperty(PowerGrid.MOD_ID, "current");
 
     public InductorComponent(ComponentFootprint footprint) {

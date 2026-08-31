@@ -41,6 +41,13 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     protected double sumSquaredVoltage;
     protected double sumSquaredCurrent;
     protected double sumCurrent;
+    protected double lastRms;
+
+    /** One world tick, in seconds -- the interval the settling filter is stepped at. */
+    private static final double TICK_SECONDS = 0.05;
+
+    /** Settling time constant, longer than a cycle at the slowest frequency the mod makes. */
+    private static final double SETTLING_TAU = 0.25;
 
     public AbstractElectricWire(IElectricNode node1, IElectricNode node2) {
         this.node1 = node1;
@@ -177,6 +184,26 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     }
 
     /**
+     * RMS current over the previous completed tick.
+     * <p>
+     * The quantity a threshold should be compared against. The instantaneous current crosses zero
+     * twice per cycle whatever its amplitude, so any rule of the form {@code |i| < dropOut}
+     * fires every half cycle on an alternating supply regardless of how hard the coil is being
+     * driven — which is a relay buzzing at twice the supply frequency rather than holding in.
+     * Real hardware is held by the coil's inductance and the armature's inertia; this is the
+     * electrical half of that.
+     * <p>
+     * Lagging by a few ticks is the point: it is a settled magnitude rather than a moving one.
+     * On a steady supply it is exactly {@code |i|} -- the filter is bypassed entirely there --
+     * so direct-current behaviour is unchanged.
+     */
+    public double lastRmsCurrent() {
+        if(tickCount <= 1)
+            return Math.abs(current());
+        return lastRms;
+    }
+
+    /**
      * Mean current over the tick — the direct component, where {@link #rmsCurrent()} is the
      * magnitude.
      * <p>
@@ -218,6 +245,21 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
 
     @Override
     public void prepare(int multiTicks) {
+        // Capture the completed tick's RMS before the accumulators are cleared, then smooth it.
+        //
+        // Two separate reasons, and the second is easy to miss. First, rmsCurrent() cannot be
+        // read mid-tick: it divides a partial sum of squares by the FULL sub-tick count and so
+        // under-reads until the tick ends. Second, and worse, a single tick's RMS is only a
+        // meaningful magnitude when the tick spans a whole number of cycles. It does at 20, 40
+        // and 60 Hz and nowhere else: at 4.53 Hz a 50 ms tick covers 0.23 of a cycle, so the
+        // per-tick RMS swings between 0.39 and 0.92 of the amplitude depending on where the
+        // tick fell -- a 2.4 to 1 wobble that would still trip a drop-out threshold set at 0.9.
+        //
+        // The filter's time constant is five world ticks, longer than a cycle at the slowest
+        // frequency the mod produces, which reduces that wobble to a few percent.
+        var tickRms = tickCount > 1 ? Math.sqrt(sumSquaredCurrent / tickCount) : Math.abs(current());
+        var alpha = TICK_SECONDS / (SETTLING_TAU + TICK_SECONDS);
+        lastRms += alpha * (tickRms - lastRms);
         tickCount = multiTicks;
         aggregatePower = 0;
         sumSquaredVoltage = 0;

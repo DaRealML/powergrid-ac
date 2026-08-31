@@ -19,7 +19,9 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import org.patryk3211.powergrid.circuits.circuitboard.BakedCircuit;
 import org.patryk3211.powergrid.config.ResistanceValues;
+import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
 import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
 import org.patryk3211.powergrid.electricity.sim.node.*;
@@ -185,6 +187,26 @@ public interface IElectricEntity {
          */
         public SwitchedWire connectSwitch(float resistance, IElectricNode node1, IElectricNode node2, boolean state) {
             var wire = new SwitchedWire(resistance, node1, node2, state);
+            add(wire);
+            return wire;
+        }
+
+        /**
+         * Connect two nodes with a coil: an inductance in series with its own resistance.
+         * <p>
+         * A winding is not a resistor. Modelled as one it presents the same impedance at every
+         * frequency, draws current exactly in phase, has no inrush and no back-EMF -- which is
+         * most of what makes a coil behave like a coil. The inductance is derived from the
+         * resistance through {@code electricity.coilTimeConstant}, the same way the motor and the
+         * generator winding derive theirs, so a coil's electrical time constant is one number for
+         * the whole mod rather than a magic constant per block.
+         * <p>
+         * Setting that config to zero yields {@code L = 0}, which is a plain resistor again and
+         * restores the previous behaviour exactly.
+         */
+        public LRSeriesWire connectCoil(float resistance, IElectricNode node1, IElectricNode node2) {
+            var tau = ModdedConfigs.server().electricity.coilTimeConstant.getF();
+            var wire = new LRSeriesWire(resistance * tau, resistance, node1, node2);
             add(wire);
             return wire;
         }

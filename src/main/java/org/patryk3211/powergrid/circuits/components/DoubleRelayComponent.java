@@ -45,7 +45,7 @@ public class DoubleRelayComponent extends MirrorableComponent {
         var onCurrent = placed.get(THRESHOLD_CURRENT);
         var offCurrent = onCurrent * ModdedConfigs.server().electricity.holdingCurrentPercent.getF();
         var resistance = placed.get(THRESHOLD_VOLTAGE) / onCurrent;
-        var coilWire = builder.connect(resistance, builder.terminalNode(0), builder.terminalNode(1));
+        var coilWire = builder.connectCoil(resistance, builder.terminalNode(0), builder.terminalNode(1));
 
         final var switchResistance = 0.05f;
         var state = placed.get(STATE);

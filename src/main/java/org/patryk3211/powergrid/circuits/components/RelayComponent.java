@@ -56,7 +56,11 @@ public class RelayComponent extends MirrorableComponent {
         var offCurrent = onCurrent * ModdedConfigs.server().electricity.holdingCurrentPercent.getF();
 
         var resistance = placed.get(THRESHOLD_VOLTAGE) / onCurrent;
-        var coilWire = builder.connect(resistance, builder.terminalNode(0), builder.terminalNode(1));
+        // A relay coil is a coil. Its current still drives the pull-in and drop-out thresholds
+        // below, and the electrical time constant is a fiftieth of a world tick, so the coil is
+        // at 99.3% of its final current by the time that logic next reads it -- the thresholds
+        // see what they always saw, and the part gains the inrush and reactance it should have had.
+        var coilWire = builder.connectCoil(resistance, builder.terminalNode(0), builder.terminalNode(1));
 
         final var switchResistance = 0.05f;
         var common = builder.terminalNode(3);

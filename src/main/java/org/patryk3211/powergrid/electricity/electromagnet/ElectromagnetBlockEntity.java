@@ -35,12 +35,13 @@ import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.electromagnet.recipe.MagnetizingRecipe;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 
 import java.util.List;
 import java.util.Optional;
 
 public class ElectromagnetBlockEntity extends ElectricBlockEntity implements MagnetizingBehaviour.MagnetizingBehaviourSpecifics {
-    private ElectricWire wire;
+    private LRSeriesWire wire;
     private MagnetizingBehaviour magnetizingBehaviour;
 
     public ElectromagnetBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
@@ -78,7 +79,10 @@ public class ElectromagnetBlockEntity extends ElectricBlockEntity implements Mag
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        wire = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        // An electromagnet is a coil, and a coil is not a resistor. connectCoil gives it the
+        // inductance its own resistance implies, so it has inrush and reactance rather than
+        // presenting the same impedance at every frequency.
+        wire = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
     }
 
     @ExpectPlatform

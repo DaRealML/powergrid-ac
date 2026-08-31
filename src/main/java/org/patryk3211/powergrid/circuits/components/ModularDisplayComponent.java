@@ -124,7 +124,7 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
     public void bake(@NotNull PlacedComponent placed, @NotNull ComponentCircuitBuilder builder, ThermalBuilder.@NotNull IEmitter thermals) {
 
         var coilNode = builder.addInternalNode();
-        var coil = builder.connect(25, builder.terminalNode(0), coilNode);
+        var coil = builder.connectCoil(25, builder.terminalNode(0), coilNode);
         var coilNodeToNegitive = builder.connectSwitch(0.1f, builder.terminalNode(1), coilNode, true);
         var coilNodeToReset = builder.connectSwitch(0.1f, builder.terminalNode(2), coilNode, false);
         placed.add(coilNodeToReset); placed.add(coil); placed.add(coilNodeToNegitive);

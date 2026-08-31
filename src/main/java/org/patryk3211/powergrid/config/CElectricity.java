@@ -29,6 +29,7 @@ public class CElectricity extends ConfigBase {
 
     public final ConfigBool motorDynamicResistance = b(true, "motorDynamicResistance", Comments.motorDynamicResistance);
     public final ConfigFloat motorTimeConstant = f(0.01f, 0, "motorTimeConstant", Comments.motorTimeConstant);
+    public final ConfigFloat coilTimeConstant = f(0.01f, 0, "coilTimeConstant", Comments.coilTimeConstant);
 
     public final ConfigFloat forgeEnergyPerVolt = f(2, 0, "forgeEnergyPerVolt", Comments.forgeEnergyPerVolt);
     public final ConfigFloat forgeEnergyPerWatt = f(10, 0, "forgeEnergyPerWatt", Comments.forgeEnergyPerWatt);
@@ -108,6 +109,7 @@ public class CElectricity extends ConfigBase {
         public static final String growthLampChance = "Chance value for the growth lamp to tick a random block in its area (lower value = higher chance), this value is divided by lamp's power level";
 
         public static final String motorDynamicResistance = "Vary motor resistance based on stress consumption";
+        public static final String coilTimeConstant = "Electrical time constant L/R of a coil winding, in seconds - electromagnets, contactor and relay coils, deflection coils and the like. This is what gives them inductive reactance and inrush rather than behaving as plain resistors. Set to 0 for purely resistive coils, which is how they behaved before this was added.";
         public static final String motorTimeConstant = "Electrical time constant L/R of a motor coil, in seconds. This is what gives a motor inductive reactance (X = 2*pi*f*L) and therefore a lagging power factor on alternating supplies; 0.01 matches the generator winding. Set to 0 for a purely resistive motor, which is how motors behaved before this was added. ACCURACY: the reactance is only as good as the solver's sampling. With the default acSamplesPerCycle and acMaxSubTicks an alternator above about 4 pole pairs is solved at fewer than 9 samples per electrical cycle, and backward Euler then overstates both the impedance and the real power - by roughly a factor of three at the 16 pole pair maximum. Raise acMaxSubTicks if you intend to run motors from high pole-pair alternators.";
 
         public static final String forgeEnergyPerVolt = "Conversion rate of volts to Forge Energy (controls buffer size and max transfer rate)";

@@ -33,6 +33,7 @@ import org.patryk3211.powergrid.electricity.base.IElectricEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.kinetics.motor.ElectricMotorBlock;
 import org.patryk3211.powergrid.mixin.KineticBlockEntityAccessor;
 
@@ -52,7 +53,7 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
     private float maxSpeed;
     private int currentTarget;
 
-    private ElectricWire coil;
+    private LRSeriesWire coil;
     private ElectricWire control;
 
     private float avgSpeed;
@@ -154,7 +155,7 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(3);
-        coil = builder.connect(resistance("idle"), builder.terminalNode(0), builder.terminalNode(1));
+        coil = builder.connectCoil(resistance("idle"), builder.terminalNode(0), builder.terminalNode(1));
         control = builder.connect(1000f, builder.terminalNode(2), builder.terminalNode(1));
     }
 

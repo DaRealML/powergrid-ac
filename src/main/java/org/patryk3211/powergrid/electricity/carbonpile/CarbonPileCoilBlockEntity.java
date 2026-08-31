@@ -35,6 +35,7 @@ import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
@@ -42,7 +43,7 @@ import org.patryk3211.powergrid.utility.Unit;
 import java.util.List;
 
 public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IHaveGoggleInformation, ElectricBehaviour.SyncAppender {
-    private ElectricWire coil;
+    private LRSeriesWire coil;
     private SwitchedWire pile;
     private float baseResistance;
     private float trim = 1;
@@ -66,7 +67,7 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(4);
-        coil = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        coil = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
         // Resistance values won't be valid here
         pile = builder.connectSwitch(1, builder.terminalNode(2), builder.terminalNode(3), false);
     }

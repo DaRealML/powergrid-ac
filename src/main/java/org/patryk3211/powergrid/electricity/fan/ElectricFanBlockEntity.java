@@ -32,6 +32,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 
 import java.util.List;
 
@@ -46,7 +47,7 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
     protected int entitySearchCooldown;
     protected boolean updateAirFlow;
 
-    private ElectricWire motor;
+    private LRSeriesWire motor;
     private int prevSpeed;
 
     public ElectricFanBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
@@ -89,9 +90,28 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
         return worldPosition;
     }
 
+    /**
+     * Which way the fan turns, held across ticks.
+     * <p>
+     * Not persisted: which way air blows is cosmetic, and a fan that picks a direction on its
+     * first powered tick after a reload is indistinguishable from one that remembered.
+     */
+    private int direction = 1;
+
     @Override
     public float getSpeed() {
-        double speed = motor.current() * 64;
+        // This had the same defect the motors did. Taking the speed from the instantaneous
+        // current -- with the clamp below explicitly admitting negatives -- meant that on an
+        // alternating supply the fan followed whichever point of the waveform the tick ended on,
+        // so it lurched forwards and backwards instead of turning. Magnitude now comes from the
+        // settled RMS and direction from the direct component, which is zero on a symmetric
+        // supply and therefore leaves the direction alone.
+        var rms = motor.lastRmsCurrent();
+        var mean = motor.meanCurrent();
+        if(Math.abs(mean) > rms * 0.3)
+            direction = mean > 0 ? 1 : -1;
+
+        double speed = rms * 64 * direction;
         if(Math.abs(speed) < 1)
             return 0;
         if(speed > 256) speed = 256;
@@ -185,6 +205,6 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        motor = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        motor = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
     }
 }

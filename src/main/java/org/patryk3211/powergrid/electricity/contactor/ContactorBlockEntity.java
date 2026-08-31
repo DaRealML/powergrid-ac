@@ -29,6 +29,7 @@ import org.patryk3211.powergrid.collections.ModdedSoundEvents;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
 
 import java.util.ArrayList;
@@ -37,7 +38,7 @@ import java.util.List;
 import java.util.Set;
 
 public class ContactorBlockEntity extends ElectricBlockEntity {
-    private ElectricWire coil;
+    private LRSeriesWire coil;
 
     @Nullable
     private SwitchedWire switch1;
@@ -164,7 +165,11 @@ public class ContactorBlockEntity extends ElectricBlockEntity {
         applyPower(switch2);
         applyPower(coil);
 
-        var I = Math.abs(coil.current());
+        // electricalTick runs once per world tick, so reading the instantaneous current sampled a
+        // 4.5-72.5 Hz waveform at 20 Hz -- aliasing it to an arbitrary beat and making pull-in and
+        // drop-out effectively random on an alternating supply. The settled RMS is sampled from
+        // every solver sub-tick and does not alias.
+        var I = coil.lastRmsCurrent();
         if(coil.isConverged()) {
             if (I > 2.0f) {
                 setState(true);
@@ -208,7 +213,7 @@ public class ContactorBlockEntity extends ElectricBlockEntity {
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(6);
-        coil = builder.connect(resistance("coil"), builder.terminalNode(0), builder.terminalNode(1));
+        coil = builder.connectCoil(resistance("coil"), builder.terminalNode(0), builder.terminalNode(1));
 
         if(state || (external != null && !external.isEmpty())) {
             splitCooldown = 0;

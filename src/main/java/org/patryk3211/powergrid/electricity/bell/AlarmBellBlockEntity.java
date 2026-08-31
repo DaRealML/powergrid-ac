@@ -28,9 +28,10 @@ import org.patryk3211.powergrid.collections.ModdedSoundEvents;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 
 public class AlarmBellBlockEntity extends ElectricBlockEntity {
-    private ElectricWire wire;
+    private LRSeriesWire wire;
 
     private boolean hasSoundInstance = false;
     private float prevPitch, prevVolume;
@@ -80,6 +81,6 @@ public class AlarmBellBlockEntity extends ElectricBlockEntity {
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        wire = builder.connect(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        wire = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
     }
 }

@@ -23,7 +23,10 @@ public class FuseSwitchWire extends SwitchedWire implements IOuterHook {
     @Override
     public void preSolve() {
         if(isConverged()) {
-            var I = Math.abs(current());
+            // RMS, because a fuse is a thermal device: it melts on I squared t, not on the
+            // instantaneous peak. Comparing the peak blew an alternating circuit at 0.707 of the
+            // rating, understating its AC capacity by 29%.
+            var I = lastRmsCurrent();
             if (getState()) {
                 if (I > maxCurrent && !wasDisconnected) {
                     setState(false);
