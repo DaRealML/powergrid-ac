@@ -32,8 +32,29 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
 
     public LRSeriesWire(double L, double R, IElectricNode node1, IElectricNode node2) {
         super(node1, node2);
+        validate(L, R);
         this.inductance = L;
         this.resistance = R;
+    }
+
+    /**
+     * The guard {@link org.patryk3211.powergrid.electricity.sim.ElectricWire} applies in its own
+     * constructor, which this class does not inherit.
+     * <p>
+     * It matters because callers reach this class through {@code CircuitBuilder.add}, which
+     * validates nothing, rather than through {@code connect}, which builds an {@code ElectricWire}
+     * and therefore does. A zero resistance gives an infinite conductance and a negative one gives
+     * a negative conductance, and either is stamped straight into the island's admittance matrix
+     * with no complaint — where the plain wire would have thrown at circuit-build time. Both are
+     * reachable from config: the per-block resistance values are defined with no range.
+     */
+    private static void validate(double L, double R) {
+        if(R <= 0)
+            throw new IllegalArgumentException("Wire resistance must be greater than zero");
+        if(!Double.isFinite(R))
+            throw new IllegalArgumentException("Wire resistance is not finite");
+        if(L < 0 || !Double.isFinite(L))
+            throw new IllegalArgumentException("Wire inductance must be finite and not negative");
     }
 
     @Override
@@ -113,6 +134,7 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
     }
 
     public void setLR(double L, double R) {
+        validate(L, R);
         var oldConductance = conductance();
         this.inductance = L;
         this.resistance = R;

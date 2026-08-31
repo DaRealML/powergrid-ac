@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
+import org.patryk3211.powergrid.electricity.sim.special.AcSampling;
 import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 
 /**
@@ -77,8 +78,12 @@ public class MotorReactanceTest extends TestHelper {
         }
 
         void run(int ticks) {
+            run(ticks, SUB_TICKS);
+        }
+
+        void run(int ticks, int subTicks) {
             for(int i = 0; i < ticks; ++i)
-                net.network.calculate(SUB_TICKS);
+                net.network.calculate(subTicks);
         }
     }
 
@@ -156,6 +161,34 @@ public class MotorReactanceTest extends TestHelper {
         // RPM, so nothing in a world can see it, but the tolerance has to admit it.
         Assertions.assertEquals(10.0 / R, coil.current(), 1e-5,
                 "Steady DC current through the coil should still be V/R to within the leakage floor");
+    }
+
+    @Test
+    void reactanceDegradesAtTheShippedSubTickCeiling() {
+        // Everything above runs at SUB_TICKS = 64, which the shipped configuration cannot
+        // produce. acSamplesPerCycle defaults to 32 and acMaxSubTicks to 16, so
+        // AcSampling.subTicksFor(20, 32, 16) caps this rig at 16 -- sixteen samples per cycle,
+        // not sixty-four. Validating a model only at a sampling density the game never reaches
+        // is how an accuracy problem hides in a green suite, so the degraded figure is pinned
+        // here instead.
+        var subTicks = AcSampling.subTicksFor(FREQUENCY, 32, 16);
+        Assertions.assertEquals(16, subTicks,
+                "Shipped acSamplesPerCycle/acMaxSubTicks should cap this rig at 16 sub-ticks");
+
+        var rig = new Rig(FREQUENCY);
+        var coil = rig.coil(R, TAU);
+        rig.run(60, subTicks);
+
+        // Backward Euler overstates the impedance as the sampling coarsens. The exact answer is
+        // 16.06; at sixteen samples per cycle it reads about 17.5, some 9% high. Asserted as a
+        // BAND rather than a bound so that an improvement to the integration fails this test and
+        // has to be acknowledged, rather than silently loosening what the suite claims.
+        var measured = coil.rmsVoltage() / coil.rmsCurrent();
+        var exact = Math.hypot(R, X);
+        var error = (measured - exact) / exact;
+        Assertions.assertTrue(error > 0.03 && error < 0.15,
+                "At the shipped ceiling the impedance should read 3-15% high, got "
+                        + String.format("%.1f%%", error * 100));
     }
 
     @Test
