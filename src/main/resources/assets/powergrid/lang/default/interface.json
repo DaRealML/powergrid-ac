@@ -45,6 +45,7 @@
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
   "powergrid.gui.multimeter.current_vs_time": "Current over time",
   "powergrid.gui.multimeter.no_data": "Nothing probed",
+  "powergrid.gui.multimeter.waiting": "Waiting for samples",
   "powergrid.gui.multimeter.now": "Now",
   "powergrid.gui.multimeter.rms": "RMS",
   "powergrid.gui.multimeter.peak": "Peak",

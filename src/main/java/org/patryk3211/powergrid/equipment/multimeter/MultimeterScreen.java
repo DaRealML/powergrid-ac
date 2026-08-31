@@ -117,11 +117,6 @@ public class MultimeterScreen extends Screen {
         return stacked ? plotTop + channel * laneHeight(plotTop, plotBottom, channels) : plotTop;
     }
 
-    /** Full-scale value a channel is drawn against, under whichever scaling mode is in force. */
-    private static float scaleOf(int channel) {
-        return sharedScale ? MultimeterTrace.sharedScale(channel) : MultimeterTrace.displayScale(channel);
-    }
-
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if(button == 0) {
@@ -141,15 +136,38 @@ public class MultimeterScreen extends Screen {
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
+    /**
+     * Whether space is currently held, because {@code keyPressed} cannot tell a repeat from a
+     * press.
+     * <p>
+     * Minecraft's keyboard handler dispatches {@code Screen.keyPressed} for {@code GLFW_REPEAT}
+     * identically to {@code GLFW_PRESS}, so resting a finger on the key toggled the freeze at the
+     * operating system's repeat rate — roughly thirty times a second. Every other toggle is a
+     * resume, which drops the history, and the client only appends twenty times a second, so the
+     * plot emptied and stayed empty for as long as the key was held. Latching on the release
+     * makes one keystroke one toggle.
+     */
+    private boolean spaceHeld;
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         // Space is the freeze key on essentially every oscilloscope and logic analyser; having to
         // hit a small piece of text with the mouse to catch a transient rather defeats the point.
         if(keyCode == GLFW.GLFW_KEY_SPACE) {
-            MultimeterTrace.setPaused(!MultimeterTrace.isPaused());
+            if(!spaceHeld) {
+                spaceHeld = true;
+                MultimeterTrace.setPaused(!MultimeterTrace.isPaused());
+            }
             return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
+        if(keyCode == GLFW.GLFW_KEY_SPACE)
+            spaceHeld = false;
+        return super.keyReleased(keyCode, scanCode, modifiers);
     }
 
     /**
@@ -240,7 +258,10 @@ public class MultimeterScreen extends Screen {
                 cursor, controlY, mouseX, mouseY, COLOUR_TEXT_DIM);
 
         if(MultimeterTrace.isEmpty()) {
-            graphics.drawCenteredString(font, Lang.translate("gui.multimeter.no_data").component(),
+            // "Nothing probed" blames the probes for what is often a deliberate wipe — resuming
+            // from a freeze drops the stale history on purpose — so say which it is.
+            var reason = channels == 0 ? "gui.multimeter.no_data" : "gui.multimeter.waiting";
+            graphics.drawCenteredString(font, Lang.translate(reason).component(),
                     (left + right) / 2, (top + bottom) / 2, COLOUR_TEXT_DIM);
             return;
         }
@@ -255,13 +276,29 @@ public class MultimeterScreen extends Screen {
 
         drawGrid(graphics, plotLeft, plotTop, plotRight, plotBottom, channels);
 
+        // Computed once per frame and handed down. The scale and the window array used to be
+        // recomputed inside drawTrace, drawReadout and drawPhasorSummary; with a 4096-sample ring
+        // and four channels that came to a few hundred thousand ring reads and something like
+        // 128 kB of garbage every frame. The drawing loop was always proportional to the plot,
+        // but these were proportional to the buffer, which this screen made twenty times larger.
+        var voltScale = MultimeterTrace.sharedScaleForUnit(false);
+        var ampScale = MultimeterTrace.sharedScaleForUnit(true);
+        var scales = new float[channels];
+        var windows = new float[channels][];
+        for(int c = 0; c < channels; ++c) {
+            scales[c] = sharedScale
+                    ? (MultimeterTrace.isCurrent(c) ? ampScale : voltScale)
+                    : MultimeterTrace.displayScale(c);
+            windows[c] = MultimeterTrace.toArray(c);
+        }
+
         for(int c = 0; c < channels; ++c) {
             var laneTop = laneTop(plotTop, plotBottom, c, channels);
             var laneBottom = laneTop + laneHeight(plotTop, plotBottom, channels);
             // One zero line per lane. In overlay mode every lane is the whole plot, so this
             // draws the single centre line over itself and costs nothing.
             graphics.hLine(plotLeft, plotRight, (laneTop + laneBottom) / 2, COLOUR_ZERO);
-            drawTrace(graphics, c, plotLeft, laneTop, plotRight, laneBottom);
+            drawTrace(graphics, c, scales[c], plotLeft, laneTop, plotRight, laneBottom);
         }
 
         drawTimeAxis(graphics, plotLeft, plotRight, plotBottom);
@@ -270,17 +307,17 @@ public class MultimeterScreen extends Screen {
         // every phasor, so relative phase between channels is measured against a common bin.
         var sampleRate = (double) MultimeterTrace.sampleRate();
         var reference = MultimeterPhasor.strongestChannel();
-        var frequency = reference < 0 ? 0
-                : MultimeterPhasor.estimateFrequency(MultimeterTrace.toArray(reference), sampleRate);
+        var frequency = reference < 0 || reference >= channels ? 0
+                : MultimeterPhasor.estimateFrequency(windows[reference], sampleRate);
         var referencePhase = frequency <= 0 ? 0
-                : MultimeterPhasor.goertzel(MultimeterTrace.toArray(reference), frequency, sampleRate).phaseDegrees();
+                : MultimeterPhasor.goertzel(windows[reference], frequency, sampleRate).phaseDegrees();
 
         var rowTop = plotBottom + ROW_HEIGHT + 2;
         for(int c = 0; c < channels; ++c)
-            drawReadout(graphics, c, plotLeft, rowTop + c * ROW_HEIGHT, plotRight,
-                    frequency, sampleRate, referencePhase);
+            drawReadout(graphics, c, scales[c], windows[c], plotLeft, rowTop + c * ROW_HEIGHT,
+                    plotRight, frequency, sampleRate, referencePhase);
 
-        drawPhasorSummary(graphics, plotLeft, rowTop + channels * ROW_HEIGHT, plotRight,
+        drawPhasorSummary(graphics, windows, plotLeft, rowTop + channels * ROW_HEIGHT, plotRight,
                 frequency, sampleRate);
     }
 
@@ -296,7 +333,7 @@ public class MultimeterScreen extends Screen {
      * impedance term alone can run to thirty characters on a badly matched load, and the line
      * used to simply overrun the panel and draw across whatever was beside it.
      */
-    private void drawPhasorSummary(GuiGraphics graphics, int x, int y, int right,
+    private void drawPhasorSummary(GuiGraphics graphics, float[][] windows, int x, int y, int right,
                                    double frequency, double sampleRate) {
         if(frequency <= 0) {
             graphics.drawString(font, Lang.translate("gui.multimeter.steady").component(),
@@ -318,8 +355,8 @@ public class MultimeterScreen extends Screen {
         }
 
         if(voltage >= 0 && current >= 0) {
-            var v = MultimeterPhasor.goertzel(MultimeterTrace.toArray(voltage), frequency, sampleRate);
-            var i = MultimeterPhasor.goertzel(MultimeterTrace.toArray(current), frequency, sampleRate);
+            var v = MultimeterPhasor.goertzel(windows[voltage], frequency, sampleRate);
+            var i = MultimeterPhasor.goertzel(windows[current], frequency, sampleRate);
             if(i.magnitude() > 1e-9) {
                 var z = MultimeterPhasor.impedance(v, i);
                 // Sign of the reactance is the whole point: + is inductive, - is capacitive.
@@ -372,12 +409,12 @@ public class MultimeterScreen extends Screen {
      * waveform too fast to draw point by point, instead of an arbitrary one of the samples — and
      * it also keeps the cost proportional to the plot rather than to the buffer.
      */
-    private void drawTrace(GuiGraphics graphics, int channel, int plotLeft, int plotTop, int plotRight, int plotBottom) {
+    private void drawTrace(GuiGraphics graphics, int channel, float range,
+                           int plotLeft, int plotTop, int plotRight, int plotBottom) {
         var visible = MultimeterTrace.visibleCount(channel);
         if(visible == 0)
             return;
 
-        var range = scaleOf(channel);
         var plotWidth = plotRight - plotLeft;
         var plotHeight = plotBottom - plotTop;
         var zeroY = plotTop + plotHeight / 2;
@@ -448,14 +485,15 @@ public class MultimeterScreen extends Screen {
      * the left edge outwards, and the left group stops where the right group begins. Fixed pixel
      * offsets were what let a four-digit reading run straight into the label beside it.
      */
-    private void drawReadout(GuiGraphics graphics, int channel, int x, int y, int plotRight,
+    private void drawReadout(GuiGraphics graphics, int channel, float range, float[] window,
+                             int x, int y, int plotRight,
                              double frequency, double sampleRate, double referencePhase) {
         var colour = MultimeterTrace.colour(channel);
 
         // Right group, right to left.
         var rightEdge = plotRight;
 
-        var scale = Lang.text("±" + format(channel, scaleOf(channel)).getString()).component();
+        var scale = Lang.text("±" + format(channel, range).getString()).component();
         rightEdge -= font.width(scale);
         graphics.drawString(font, scale, rightEdge, y, COLOUR_TEXT_DIM, false);
 
@@ -463,7 +501,7 @@ public class MultimeterScreen extends Screen {
             // Phase relative to the strongest channel. Absolute phase is meaningless on its own —
             // there is no external reference — but the angle BETWEEN channels is the measurement
             // that matters, and it is what tells a lagging current from a leading one.
-            var phasor = MultimeterPhasor.goertzel(MultimeterTrace.toArray(channel), frequency, sampleRate);
+            var phasor = MultimeterPhasor.goertzel(window, frequency, sampleRate);
             var relative = phasor.phaseDegrees() - referencePhase;
             while(relative <= -180) relative += 360;
             while(relative > 180) relative -= 360;

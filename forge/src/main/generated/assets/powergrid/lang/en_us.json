@@ -517,6 +517,7 @@
   "powergrid.gui.multimeter.steady": "Steady (no alternating component)",
   "powergrid.gui.multimeter.title": "Multimeter",
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
+  "powergrid.gui.multimeter.waiting": "Waiting for samples",
   "powergrid.gui.plotter.header": "Voltage at T-",
   "powergrid.gui.portable.battery.depleted": "Portable battery empty",
   "powergrid.gui.portable.battery.low": "Portable battery low",

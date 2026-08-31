@@ -209,9 +209,15 @@ public class MultimeterTrace {
         if(common == 0)
             return;
 
-        // Splicing 20 Hz history in front of solver-resolution samples would put two different
-        // time bases in one buffer, and the axis would be wrong for the older half of it.
-        if(!receivingSubTicks())
+        // Two different time bases in one buffer make the axis wrong for the older half of it.
+        // That happens on a change of SOURCE, and equally on a change of RATE while the stream
+        // continues: an alternator spinning up walks its sub-tick count 1, 2, 4 ... 128, and at
+        // each step the ring still holds the older half at the previous rate while
+        // targetSamples() and windowSeconds() are recomputed entirely from the new one. The plot
+        // then snaps horizontally and every phasor is handed one sampleRate for a window that is
+        // mostly stale-rate samples, so frequency, phase, Z and SWR are all wrong until it
+        // refills. Guarding only the source transition left that case in.
+        if(!receivingSubTicks() || common != subTickRate)
             clear0();
 
         ticksSinceSubTick = 0;
@@ -250,11 +256,20 @@ public class MultimeterTrace {
         for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
             head[c] = 0;
             filled[c] = 0;
+            // Or the header prints a stale "2560 Hz" over an empty plot for the frame or two
+            // before the next packet lands.
+            channelSamples[c] = 0;
         }
+        subTickRate = 1;
     }
 
 
     public static void clear() {
+        // Both append paths already stand down while frozen; this one did not, so a stack
+        // leaving the main hand mid-freeze wiped the picture the freeze existed to hold, and
+        // nothing repopulated it because sample() was standing down too.
+        if(paused)
+            return;
         for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
             head[c] = 0;
             filled[c] = 0;
@@ -408,7 +423,15 @@ public class MultimeterTrace {
      * with reversed probe leads on DC would report the reading closest to zero as the peak.
      */
     public static float peak(int channel) {
-        return Math.max(Math.abs(minimum(channel)), Math.abs(maximum(channel)));
+        // One pass. This is called for every channel by every channel's shared-scale lookup, so
+        // running minimum() and maximum() as two separate full sweeps of a 4096-sample window
+        // was quadratic in the channel count for no reason.
+        if(filled[channel] == 0)
+            return 0;
+        var peak = 0f;
+        for(int i = windowStart(channel); i < filled[channel]; ++i)
+            peak = Math.max(peak, Math.abs(get(channel, i)));
+        return peak;
     }
 
     /**
@@ -440,7 +463,15 @@ public class MultimeterTrace {
      * flattens the current onto the zero line.
      */
     public static float sharedScale(int channel) {
-        var wantCurrent = currentChannel[channel];
+        return sharedScaleForUnit(currentChannel[channel]);
+    }
+
+    /**
+     * The shared scale for one unit, so a caller drawing every channel can compute the two scales
+     * once instead of once per channel — the difference between O(channels) and O(channels²)
+     * sweeps of the window.
+     */
+    public static float sharedScaleForUnit(boolean wantCurrent) {
         var peak = 0f;
         for(int c = 0; c < channelCount; ++c)
             if(currentChannel[c] == wantCurrent)
