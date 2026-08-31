@@ -683,15 +683,16 @@ rather than following the timebase: frequency and phase want as many cycles as p
 plot wants few enough to see, and tying both to one window meant shortening the timebase to read a
 waveform also degraded the numbers printed under it.
 
-#### The window is a duration, not a sample count
+#### The ring, and how the trace is drawn
 
-The ring holds 4096 samples per channel and the plot shows a fixed **two second** window. Both
-numbers matter. The ring used to be 200, which at a solver rate of 2560 Hz is 78 ms — so a
-channel the server could sample only once per world tick had room for one or two distinct values
-across the whole plot and drew as a single step, which reads as a broken probe rather than a
-coarse one. And a fixed *sample* count would silently rescale the time axis by two orders of
-magnitude the moment the solver began sub-stepping; a fixed *window* keeps the horizontal axis
-meaning the same thing.
+The ring holds 4096 samples per channel. It used to hold 200, which at a solver rate of 2560 Hz is
+78 ms — so a channel the server could sample only once per world tick had room for one or two
+distinct values across the whole plot and drew as a single step, which reads as a broken probe
+rather than a coarse one.
+
+The window is a *duration* rather than a sample count for the same class of reason: a fixed sample
+count silently rescales the time axis by two orders of magnitude the moment the solver begins
+sub-stepping, while a fixed window keeps the horizontal axis meaning the same thing.
 
 Drawing reduces the samples falling in each pixel column to their minimum and maximum and draws
 that span. That is how scope software renders a waveform too fast to plot point by point — it
