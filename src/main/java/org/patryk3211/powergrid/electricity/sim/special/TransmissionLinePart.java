@@ -173,6 +173,20 @@ public class TransmissionLinePart extends ElectricWire {
         return line.current();
     }
 
+    /**
+     * The line's island, since a part is never in one itself.
+     * <p>
+     * Mirrors {@link #current()} exactly: both defer to the line, and both answer harmlessly when
+     * there is no line yet. Without this an observer attached by way of {@code getNetwork()} —
+     * which {@link #setNetwork} guarantees is null — is attached to nothing at all.
+     */
+    @Override
+    public ElectricalNetwork residentNetwork() {
+        if(line == null)
+            return null;
+        return line.getNetwork();
+    }
+
     @Override
     public boolean isConverged() {
         if(line == null)

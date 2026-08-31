@@ -361,11 +361,41 @@ and with `leak = 1` the algebra gives exactly `V/R`. Note that two ppm is the er
 *current*; the speed term goes as I², so its error is **4 ppm**. Both are some three orders of
 magnitude below the nearest integer RPM.
 
-**What this does not do.** The motor is still a direct-current machine model. It has no
-back-EMF, and its direction still comes from `Math.signum` of the instantaneous current, so on an
-alternating supply the half cycles cancel and it jitters near zero rather than running. That was
-true before and adding reactance does not change it — motors do **not** now run on AC. Doing that
-properly means a torque model with slip, which is separate work.
+#### Running on alternating current
+
+A motor used to take its direction from `Math.signum` of the instantaneous coil current, sampled
+once per world tick. On a steady supply that is the polarity. On an alternating one it is whichever
+point of the waveform the tick landed on, so the shaft was driven forwards, then backwards, and the
+five-tick average came out near a standstill with visible jitter.
+
+Magnitude and direction are now separate questions:
+
+```
+speed  ∝  (I_rms · R)² / R_nom          — from every solver sub-tick, not one sample
+dir    ←  sign(I_dc)   when |I_dc| > 0.3 · I_rms
+I_dc   ←  I_dc + α(mean(I) − I_dc),     α = dt/(τ + dt),  τ = 0.5 s
+```
+
+A steady supply is unchanged **exactly**: `rmsCurrent()` is `|I|` and the filtered mean converges
+to `I`, so the squared magnitude is the same number and the direction is the same sign. Reversing a
+DC supply still reverses the motor, in about eleven ticks.
+
+A symmetric alternating supply has no direct component, so it cannot express a direction and the
+motor keeps the one it had — the supply sets how hard it turns, the wiring sets which way, which is
+how a real single-phase machine behaves. A rectified or offset supply does have a bias, and that
+wins.
+
+> **The filter is load-bearing, and the obvious version is wrong.** `meanCurrent()` averages over
+> one world tick, and a tick is a whole number of electrical cycles only when the frequency is a
+> multiple of 20 Hz. At 9 Hz a tick spans 0.45 of a cycle, so the per-tick mean is substantially
+> non-zero and its sign alternates as the window slides — reintroducing the lurch more subtly.
+> The first version of this rule did exactly that and reversed on 36 of 40 ticks;
+> `noSymmetricSupplyAtAnyFrequencyEverSetsADirection` sweeps 4.5 Hz to 72.5 Hz and pins it.
+
+**What this still does not do.** There is no back-EMF and no slip, so the motor does not have a
+torque-speed curve — it is a machine whose speed follows delivered power. Direction on pure AC is
+latched rather than derived, so two identical motors on the same supply always turn the same way
+and cannot be reversed without a DC component.
 
 #### Two limitations worth knowing before trusting a number
 

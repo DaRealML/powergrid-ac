@@ -40,6 +40,7 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     // multiply-accumulates and nothing else.
     protected double sumSquaredVoltage;
     protected double sumSquaredCurrent;
+    protected double sumCurrent;
 
     public AbstractElectricWire(IElectricNode node1, IElectricNode node2) {
         this.node1 = node1;
@@ -64,6 +65,23 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     @Override
     public void setNetwork(ElectricalNetwork network) {
         this.network = network;
+    }
+
+    /**
+     * The island whose solve actually stamps this wire, which is not always the one it holds.
+     * <p>
+     * A wire that is a member of a network answers with itself. A wire that is <em>represented</em>
+     * by something else in the matrix — see
+     * {@link org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart}, which refuses
+     * to hold a network at all and delegates its current to the line it belongs to — has to name
+     * that something else, or an observer registered against {@link #getNetwork()} is registered
+     * against null and never fires.
+     * <p>
+     * Separate from {@code getNetwork()} on purpose: ownership and residency are different
+     * questions, and the existing callers of {@code getNetwork()} are asking the first one.
+     */
+    public ElectricalNetwork residentNetwork() {
+        return network;
     }
 
     @Override
@@ -159,6 +177,22 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     }
 
     /**
+     * Mean current over the tick — the direct component, where {@link #rmsCurrent()} is the
+     * magnitude.
+     * <p>
+     * The two together separate <em>how hard</em> a current flows from <em>which way</em> it
+     * flows, which the instantaneous value cannot do on an alternating supply: sampled once per
+     * world tick its sign is whatever point of the waveform the tick happened to land on. For a
+     * steady current this is the current; for a symmetric alternating one it is zero; for a
+     * rectified or offset one it is the bias that survives.
+     */
+    public double meanCurrent() {
+        if(tickCount <= 1)
+            return current();
+        return sumCurrent / tickCount;
+    }
+
+    /**
      * Apparent power, S = V_rms * I_rms.
      * <p>
      * On DC this equals the real power. On AC it exceeds it whenever voltage and current are
@@ -188,6 +222,7 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
         aggregatePower = 0;
         sumSquaredVoltage = 0;
         sumSquaredCurrent = 0;
+        sumCurrent = 0;
     }
 
     @Override
@@ -201,6 +236,7 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
         aggregatePower += voltage * current / tickCount;
         sumSquaredVoltage += voltage * voltage;
         sumSquaredCurrent += current * current;
+        sumCurrent += current;
     }
 
     public abstract double conductance();
