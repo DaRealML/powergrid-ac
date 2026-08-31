@@ -175,7 +175,10 @@ public class ReactiveAcTest extends TestHelper {
         rig.net.network.addWire(L);
         rig.run(60);
 
-        Assertions.assertEquals(0, L.powerFactor(), 0.15,
+        // Not 0. Backward Euler leaves exactly sin(omega*dt/2) = 0.0491 of real power in a
+        // lossless element at this sub-tick count. A band of +-0.15 around zero admitted that
+        // and a great deal else; this pins the discretisation itself.
+        Assertions.assertEquals(0.0491, L.powerFactor(), 0.005,
                 "An inductor should carry almost no real power");
 
         var rig2 = new Rig();
@@ -183,7 +186,11 @@ public class ReactiveAcTest extends TestHelper {
         rig2.net.network.addWire(C);
         rig2.run(60);
 
-        Assertions.assertEquals(0, C.powerFactor(), 0.15,
+        // Also POSITIVE, and the same magnitude as the inductor above. Backward Euler is
+        // dissipative for both kinds of reactance -- it loses a little energy per step whichever
+        // way the element stores it -- so this is numerical damping, not a sign difference
+        // between capacitive and inductive.
+        Assertions.assertEquals(0.0491, C.powerFactor(), 0.005,
                 "A capacitor should carry almost no real power");
     }
 

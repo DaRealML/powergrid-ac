@@ -36,9 +36,11 @@ import org.patryk3211.powergrid.equipment.multimeter.MultimeterPhasor;
  * relative to the voltage across it, and that only becomes a voltage phase shift once something
  * else in the loop drops part of the supply — a series resistance, another reactance, a load.
  * <p>
- * These pin both halves of that: the reading that is legitimately in phase, and the divider that
- * produces the textbook 45 degrees. If the second ever stops holding, the components really are
- * broken.
+ * These pin both halves of that: the quarter-cycle lead in the capacitor's own current, and the
+ * dividers where a voltage shift can genuinely appear. All three expectations are the values
+ * backward Euler actually produces at this sub-tick count — 87.2 and ±43.6 rather than the
+ * continuous 90 and 45 — because a band wide enough to admit the textbook figure is also wide
+ * enough to admit a sub-tick rate an octave wrong.
  */
 public class ReactivePhaseTest extends TestHelper {
     private static final double FREQUENCY = 20;
@@ -47,7 +49,7 @@ public class ReactivePhaseTest extends TestHelper {
     private static final double SAMPLE_RATE = 20 * SUB_TICKS;
     private static final double AMPLITUDE = 10;
 
-    /** Reactance the dividers are tuned to, so both give exactly 45 degrees. */
+    /** Reactance the dividers are tuned to, R = X, which is the 45-degree point. */
     private static final double REACTANCE = 10;
 
     private static class Rig {
@@ -96,19 +98,46 @@ public class ReactivePhaseTest extends TestHelper {
     }
 
     @Test
-    void capacitorStraightAcrossTheSourceIsInPhaseAndShouldBe() {
-        // The reading that gets reported as a bug. Same node pair as the supply, so there is
-        // nothing for a phase shift to appear across.
+    void theShiftIsInTheCurrentNotTheVoltageAcrossTheCapacitor() {
+        // This test used to compare rig.terminal against rig.terminal and assert the phase
+        // difference was zero. Those two capture arrays are bit-identical, so the difference was
+        // exactly 0.0 by construction: it passed with the capacitor deleted and the source dead.
+        // A long comment about physics sat above an assertEquals(x, x).
+        //
+        // The claim that comment was making is real and is testable — just not against the
+        // voltage, which genuinely cannot shift. It is the CURRENT through the capacitor that
+        // leads, by a quarter cycle.
         var rig = new Rig();
         var capacitance = 1 / (OMEGA * REACTANCE);
         var c = new CRSeriesWire(capacitance, 0.01f, rig.terminal, rig.ground);
         rig.net.network.addWire(c);
 
-        var phase = relativePhase(rig.capture(rig.terminal, rig.terminal, 40, 4));
-        Assertions.assertEquals(0, phase, 1,
-                "A capacitor across the supply cannot shift the supply's own phase");
+        for(int i = 0; i < 40; ++i)
+            rig.net.network.calculate(SUB_TICKS);
 
-        // The shift is in the CURRENT, not the voltage, so the part is doing its job.
+        var voltage = new float[4 * SUB_TICKS];
+        var current = new float[4 * SUB_TICKS];
+        var n = 0;
+        for(int t = 0; t < 4; ++t) {
+            rig.net.network.prepare(SUB_TICKS);
+            for(int i = 0; i < SUB_TICKS; ++i) {
+                rig.net.network.singleTick();
+                voltage[n] = (float) rig.terminal.getVoltage();
+                current[n] = (float) c.current();
+                ++n;
+            }
+        }
+
+        var v = MultimeterPhasor.goertzel(voltage, FREQUENCY, SAMPLE_RATE);
+        var i = MultimeterPhasor.goertzel(current, FREQUENCY, SAMPLE_RATE);
+        var lead = i.phaseDegrees() - v.phaseDegrees();
+        while(lead <= -180) lead += 360;
+        while(lead > 180) lead -= 360;
+
+        // Backward Euler puts this at 90 - x*180/pi with x = omega*dt/2, about 87.2 degrees at
+        // this sub-tick count, not the continuous 90. Asserted against what the scheme produces.
+        Assertions.assertEquals(87.2, lead, 1.5,
+                "Capacitor current should lead its voltage by a quarter cycle");
         Assertions.assertTrue(c.rmsCurrent() > 0, "The capacitor should be conducting");
     }
 
@@ -122,8 +151,12 @@ public class ReactivePhaseTest extends TestHelper {
         rig.net.network.addWire(new CRSeriesWire(capacitance, 0.001f, mid, rig.ground));
 
         var captured = rig.capture(rig.terminal, mid, 40, 4);
-        Assertions.assertEquals(-45, relativePhase(captured), 4,
-                "An RC divider with R = Xc should put the midpoint 45 degrees behind");
+        // Not -45. Backward Euler shifts each reactance's phase by x = omega*dt/2, so the
+        // measured answer is -43.58 and the continuous -45 is 35% of the old +-4 band away from
+        // it -- wide enough to pass with the sub-tick rate an octave wrong. Asserted against the
+        // scheme's own value with a band that would notice that.
+        Assertions.assertEquals(-43.58, relativePhase(captured), 0.5,
+                "An RC divider with R = Xc should put the midpoint 43.58 degrees behind");
     }
 
     @Test
@@ -136,8 +169,8 @@ public class ReactivePhaseTest extends TestHelper {
         rig.net.network.addWire(new LRSeriesWire(inductance, 0.001f, mid, rig.ground));
 
         var captured = rig.capture(rig.terminal, mid, 40, 4);
-        Assertions.assertEquals(45, relativePhase(captured), 4,
-                "An RL divider with R = Xl should put the midpoint 45 degrees ahead");
+        Assertions.assertEquals(43.60, relativePhase(captured), 0.5,
+                "An RL divider with R = Xl should put the midpoint 43.60 degrees ahead");
     }
 
     @Test
@@ -155,7 +188,9 @@ public class ReactivePhaseTest extends TestHelper {
         var supply = MultimeterPhasor.goertzel(captured[0], FREQUENCY, SAMPLE_RATE).magnitude();
         var midpoint = MultimeterPhasor.goertzel(captured[1], FREQUENCY, SAMPLE_RATE).magnitude();
 
-        Assertions.assertEquals(1 / Math.sqrt(2), midpoint / supply, 0.05,
-                "A reactive divider with R = Xc should give 1/sqrt(2), not 1/2");
+        // 0.6905 measured against a continuous 0.7071; the same discretisation. Still decisively
+        // distinguishes a reactive divider from the 0.5 two equal resistors would give.
+        Assertions.assertEquals(0.6905, midpoint / supply, 0.01,
+                "A reactive divider with R = Xc should give ~1/sqrt(2), not 1/2");
     }
 }

@@ -96,7 +96,10 @@ public class LinearFastPathTest extends TestHelper {
         for(int i = 0; i < 20; ++i)
             Net.calculate();
 
-        Assertions.assertEquals(6.32, mid.getVoltage(), 0.15,
+        // Not 6.32. That is the continuous 1 - 1/e; backward Euler over 20 steps of dt = 0.05
+        // gives 10*(1 - (1/1.05)^20) = 6.2311, and with leakage 6.2306. The old assertion sat
+        // 60% of the way to failing at all times, against a value the scheme cannot produce.
+        Assertions.assertEquals(6.2306, mid.getVoltage(), 0.01,
                 "Capacitor did not charge to 1-1/e of the supply after one time constant");
     }
 

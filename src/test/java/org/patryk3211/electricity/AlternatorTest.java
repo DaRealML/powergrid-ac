@@ -19,6 +19,8 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
+import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
+import org.patryk3211.powergrid.electricity.sim.special.InductorWire;
 import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.IRotor;
 
@@ -62,11 +64,14 @@ public class AlternatorTest extends TestHelper {
         final AlternatorCoupling alternator;
         final ElectricWire load;
         final FixedRotor rotor;
+        /** Exposed so a test can hang a second, reactive load on the same machine. */
+        final FloatingNode terminal;
+        final IElectricNode ground;
 
         Rig(float rpm, float field, int polePairs, float loadResistance) {
             rotor = new FixedRotor(rpm, 1.0f);
-            var ground = net.V(0);
-            var terminal = new FloatingNode();
+            ground = net.V(0);
+            terminal = new FloatingNode();
             alternator = new AlternatorCoupling(terminal, null, 0.01f, rotor);
             alternator.setField(field);
             alternator.setPolePairs(polePairs);
@@ -156,19 +161,13 @@ public class AlternatorTest extends TestHelper {
 
     @Test
     void rmsOfSineIsPeakOverRootTwo() {
-        var rig = new Rig(RPM_1HZ, 1.0f, 1, 10f);
         var subTicks = 64;
 
-        // Run a whole number of cycles so the sums cover complete periods, then read the
-        // metering accumulated over the final world tick.
-        for(int tick = 0; tick < 20; ++tick) {
-            rig.net.network.calculate(subTicks);
-        }
-
-        // The last world tick covers 1/20th of a cycle, which is not a whole period, so compare
-        // against the RMS of the samples actually taken rather than the ideal peak/sqrt(2).
-        // Instead drive a case where one world tick IS a whole number of cycles: 1200 rpm with
-        // one pole pair is 20 Hz, exactly one cycle per world tick.
+        // One world tick must be a whole number of electrical cycles, or the per-tick RMS
+        // accumulators cover a partial period and the comparison is against nothing in
+        // particular. 1200 rpm at one pole pair is 20 Hz: exactly one cycle per world tick.
+        // (A 1 Hz rig used to be built and run for 20 ticks here before being discarded
+        // unread — 1280 solves that asserted nothing.)
         var fast = new Rig(1200, 1.0f, 1, 10f);
         for(int tick = 0; tick < 5; ++tick) {
             fast.net.network.calculate(subTicks);
@@ -180,6 +179,9 @@ public class AlternatorTest extends TestHelper {
 
         Assertions.assertEquals(loadPeak / Math.sqrt(2), fast.load.rmsVoltage(), loadPeak * 0.02,
                 "Load RMS voltage is not peak/sqrt(2)");
+        // powerFactor() returns 1 when apparentPower() is zero, so without this guard the
+        // assertion below also passes on a stopped machine drawing nothing at all.
+        Assertions.assertTrue(fast.load.apparentPower() > 0, "The load should be carrying power");
         Assertions.assertEquals(1.0, fast.load.powerFactor(), 0.02,
                 "Power factor of a purely resistive load should be 1");
     }
@@ -193,8 +195,25 @@ public class AlternatorTest extends TestHelper {
             rig.net.network.calculate(64);
         }
 
-        Assertions.assertEquals(rig.load.power(), rig.load.apparentPower(), Math.abs(rig.load.power()) * 0.02,
-                "Apparent power should equal real power for a resistive load");
+        // P == S is an algebraic identity for any ElectricWire, not a property of the
+        // alternator: current() is potentialDifference()*conductance(), so both sides reduce
+        // to G*sum(v^2)/n for any waveform whatsoever. The old assertion passed on a DC
+        // divider with no alternator in the world, and on an alternator that was not turning.
+        //
+        // The contrast is the real content: a resistive load is in phase and a reactive one is
+        // not, on the same machine.
+        Assertions.assertTrue(rig.load.apparentPower() > 0, "The load should be carrying power");
+        Assertions.assertEquals(1.0, rig.load.powerFactor(), 0.02,
+                "A resistive load on an alternator should be in phase");
+
+        var reactive = new Rig(1200, 1.0f, 1, 10f);
+        var inductor = new InductorWire(0.1, reactive.terminal, reactive.ground);
+        reactive.net.network.addWire(inductor);
+        for(int tick = 0; tick < 5; ++tick)
+            reactive.net.network.calculate(64);
+        Assertions.assertTrue(inductor.powerFactor() < 0.3,
+                "An inductive load on the same machine should not be, got "
+                        + inductor.powerFactor());
     }
 
     @Test
@@ -252,7 +271,15 @@ public class AlternatorTest extends TestHelper {
         var rig = new Rig(1200, 1.0f, 1, 10f);
         rig.net.network.calculate(64);
 
-        Assertions.assertNotEquals(0.0f, rig.rotor.appliedForce,
-                "A loaded alternator applied no torque to its rotor");
+        // Not assertNotEquals(0). The name of this test promises a sign, and an alternator
+        // that ACCELERATED its own shaft — free energy — passed the old assertion.
+        Assertions.assertTrue(rig.rotor.appliedForce < 0,
+                "A loaded alternator must oppose its rotor, got " + rig.rotor.appliedForce);
+
+        var reversed = new Rig(-1200, 1.0f, 1, 10f);
+        reversed.net.network.calculate(64);
+        Assertions.assertTrue(reversed.rotor.appliedForce > 0,
+                "Reversing the shaft must reverse the opposing torque, got "
+                        + reversed.rotor.appliedForce);
     }
 }
