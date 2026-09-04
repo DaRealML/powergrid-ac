@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
+import org.patryk3211.powergrid.electricity.sim.node.ITimeAwareWire;
 import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.CapacitorWire;
 import org.patryk3211.powergrid.electricity.sim.special.InductorWire;
@@ -45,6 +46,19 @@ public class ReactiveAcTest extends TestHelper {
 
     /** 64 samples per cycle; fine enough that discretisation error is well under a percent. */
     private static final int SUB_TICKS = 64;
+
+    /**
+     * Real power the integration leaves in a lossless element, as a power factor.
+     * <p>
+     * A quarter-cycle phase shift gives a power factor of zero; the theta-method falls short
+     * of a quarter cycle by {@code (theta - 1/2) * omega * dt}, and the power factor is the
+     * sine of that. Exactly zero for the trapezoidal rule, {@code sin(omega*dt/2)} for
+     * backward Euler.
+     */
+    private static double schemePowerFactor() {
+        var dt = 0.05 / SUB_TICKS;
+        return Math.sin((ITimeAwareWire.DEFAULT_THETA - 0.5) * OMEGA * dt);
+    }
 
     private static final double AMPLITUDE = 10;
 
@@ -175,10 +189,11 @@ public class ReactiveAcTest extends TestHelper {
         rig.net.network.addWire(L);
         rig.run(60);
 
-        // Not 0. Backward Euler leaves exactly sin(omega*dt/2) = 0.0491 of real power in a
-        // lossless element at this sub-tick count. A band of +-0.15 around zero admitted that
-        // and a great deal else; this pins the discretisation itself.
-        Assertions.assertEquals(0.0491, L.powerFactor(), 0.005,
+        // Not 0, but close. The integration leaves exactly sin((theta - 1/2) * omega * dt) of
+        // real power in a lossless element, which is 0.0049 at the shipped theta of 0.55 against
+        // the 0.0491 backward Euler left -- a tenth, because the coefficient is a tenth. Asserting
+        // the closed form rather than the number keeps this honest if theta is retuned.
+        Assertions.assertEquals(schemePowerFactor(), L.powerFactor(), 0.002,
                 "An inductor should carry almost no real power");
 
         var rig2 = new Rig();
@@ -186,11 +201,11 @@ public class ReactiveAcTest extends TestHelper {
         rig2.net.network.addWire(C);
         rig2.run(60);
 
-        // Also POSITIVE, and the same magnitude as the inductor above. Backward Euler is
-        // dissipative for both kinds of reactance -- it loses a little energy per step whichever
-        // way the element stores it -- so this is numerical damping, not a sign difference
-        // between capacitive and inductive.
-        Assertions.assertEquals(0.0491, C.powerFactor(), 0.005,
+        // Also POSITIVE, and the same magnitude as the inductor above. Any theta above one half
+        // is dissipative for both kinds of reactance -- it loses a little energy per step whichever
+        // way the element stores it -- so this is numerical damping, not a sign difference between
+        // capacitive and inductive.
+        Assertions.assertEquals(schemePowerFactor(), C.powerFactor(), 0.002,
                 "A capacitor should carry almost no real power");
     }
 

@@ -42,7 +42,7 @@ public class CapacitorWire extends AbstractElectricWire implements IStaticResidu
     @Override
     public double conductance() {
         // dt = 50ms (1 tick)
-        return (TRAPEZOID_APPROX ? 2 : 1) * capacitance / getDeltaTime();
+        return capacitance / (getTheta() * getDeltaTime());
     }
 
     public void setVoltage(float voltage) {
@@ -72,7 +72,7 @@ public class CapacitorWire extends AbstractElectricWire implements IStaticResidu
             // G*pd + Ieq, with Ieq computed for this step. The previous expression evaluated
             // C*(v_n - v_prev)/dt, which the trapezoid rule makes the step *average*
             // (i_n + i_prev)/2 — half the required factor and missing the -i_prev term.
-            Iprev = TRAPEZOID_APPROX ? current() : 0;
+            Iprev = thetaRatio() * current();
             // Save voltage with a bit of leakage, at a rate independent of the sub-tick count.
             V = potentialDifference() * ITimeAwareWire.leakageFactor(getDeltaTime());
         }

@@ -62,7 +62,7 @@ public class CRSeriesWire extends AbstractElectricWire implements IStaticResidua
 
     @Override
     public double conductance() {
-        return 1 / (resistance + getDeltaTime() / ((TRAPEZOID_APPROX ? 2 : 1) * capacitance));
+        return 1 / (resistance + getTheta() * getDeltaTime() / capacitance);
     }
 
     @Override
@@ -75,7 +75,7 @@ public class CRSeriesWire extends AbstractElectricWire implements IStaticResidua
         if(isConverged()) {
             var Vcap = capacitorVoltage();
             // Endpoint branch current, not the step average — see CapacitorWire.
-            Iprev = TRAPEZOID_APPROX ? current() : 0;
+            Iprev = thetaRatio() * current();
             // Save voltage with a bit of leakage, at a rate independent of the sub-tick count.
             V = Vcap * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
@@ -87,7 +87,7 @@ public class CRSeriesWire extends AbstractElectricWire implements IStaticResidua
             Ieq = 0;
             return;
         }
-        var G_C = ((TRAPEZOID_APPROX ? 2 : 1) * capacitance) / getDeltaTime();
+        var G_C = capacitance / (getTheta() * getDeltaTime());
 
         double residualScale = 1 - G_C / (1 / resistance + G_C);
         Ieq = (-G_C * V - Iprev) * residualScale;

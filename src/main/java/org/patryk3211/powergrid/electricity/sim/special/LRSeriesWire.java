@@ -59,7 +59,7 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
 
     @Override
     public double conductance() {
-        return 1 / (resistance + ((TRAPEZOID_APPROX ? 2 : 1) * inductance) / getDeltaTime());
+        return 1 / (resistance + inductance / (getTheta() * getDeltaTime()));
     }
 
     @Override
@@ -96,7 +96,7 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
         if(isConverged()) {
             // The inductor's own endpoint voltage, i.e. the branch voltage less the drop across
             // the series resistance — not the step average the previous expression produced.
-            Vprev = TRAPEZOID_APPROX ? potentialDifference() - current() * resistance : 0;
+            Vprev = thetaRatio() * (potentialDifference() - current() * resistance);
             // Save current with a bit of leakage, at a rate independent of the sub-tick count.
             I = current() * ITimeAwareWire.leakageFactor(getDeltaTime());
         }
@@ -108,7 +108,7 @@ public class LRSeriesWire extends AbstractElectricWire implements IStaticResidua
             Ieq = 0;
             return;
         }
-        var G_I = getDeltaTime() / ((TRAPEZOID_APPROX ? 2 : 1) * inductance);
+        var G_I = getTheta() * getDeltaTime() / inductance;
 
         double residualScale = 1 - G_I / (1 / resistance + G_I);
         Ieq = (Vprev * G_I + I) * residualScale;

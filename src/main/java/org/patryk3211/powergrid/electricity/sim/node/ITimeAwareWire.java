@@ -17,23 +17,69 @@ package org.patryk3211.powergrid.electricity.sim.node;
 
 public interface ITimeAwareWire extends INetworkElement {
     /**
-     * Selects trapezoidal instead of backward-Euler companion models.
+     * Default weighting of the theta-method, used when a wire has no network to ask.
      * <p>
-     * <b>Leave this false.</b> The trapezoidal branches guarded by it are not a correct
-     * trapezoidal companion model: each one stores the step-averaged state variable in
-     * {@code postUpperSolve} where the model requires the endpoint value. The result is a
-     * first-order two-step scheme carrying a parasitic root, which on an alternating supply is
-     * substantially <em>less</em> accurate than the backward Euler it would replace — a 100 uF
-     * capacitor at 20 Hz and 16 sub-ticks reads 12% low against backward Euler's 0.7% high, and
-     * its phase error has the wrong sign, so it reports sourcing real power rather than
-     * absorbing it. The expressions have since been corrected so the branch is right if anyone
-     * does enable it, but plain trapezoid is also not L-stable: it settles to a persistent
-     * point-to-point oscillation on stiff branches, and this mod's capacitor and inductor
-     * components carry 0.01 ohm parasitics that put them far into that regime. Enabling it
-     * would need damping, an L-stable scheme such as TR-BDF2, or a forced Euler step after
-     * every switching event.
+     * See {@link #getTheta()} for what theta means and why this value.
      */
-    boolean TRAPEZOID_APPROX = false;
+    double DEFAULT_THETA = 0.55;
+
+    /**
+     * The theta of the theta-method, which is how every reactive branch here integrates:
+     * <pre>
+     *     i[n+1] = i[n] + (dt/L) * ( theta*v[n+1] + (1-theta)*v[n] )
+     * </pre>
+     * and its dual for a capacitor. The two familiar schemes are the endpoints — {@code theta = 1}
+     * is backward Euler and {@code theta = 0.5} is the trapezoidal rule — and neither endpoint is
+     * a good choice here.
+     *
+     * <h2>Why not backward Euler, which is what this used to be</h2>
+     * It is heavily dissipative, and at the sampling density this mod can afford that is not a
+     * detail. An alternator at sixteen pole pairs runs at 72.5 Hz and the sub-tick ceiling gives
+     * it 4.4 samples per cycle; a motor coil measured there lags by 40 degrees where 78 is
+     * correct. The damping appears in the branch as a fictitious series resistance — 95.6 ohms
+     * against a true 25.6 — so the grid delivers 175 W into a coil that turns 47 W into heat, and
+     * <em>73% of the power the grid pays for is absorbed by the integration</em>. It is also only
+     * first order, so buying the accuracy back by sampling costs a factor of thirty-two: reaching
+     * 10% on real power needs 512 sub-ticks.
+     *
+     * <h2>Why not the trapezoidal rule either</h2>
+     * It is second order and almost exact in phase — 2.1 degrees out where backward Euler is 37 —
+     * but it is A-stable without being L-stable, so its damping factor for a stiff mode tends to
+     * −1 rather than 0. That is not academic here. {@code CapacitorComponent} builds a
+     * {@code CRSeriesWire} with a 0.01 ohm parasitic, so a capacitor wired across a supply, which
+     * is what a smoothing capacitor is, has a time constant near a microsecond against a 3.125 ms
+     * step. Measured, it rings at six amps and is still at half amplitude after a thousand steps,
+     * started by nothing more than energisation.
+     *
+     * <h2>What 0.55 buys</h2>
+     * The ring decays asymptotically by {@code (1-theta)/theta} per step, so 0.55 damps 18% per
+     * step — a thousandfold down in about two world ticks — while the phase error, which scales
+     * as {@code (theta - 1/2)}, drops to a tenth of backward Euler's. Measured across the whole
+     * alternator range at the shipped sub-tick rates, real power lands at 0.99 to 1.07 times the
+     * analytic answer against backward Euler's 3.39, and phase within 1.5 degrees.
+     * <p>
+     * Strictly this is first order for any {@code theta != 0.5}; the point is that its error
+     * coefficient is about a tenth of backward Euler's, which is worth more here than the order.
+     * <p>
+     * Setting the config back to 1.0 restores backward Euler exactly, which is the escape hatch if
+     * a circuit ever misbehaves.
+     */
+    default double getTheta() {
+        if(getNetwork() == null)
+            return DEFAULT_THETA;
+        return getNetwork().getTheta();
+    }
+
+    /**
+     * {@code (1 - theta) / theta}, the weight the history term carries.
+     * <p>
+     * Exactly zero at {@code theta = 1}, which is what makes backward Euler fall out of these
+     * companion models as a special case rather than as a separate code path.
+     */
+    default double thetaRatio() {
+        var theta = getTheta();
+        return (1 - theta) / theta;
+    }
 
     /** Fraction of stored energy state retained per world tick. */
     double LEAKAGE_PER_TICK = 0.99999;

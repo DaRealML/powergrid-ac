@@ -47,10 +47,12 @@ public class CSolver extends ConfigBase {
 
     public final ConfigBool seriesWireOptimization = b(false, "seriesWireOptimization");
 
+    public final ConfigFloat integrationTheta = f(0.55f, 0.5f, 1.0f, "integrationTheta", Comments.integrationTheta);
+
     public final ConfigInt multiTicks = i(1, 1, "multiTicks", Comments.multiTicks);
 
     public final ConfigInt acSamplesPerCycle = i(32, 4, "acSamplesPerCycle", Comments.acSamplesPerCycle);
-    public final ConfigInt acMaxSubTicks = i(16, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
+    public final ConfigInt acMaxSubTicks = i(32, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
     public final ConfigFloat acArmatureInductance = f(0.02f, 0, "acArmatureInductance", Comments.acArmatureInductance);
 
     public final ConfigEnum<SolverBackend> solverBackend = e(SolverBackend.NATIVE, "solverBackend", Comments.solverBackend);
@@ -93,6 +95,7 @@ public class CSolver extends ConfigBase {
 
         public static final String solverSimpleMaxIterations = "Maximum solver iterations for networks without dynamic residuals";
         public static final String solverComplexMaxIterations = "Maximum solver iterations for networks with dynamic residuals";
+        public static final String integrationTheta = "Weighting of the theta-method used for capacitors, inductors and coils. 1.0 is backward Euler, 0.5 is the trapezoidal rule, and the default 0.55 sits deliberately close to trapezoid. Backward Euler is heavily damped: at the top of an alternator's range a motor coil lags 40 degrees where 78 is correct, and the grid delivers 3.4 times the real power the coil turns into heat, the rest being absorbed by the integration itself. The trapezoidal rule fixes that but is not L-stable, so a capacitor across a supply rings for thousands of steps. 0.55 keeps almost all of trapezoid's accuracy while damping that ring by 18% per step. Set to 1.0 to restore the old backward Euler behaviour exactly.";
         public static final String multiTicks = "Experimental! This option enables all electrical networks to tick multiple times per world tick. This allows for better simulation precision when reactive components are involved but can have a significant impact on performance.";
 
         public static final String acSamplesPerCycle = "Solver samples taken per electrical cycle of an alternating source. Higher values track the waveform more accurately at a proportional cost. Only networks containing an AC source are affected; DC networks ignore this entirely.";

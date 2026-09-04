@@ -18,6 +18,7 @@ package org.patryk3211.electricity;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
+import org.patryk3211.powergrid.electricity.sim.node.ITimeAwareWire;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.AcSampling;
@@ -28,16 +29,18 @@ import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
  *
  * <h2>Why this is separate from {@link MotorReactanceTest}</h2>
  * That one measures {@code rmsVoltage()/rmsCurrent()}, which is a magnitude and nothing else. The
- * magnitude is the part backward Euler gets nearly right — within 5% even at the worst sampling
- * the mod reaches. The damage is in the <em>phase</em>, which a ratio of two RMS accumulators
- * cannot see at all, and which decides power factor, real power, and how much torque an
- * alternator has to take off its shaft to feed a motor.
+ * magnitude was always the part backward Euler got nearly right. The damage was in the
+ * <em>phase</em>, which a ratio of two RMS accumulators cannot see at all, and which decides power
+ * factor, real power, and how much torque an alternator has to take off its shaft to feed a motor.
+ * An accuracy problem that only shows in the phase is exactly the kind that hides in a green suite.
  *
- * <h2>These pin the defect, not the fix</h2>
- * They assert the numbers the shipped scheme produces today, as bands. An improvement to the
- * integration will fail them, which is deliberate: the config comment on
- * {@code electricity.motorTimeConstant} quotes these figures to players, so they should not be
- * able to drift without someone noticing.
+ * <h2>What these numbers used to be</h2>
+ * Under backward Euler, at sixteen pole pairs and the sub-tick ceiling of the day, this coil lagged
+ * by 40.3 degrees where 77.6 is correct. The scheme's damping appeared as a fictitious series
+ * resistance — the branch's real part read 95.6 ohms against a true 25.6 — so the source delivered
+ * 175.3 W into a coil that turned 47.0 W into heat, and 73% of the power the grid paid for was
+ * absorbed by the integration. Those figures are what motivated moving to the theta-method; they
+ * are recorded here because this file is where someone will come looking for them.
  */
 public class IntegrationSchemeTest extends TestHelper {
     /** The shipped electric motor coil: nominal resistance and the configured time constant. */
@@ -51,9 +54,9 @@ public class IntegrationSchemeTest extends TestHelper {
     /** Sixteen pole pairs at the alternator's top shaft speed — the worst case the mod makes. */
     private static final double TOP_FREQUENCY = 72.533;
 
-    /** What the shipped config asks for, and the ceiling that denies it. */
+    /** What the shipped config asks for, and the ceiling that grants or denies it. */
     private static final int SAMPLES_PER_CYCLE = 32;
-    private static final int MAX_SUB_TICKS = 16;
+    private static final int MAX_SUB_TICKS = 32;
 
     /** A branch's fundamental response: impedance magnitude, phase, and the power behind it. */
     private record Response(double magnitude, double phase, double vPeak, double iPeak) {
@@ -160,87 +163,87 @@ public class IntegrationSchemeTest extends TestHelper {
         return new double[] { x[0], x[1] };
     }
 
+    private static double exactPhase() {
+        return Math.atan2(AcSampling.TWO_PI * TOP_FREQUENCY * L, R);
+    }
+
+    private static double exactMagnitude() {
+        return Math.hypot(R, AcSampling.TWO_PI * TOP_FREQUENCY * L);
+    }
+
     @Test
-    void theMagnitudeSurvivesTheCoarseSamplingAndThePhaseDoesNot() {
+    void theCoilReadsItsTruePhaseAtTheShippedCeiling() {
         var subTicks = AcSampling.subTicksFor(TOP_FREQUENCY, SAMPLES_PER_CYCLE, MAX_SUB_TICKS);
         Assertions.assertEquals(MAX_SUB_TICKS, subTicks,
                 "Sixteen pole pairs should be sampled at the shipped ceiling");
 
         var r = measure(TOP_FREQUENCY, subTicks);
-        var omega = AcSampling.TWO_PI * TOP_FREQUENCY;
-        var exactMagnitude = Math.hypot(R, omega * L);
-        var exactPhase = Math.toDegrees(Math.atan2(omega * L, R));
-
-        Assertions.assertEquals(exactMagnitude, r.magnitude(), exactMagnitude * 0.08,
-                "The impedance magnitude should be within a few percent even here, got "
-                        + r.magnitude() + " against " + exactMagnitude);
-
-        // The phase is where it falls apart: about 40 degrees measured against 78 exact. A band,
-        // so that fixing the scheme fails this test rather than quietly passing it.
         var measured = Math.toDegrees(r.phase());
-        Assertions.assertTrue(measured > 35 && measured < 46,
-                "Backward Euler should read about 40 degrees of lag where "
-                        + String.format("%.1f", exactPhase) + " is correct, got "
-                        + String.format("%.1f", measured));
+        var exact = Math.toDegrees(exactPhase());
+
+        // 76.1 against 77.6. Backward Euler read 40.3 here, so this is the single number that says
+        // whether the scheme change is still in place.
+        Assertions.assertEquals(exact, measured, 2.5,
+                "The coil should read close to its true phase, got "
+                        + String.format("%.2f against %.2f", measured, exact));
+
+        // The magnitude, which was never the problem, must not have been traded away for the
+        // phase: any theta below 1 warps the frequency slightly and inflates the reactance.
+        Assertions.assertEquals(exactMagnitude(), r.magnitude(), exactMagnitude() * 0.08,
+                "The impedance magnitude should still be within a few percent, got "
+                        + r.magnitude() + " against " + exactMagnitude());
     }
 
     @Test
-    void theSchemeAbsorbsMostOfThePowerTheGridDelivers() {
-        // The consequence of that phase error, and the one a player can feel. Backward Euler is
-        // dissipative, and its damping appears as a fictitious resistance in series with the coil:
-        // the branch's real part reads about 96 ohms against a true 25.6. The grid pays for all of
-        // it — alternator torque, fuel, wire heating — and the motor sees none of it.
+    void theSchemeNoLongerFabricatesPower() {
+        // The consequence of the phase error, and the one a player can feel: a dissipative scheme
+        // charges the grid — alternator torque, fuel, wire heating — for power the load never
+        // receives. Backward Euler delivered 3.39 times the true real power here and absorbed 73%
+        // of it internally.
         var r = measure(TOP_FREQUENCY, MAX_SUB_TICKS);
 
-        var phantom = r.sourcePower() - r.coilHeat();
-        Assertions.assertTrue(phantom > 0,
-                "Backward Euler is dissipative, so the source must deliver more than the coil takes");
-        Assertions.assertTrue(phantom / r.sourcePower() > 0.6,
-                "The scheme should currently absorb most of the delivered power, got "
-                        + String.format("%.0f%%", 100 * phantom / r.sourcePower()));
-
-        // Against the exact branch driven to the same terminal voltage.
-        var omega = AcSampling.TWO_PI * TOP_FREQUENCY;
-        var exactCurrent = r.vPeak() / Math.hypot(R, omega * L);
+        var exactCurrent = r.vPeak() / exactMagnitude();
         var exactPower = 0.5 * exactCurrent * exactCurrent * R;
         var ratio = r.sourcePower() / exactPower;
-        Assertions.assertTrue(ratio > 2.5 && ratio < 4.5,
-                "The grid should currently deliver roughly 3.4x the true real power, got "
+        Assertions.assertEquals(1.0, ratio, 0.20,
+                "The grid should deliver about the true real power, got "
                         + String.format("%.2fx", ratio));
+
+        // Still slightly dissipative, because theta sits above one half on purpose. What matters
+        // is that the phantom share is a small correction rather than most of the bill.
+        var phantom = (r.sourcePower() - r.coilHeat()) / r.sourcePower();
+        Assertions.assertTrue(phantom < 0.45,
+                "The scheme should absorb only a small share of the delivered power, got "
+                        + String.format("%.0f%%", 100 * phantom));
     }
 
     @Test
-    void thePhaseErrorIsTheSampleIntervalAndNotTheFrequency() {
-        // Backward Euler lags a reactive branch by omega*dt/2 to first order. That is the whole
-        // story: the error is set by the sample interval, not by the frequency. It is invisible at
-        // 4.5 Hz and ruinous at 72.5 only because the sub-tick ceiling stops the timestep
-        // shrinking once eight sub-ticks are no longer enough — dt stops falling while the
-        // frequency keeps rising. Solved finely, the same 72.5 Hz obeys the same law and lands
-        // within a few degrees, which puts the defect in the sampling ceiling rather than in the
-        // companion models.
-        var omega = AcSampling.TWO_PI * TOP_FREQUENCY;
-        var exactPhase = Math.atan2(omega * L, R);
-
+    void thePhaseErrorScalesWithTheSampleInterval() {
+        // The theta-method lags a reactive branch by (theta - 1/2)*omega*dt to leading order, so
+        // the error is set by the sample interval and by how far theta sits above one half.
+        // Backward Euler is theta = 1 and therefore carries the full omega*dt/2 — ten times this.
+        //
+        // The leading-order figure is an upper bound rather than a prediction: at omega*dt near
+        // 0.7 radians the higher terms take a third off it. Both facts are asserted, because a
+        // measured error ABOVE the first-order bound would mean theta is not what it should be.
+        var exact = exactPhase();
         var coarse = measure(TOP_FREQUENCY, MAX_SUB_TICKS);
-        var fine = measure(TOP_FREQUENCY, 128);
+        var fine = measure(TOP_FREQUENCY, MAX_SUB_TICKS * 4);
 
-        var coarseError = Math.abs(exactPhase - coarse.phase());
-        var fineError = Math.abs(exactPhase - fine.phase());
-        Assertions.assertTrue(fineError < coarseError / 4,
-                "Eight times the sampling should cut the phase error by much more than half, got "
-                        + String.format("%.1f deg -> %.1f deg", Math.toDegrees(coarseError),
+        var coarseError = Math.abs(exact - coarse.phase());
+        var fineError = Math.abs(exact - fine.phase());
+
+        var leadingOrder = (ITimeAwareWire.DEFAULT_THETA - 0.5) * AcSampling.TWO_PI * TOP_FREQUENCY
+                * (AcSampling.TICK_SECONDS / MAX_SUB_TICKS);
+        Assertions.assertTrue(coarseError > 0 && coarseError < leadingOrder,
+                "The lag error should be positive and under the first-order bound of "
+                        + String.format("%.2f deg, got %.2f deg", Math.toDegrees(leadingOrder),
+                                Math.toDegrees(coarseError)));
+
+        // First order in dt, so four times the sampling should take roughly four times off it.
+        Assertions.assertTrue(fineError < coarseError / 3,
+                "Four times the sampling should cut the error by about four, got "
+                        + String.format("%.2f deg -> %.2f deg", Math.toDegrees(coarseError),
                                 Math.toDegrees(fineError)));
-
-        // Both rates against omega*dt/2. The prediction is first order, so it is a little
-        // optimistic at the coarse rate where omega*dt is 1.42 radians and higher terms are no
-        // longer negligible; 15% covers both without being loose enough to accept a scheme change.
-        for(var rate : new int[] { MAX_SUB_TICKS, 128 }) {
-            var error = rate == MAX_SUB_TICKS ? coarseError : fineError;
-            var predicted = omega * (AcSampling.TICK_SECONDS / rate) / 2;
-            Assertions.assertEquals(predicted, error, predicted * 0.15,
-                    "At " + rate + " sub-ticks the lag error should be omega*dt/2 = "
-                            + String.format("%.2f deg, got %.2f deg", Math.toDegrees(predicted),
-                                    Math.toDegrees(error)));
-        }
     }
 }

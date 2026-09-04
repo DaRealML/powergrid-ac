@@ -77,6 +77,13 @@ public class ElectricalNetwork implements IStamped {
     protected int stamp;
     private int currentMultiTick = 1;
 
+    // Weighting of the theta-method the reactive branches integrate with. Held per island and
+    // refreshed once per world tick rather than read per conductance() call, which is a hot
+    // path -- and, more importantly, so that a change to it goes through the same conductance
+    // update as a change of sub-tick rate. Changing theta changes every reactive branch's
+    // stamped admittance, so assigning it without that update would leave the matrix stale.
+    private double currentTheta = ITimeAwareWire.DEFAULT_THETA;
+
     // Sub-ticks this network will actually be stepped this world tick, decided by WorldNetworks
     // before prepare() and held here so the stepping loop can read it back per island.
     private int subTicks = 1;
@@ -191,6 +198,25 @@ public class ElectricalNetwork implements IStamped {
 
     public double getDeltaTime() {
         return 0.05f / currentMultiTick;
+    }
+
+    /** @see ITimeAwareWire#getTheta() */
+    public double getTheta() {
+        return currentTheta;
+    }
+
+    /**
+     * The configured theta, or the default when there is no config to read.
+     * <p>
+     * Null is the normal case in the test suite and during early load, not an error: the
+     * solver is exercised long before {@code ModdedConfigs.register()} has run on a dedicated
+     * server, and the unit tests never register configs at all.
+     */
+    private static double configuredTheta() {
+        var configs = ModdedConfigs.server();
+        if(configs == null)
+            return ITimeAwareWire.DEFAULT_THETA;
+        return configs.electricity.solver.integrationTheta.getF();
     }
 
     public int getMultiTick() {
@@ -745,11 +771,13 @@ public class ElectricalNetwork implements IStamped {
         if(mna == null)
             return;
         var nodeCount = nodes.size();
+        var theta = configuredTheta();
         if(dirty) {
             mna.allocate(nodeCount);
             dirty = false;
 
             currentMultiTick = multiTicks;
+            currentTheta = theta;
             // Conductance and coupling matrices need to be fully rebuild only after a state size change,
             // individual resistance and coupling value changes are handled by `updateResistance()` and `updateCoupling()` respectively.
             populateConductanceMatrix();
@@ -757,22 +785,27 @@ public class ElectricalNetwork implements IStamped {
             // To prevent resistance from deviating due to floating point imprecision sometimes we rebuild
             // the matrices from scratch.
             currentMultiTick = multiTicks;
+            currentTheta = theta;
             if(LOGGER != null && ModdedConfigs.logsEnabled())
                 LOGGER.debug("Cumulated conductance updates triggered admittance matrix recalculation ({} {})",
                         conductanceUpdates, conductanceDelta);
             populateConductanceMatrix();
-        } else if(currentMultiTick != multiTicks) {
-            var old = currentMultiTick;
+        } else if(currentMultiTick != multiTicks || currentTheta != theta) {
+            var oldTicks = currentMultiTick;
+            var oldTheta = currentTheta;
             for(var wire : wires) {
                 if(wire instanceof ITimeAwareWire) {
                     var Gold = wire.conductance();
                     currentMultiTick = multiTicks;
+                    currentTheta = theta;
                     var Gnew = wire.conductance();
-                    currentMultiTick = old;
+                    currentMultiTick = oldTicks;
+                    currentTheta = oldTheta;
                     updateConductance(wire, Gnew - Gold);
                 }
             }
             currentMultiTick = multiTicks;
+            currentTheta = theta;
         }
     }
 

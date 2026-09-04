@@ -18,6 +18,7 @@ package org.patryk3211.electricity;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
+import org.patryk3211.powergrid.electricity.sim.node.ITimeAwareWire;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
@@ -37,15 +38,36 @@ import org.patryk3211.powergrid.equipment.multimeter.MultimeterPhasor;
  * else in the loop drops part of the supply — a series resistance, another reactance, a load.
  * <p>
  * These pin both halves of that: the quarter-cycle lead in the capacitor's own current, and the
- * dividers where a voltage shift can genuinely appear. All three expectations are the values
- * backward Euler actually produces at this sub-tick count — 87.2 and ±43.6 rather than the
- * continuous 90 and 45 — because a band wide enough to admit the textbook figure is also wide
- * enough to admit a sub-tick rate an octave wrong.
+ * dividers where a voltage shift can genuinely appear.
+ *
+ * <h2>Why these are not asserted against 90 and 45</h2>
+ * A discrete scheme does not reproduce the continuous phase exactly, and a band wide enough to
+ * admit the textbook figure is also wide enough to admit a sub-tick rate an octave wrong. So the
+ * expectation is the phase the scheme in force actually produces, derived rather than measured:
+ * the theta-method's residual shift on a single reactive element is exactly
+ * {@code (theta - 1/2) * omega * dt}, which is {@link #schemeShiftDegrees()}.
+ * <p>
+ * That shift used to be 2.81 degrees, because backward Euler is {@code theta = 1} and the
+ * coefficient was the full one half. At the shipped 0.55 it is 0.28 degrees — a tenth — so these
+ * now sit within a third of a degree of the continuous answer, and the assertions have been
+ * tightened to match rather than left loose enough to hide the difference.
  */
 public class ReactivePhaseTest extends TestHelper {
     private static final double FREQUENCY = 20;
     private static final double OMEGA = 2 * Math.PI * FREQUENCY;
     private static final int SUB_TICKS = 64;
+
+    /**
+     * Phase error the integration leaves on one reactive element, in degrees.
+     * <p>
+     * {@code (theta - 1/2) * omega * dt} — zero for the trapezoidal rule, {@code omega*dt/2} for
+     * backward Euler. Derived from the theta actually in force so that retuning the scheme moves
+     * these expectations with it instead of failing them for the wrong reason.
+     */
+    private static double schemeShiftDegrees() {
+        var dt = 0.05 / SUB_TICKS;
+        return Math.toDegrees((ITimeAwareWire.DEFAULT_THETA - 0.5) * OMEGA * dt);
+    }
     private static final double SAMPLE_RATE = 20 * SUB_TICKS;
     private static final double AMPLITUDE = 10;
 
@@ -134,9 +156,9 @@ public class ReactivePhaseTest extends TestHelper {
         while(lead <= -180) lead += 360;
         while(lead > 180) lead -= 360;
 
-        // Backward Euler puts this at 90 - x*180/pi with x = omega*dt/2, about 87.2 degrees at
-        // this sub-tick count, not the continuous 90. Asserted against what the scheme produces.
-        Assertions.assertEquals(87.2, lead, 1.5,
+        // The continuous answer less the scheme's own shift: 89.72 degrees rather than 90 at
+        // this sub-tick count, where backward Euler gave 87.19.
+        Assertions.assertEquals(90 - schemeShiftDegrees(), lead, 0.3,
                 "Capacitor current should lead its voltage by a quarter cycle");
         Assertions.assertTrue(c.rmsCurrent() > 0, "The capacitor should be conducting");
     }
@@ -151,11 +173,11 @@ public class ReactivePhaseTest extends TestHelper {
         rig.net.network.addWire(new CRSeriesWire(capacitance, 0.001f, mid, rig.ground));
 
         var captured = rig.capture(rig.terminal, mid, 40, 4);
-        // Not -45. Backward Euler shifts each reactance's phase by x = omega*dt/2, so the
-        // measured answer is -43.58 and the continuous -45 is 35% of the old +-4 band away from
-        // it -- wide enough to pass with the sub-tick rate an octave wrong. Asserted against the
-        // scheme's own value with a band that would notice that.
-        Assertions.assertEquals(-43.58, relativePhase(captured), 0.5,
+        // Not quite -45, for the same reason. A divider carries about half the single-element
+        // shift, because the resistor contributes none of it -- which is why the tolerance here is
+        // the shift itself rather than a fraction of it.
+        Assertions.assertEquals(-45 + schemeShiftDegrees() / 2, relativePhase(captured),
+                Math.max(0.2, schemeShiftDegrees()),
                 "An RC divider with R = Xc should put the midpoint 43.58 degrees behind");
     }
 
@@ -169,8 +191,9 @@ public class ReactivePhaseTest extends TestHelper {
         rig.net.network.addWire(new LRSeriesWire(inductance, 0.001f, mid, rig.ground));
 
         var captured = rig.capture(rig.terminal, mid, 40, 4);
-        Assertions.assertEquals(43.60, relativePhase(captured), 0.5,
-                "An RL divider with R = Xl should put the midpoint 43.60 degrees ahead");
+        Assertions.assertEquals(45 - schemeShiftDegrees() / 2, relativePhase(captured),
+                Math.max(0.2, schemeShiftDegrees()),
+                "An RL divider with R = Xl should put the midpoint just under 45 degrees ahead");
     }
 
     @Test
@@ -188,9 +211,10 @@ public class ReactivePhaseTest extends TestHelper {
         var supply = MultimeterPhasor.goertzel(captured[0], FREQUENCY, SAMPLE_RATE).magnitude();
         var midpoint = MultimeterPhasor.goertzel(captured[1], FREQUENCY, SAMPLE_RATE).magnitude();
 
-        // 0.6905 measured against a continuous 0.7071; the same discretisation. Still decisively
-        // distinguishes a reactive divider from the 0.5 two equal resistors would give.
-        Assertions.assertEquals(0.6905, midpoint / supply, 0.01,
+        // 0.705 against a continuous 0.7071, where backward Euler gave 0.6905: the magnitude
+        // error follows the same shift and is small once the scheme is not backward Euler. Still
+        // decisively distinguishes a reactive divider from the 0.5 two equal resistors give.
+        Assertions.assertEquals(1 / Math.sqrt(2), midpoint / supply, 0.01,
                 "A reactive divider with R = Xc should give ~1/sqrt(2), not 1/2");
     }
 }

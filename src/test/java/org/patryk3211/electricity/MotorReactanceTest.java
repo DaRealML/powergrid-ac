@@ -179,15 +179,16 @@ public class MotorReactanceTest extends TestHelper {
         var coil = rig.coil(R, TAU);
         rig.run(60, subTicks);
 
-        // Backward Euler overstates the impedance as the sampling coarsens. The exact answer is
-        // 16.06; at sixteen samples per cycle it reads about 17.5, some 9% high. Asserted as a
-        // BAND rather than a bound so that an improvement to the integration fails this test and
-        // has to be acknowledged, rather than silently loosening what the suite claims.
+        // Every scheme overstates the impedance as the sampling coarsens, and the exact answer
+        // here is 16.06. Backward Euler used to read about 17.5, some 9% high; the theta-method
+        // reads 1.8% high at the same sixteen samples per cycle. Asserted as a BAND rather than a
+        // bound so that a further change to the integration fails this test and has to be
+        // acknowledged, rather than silently loosening what the suite claims.
         var measured = coil.rmsVoltage() / coil.rmsCurrent();
         var exact = Math.hypot(R, X);
         var error = (measured - exact) / exact;
-        Assertions.assertTrue(error > 0.03 && error < 0.15,
-                "At the shipped ceiling the impedance should read 3-15% high, got "
+        Assertions.assertTrue(error > 0.005 && error < 0.05,
+                "At the shipped ceiling the impedance should read 0.5-5% high, got "
                         + String.format("%.1f%%", error * 100));
     }
 
