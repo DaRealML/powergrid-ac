@@ -270,21 +270,27 @@ the capacitor, `C*(v_n - v_prev)/dt` is by the trapezoid rule exactly `(i_n + i_
 the required factor on the difference term, and missing `-i_prev` entirely. The expressions now
 store `current()` and `potentialDifference()`, which already are the endpoint values.
 
-**Not enabled — `TRAPEZOID_APPROX` stays false.** Even corrected, plain trapezoid is A-stable but
-not L-stable: it settles into a persistent point-to-point oscillation on stiff branches, and this
-mod's `CapacitorComponent` and `InductorComponent` bake in 0.01 Ω parasitics that put `dt/RC`
-around 10⁴. A 1 µF capacitor switched onto a rail would ring at ±200 µA forever — which the new
-RMS metering would faithfully report as a permanent phantom current, and which `RelaySwitchWire`
-would turn into relay chatter by comparing a sign-alternating current against a fixed threshold.
-Backward Euler's only real AC defect is a `+θ/2` phase error, 5.6° at the default 32 samples per
-cycle; raising `acSamplesPerCycle` halves it, is unconditionally stable, and needs no new code.
-Enabling trapezoid properly would want TR-BDF2 or a forced Euler step after every switching
-event.
+**Superseded — the flag is gone.** This section originally concluded that `TRAPEZOID_APPROX`
+should stay false, on the grounds that backward Euler's only real AC defect was a `θ/2` phase error
+of 5.6° at 32 samples per cycle, and that raising `acSamplesPerCycle` would halve it at no risk.
 
-> Note for anyone revisiting this: `AlternatorCoupling` writes its own backward-Euler armature
-> inductance longhand (`R + L/dt`, `(L/dt)*i_prev`) and is **not** gated on `TRAPEZOID_APPROX`.
-> Flipping that flag would integrate `InductorWire` and the alternator's own reactance by
-> different methods.
+Both halves of that turned out to be wrong, and §3.14 has the measurements. The phase error at the
+sampling the mod *actually reaches* is 37°, not 5.6°, because the sub-tick ceiling denies the
+configured sample rate above four pole pairs; and because backward Euler is dissipative, that phase
+error costs real power — 73% of what the grid delivers to a motor at sixteen pole pairs is absorbed
+by the integration. Raising the sample rate does fix it, but only at thirty-two times the rate,
+because the scheme is first order.
+
+The conclusion about plain trapezoid was right, and for the right reason: a capacitor across a
+supply, which is what `CapacitorComponent` plus its 0.01 Ω parasitic gives you, rings at six amps
+for sixty world ticks. What replaced the flag is the **theta-method**, which contains both schemes
+as its endpoints and ships at `theta = 0.55`. See §3.14.
+
+> The note that used to sit here — that `AlternatorCoupling` writes its armature inductance
+> longhand and is *not* gated on the flag, so flipping it would integrate the alternator and
+> `InductorWire` by different methods — was correct, and exactly what happened. It has since been
+> moved onto the theta-method too, using a recursion for its history voltage because a coupling row
+> cannot see its own terminal voltages.
 ### 3.10 Self-excited machines
 
 A shunt or compound wound generator takes its field current from its own output. On direct
@@ -496,6 +502,145 @@ exactly `|i|`, so direct-current behaviour is unchanged.
 > synonym, **sub-tick**, which now outnumbers both. They all mean the same thing: one of the N
 > solves a network performs inside a 50 ms world tick.
 
+
+### 3.14 The integration scheme, and what backward Euler was costing
+
+Everything above assumed the companion models were accurate. They were not, and the error was
+concentrated in the one place the test suite could not see.
+
+#### The magnitude was fine, which is why nobody noticed
+
+`MotorReactanceTest` checks `rmsVoltage() / rmsCurrent()`. That is a magnitude, and a ratio of two
+RMS accumulators carries no phase at all. Measured on the shipped motor coil — R = 25.6 Ω,
+L = 0.256 H — driven at each frequency an alternator can produce, at the sub-tick rate
+`AcSampling.subTicksFor` actually returns:
+
+| f | samples/cycle | \|Z\| error | phase (true) | P delivered / true |
+|---:|---:|---:|---:|---:|
+| 4.533 Hz | 35.3 | +2.3% | 15.45 (15.90) | 0.98× |
+| 9.067 Hz | 35.3 | +3.7% | 28.34 (29.67) | 0.98× |
+| 18.133 Hz | 17.6 | +8.1% | 42.89 (48.73) | 1.03× |
+| 36.267 Hz | 8.8 | +10.3% | 49.63 (66.31) | 1.46× |
+| **72.533 Hz** | **4.4** | **+4.9%** | **40.30 (77.62)** | **3.39×** |
+
+The magnitude never strays more than about 10%. The phase collapses.
+
+#### The phase is what pays the bills
+
+Backward Euler is dissipative, and its damping shows up in the branch as a fictitious series
+resistance: at the bottom row the real part reads **95.6 Ω against a true 25.6 Ω**. So the source
+delivers 175.3 W into a coil that turns 47.0 W into heat, and **73% of the power the grid pays for
+— alternator torque, fuel, wire heating — is absorbed by the integration and reaches nothing.**
+
+It is also first order, so sampling the problem away is expensive. Real power over analytic at
+72.533 Hz, against sub-tick rate:
+
+| sub-ticks | 16 | 32 | 64 | 128 | 256 | 512 |
+|---|---:|---:|---:|---:|---:|---:|
+| backward Euler | 3.39× | 2.32× | 1.69× | 1.36× | 1.18× | 1.09× |
+| trapezoidal | 0.69× | 0.92× | 0.98× | 0.99× | 1.00× | 1.00× |
+
+Thirty-two times the shipped rate to reach 10% under Euler; trapezoid is inside 8% at 32. **Equal
+accuracy costs backward Euler roughly sixteen times the sub-tick rate.**
+
+#### Trapezoid is disqualified, and not for the reason the old comment gave
+
+`ITimeAwareWire` used to warn that trapezoid "settles to a persistent point-to-point oscillation on
+stiff branches". That was both overstated and understated.
+
+Overstated for ordinary time constants: a 100 µF capacitor charging through 100 Ω at one solve per
+world tick alternates 71.4, 112.2, 94.8, 102.2, 99.0 … and is settled inside ten world ticks, the
+deviations falling by the predicted `(1 - dt/2τ)/(1 + dt/2τ) = 0.43` each step.
+
+Understated for the case the mod actually builds. `CapacitorComponent` builds
+`CRSeriesWire(C, 0.01f, …)`, so a capacitor wired **across a supply** — a smoothing capacitor — has
+only that 0.01 Ω parasitic in series, giving a time constant near a microsecond against a 3.125 ms
+step. The damping factor is −0.99992 and the measured branch current is
+
+```
+6.3955  -6.3865  6.3775  -6.3685  6.3596  -6.3506  6.3417  -6.3328 ...
+```
+
+six amps, still half amplitude after a thousand steps, sixty world ticks of visible garbage —
+started by energisation alone, with no switch involved. `StiffDampingTest` pins this: it passes 3
+of 3 under the shipped scheme and fails 2 of 3 under trapezoid, so it discriminates rather than
+merely passing.
+
+#### The theta-method is the family both belong to
+
+```
+i[n+1] = i[n] + (dt/L) * ( theta*v[n+1] + (1-theta)*v[n] )
+```
+
+`theta = 1` is backward Euler, `theta = 0.5` is trapezoid, and mapping it onto the companion models
+as they stood needs exactly two substitutions, each reproducing the existing case at both endpoints:
+
+```
+conductance:  (TRAPEZOID_APPROX ? 2 : 1)   ->   1/theta
+history:      TRAPEZOID_APPROX ? X : 0     ->   ((1-theta)/theta) * X
+```
+
+Backward Euler now falls out as a special case rather than as a separate code path, and setting
+`solver.integrationTheta` to 1.0 restores the old behaviour exactly.
+
+The ring decays asymptotically by `(1-theta)/theta` per step while the phase error scales as
+`(theta - 1/2)`. That is the entire trade-off, and it is monotone in both directions:
+
+| theta | phase | error | P/true | ring 10–100 | 100–1000 | 3000–4000 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1.000 | 40.30 | −37.32 | 3.39× | 0.000 | 0.000 | 0.000 |
+| 0.750 | 57.12 | −20.50 | 2.13× | 5.4e−07 | 0.000 | 0.000 |
+| 0.600 | 70.25 | −7.37 | 1.29× | 0.00215 | 4.4e−16 | 4.4e−16 |
+| **0.550** | **74.96** | **−2.66** | **0.99×** | **0.0395** | **4.9e−11** | **2.2e−15** |
+| 0.520 | 77.82 | +0.20 | 0.81× | 0.365 | 2.3e−05 | 3.1e−15 |
+| 0.500 | 79.74 | +2.12 | 0.69× | 5.927 | 3.151 | 0.0503 |
+
+**0.55 is the shipped default.** It damps 18% per step — a thousandfold down in about two world
+ticks — and keeps a tenth of backward Euler's phase error. Across the whole alternator band on the
+shipped code, real power lands at 0.99–1.00× everywhere.
+
+Strictly this is first order for any `theta != 0.5`. The point is the error *coefficient*, a tenth
+of backward Euler's, not the order.
+
+#### Why `acMaxSubTicks` went from 16 to 32
+
+The one thing 0.55 does not fix at 16 sub-ticks is the impedance **magnitude** at the very top of
+the range: +21.7%, where backward Euler managed +4.9%. That is bilinear frequency warping and it is
+the price of moving theta toward one half. One more octave of sampling takes it to +5.0%.
+
+Cost was measured rather than assumed — milliseconds per **world tick**, against a 50 ms budget:
+
+| nodes | 1× | 4× | 16× | 32× | 64× | 128× |
+|---:|---:|---:|---:|---:|---:|---:|
+| 260 | 0.006 | 0.053 | 0.198 | 0.401 | 0.808 | 1.644 |
+| 1028 | 0.036 | 0.273 | 1.144 | 2.236 | 4.578 | 9.155 |
+
+so the change costs about **1.1 ms on a thousand-node grid**, and only on islands that actually
+carry an alternator. Note that cost is very close to **linear** in the sub-tick count: a hypothesis
+that the once-per-world-tick factorisation would amortise it was measured and found false, and the
+32×/16× ratio sits at 1.95–2.03 on every island large enough to measure.
+
+#### Four tests had pinned backward Euler's error as though it were physics
+
+All four now derive their expectation from the theta in force rather than from a measurement:
+
+- `ReactivePhaseTest` expected 87.2° of capacitor lead, ±43.6° on the dividers and 0.6905 for the
+  divider magnitude. The residual shift on a single element is exactly `(theta - 1/2)·omega·dt`, so
+  those are now 90 and 45 less that, reading 89.66, 44.83, −44.88 and 0.7051.
+- `ReactiveAcTest` expected a power factor of 0.0491 in a *lossless* element, which is
+  `sin(omega·dt/2)`. It is now `sin((theta - 1/2)·omega·dt) = 0.0049` — exactly a tenth, because
+  the coefficient is exactly a tenth.
+- `MotorReactanceTest`'s impedance band was "3–15% high"; it now reads 1.8% and the band is 0.5–5%.
+
+`IntegrationSchemeTest` existed to pin the defect and now pins the fix, keeping the old figures in
+its javadoc so they stay findable.
+
+#### Not done
+
+The magnitude could be made exact rather than +5% by **pre-warping** the stamped value, since the
+network already knows the driving frequency — it is what picks the sub-tick rate. **TR-BDF2** would
+give genuine second order and L-stability together, but needs two solves per step and the stepping
+loop permits one. Neither was measured; neither is needed for real power to come out right.
 
 
 ---
@@ -778,7 +923,7 @@ graphical chart is now only a rendering job on top of numbers that already exist
 | `electricity/WorldNetworks.java` | `preTick()` now computes a per-island rate, applies the lockstep rule, and uses the fractional stepping schedule. |
 | `sim/AbstractElectricWire.java` | Two new accumulators; `rmsVoltage()`, `rmsCurrent()`, `apparentPower()`, `powerFactor()`. `postMicroTick()` now samples via `current()`. |
 | `sim/special/TransmissionLinePort.java` | Implements `ISubTickRate`, returns `requiresLockstep() == true`. |
-| `sim/node/ITimeAwareWire.java` | Rate-independent `leakageFactor()`; documents why `TRAPEZOID_APPROX` stays off, §3.9. |
+| `sim/node/ITimeAwareWire.java` | Rate-independent `leakageFactor()`; `getTheta()`/`thetaRatio()` replace `TRAPEZOID_APPROX`, §3.14. |
 | `sim/special/{Capacitor,Inductor,CRSeries,LRSeries}Wire.java` | Corrected trapezoidal expressions; rate-independent leakage, §3.9. |
 | `electricity/creative/CreativeSourceBlockEntity.java` | Both creative sources are now real alternating components; AC works on the current source too, §3.8. |
 | `config/CSolver.java` | `acSamplesPerCycle` (32), `acMaxSubTicks` (16). |
@@ -817,7 +962,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **69 new tests, all passing.**
+harness. **75 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -872,7 +1017,7 @@ inspection. That is what makes them regression tests rather than descriptions.
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **132 / 118**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **138 / 124**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
