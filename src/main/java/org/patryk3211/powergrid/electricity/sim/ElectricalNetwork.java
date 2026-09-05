@@ -440,9 +440,25 @@ public class ElectricalNetwork implements IStamped {
             return;
         if(leafNodes.containsKey(wire.node1) || leafNodes.containsKey(wire.node2))
             return;
-        if(!hasNode(wire.node1) || !hasNode(wire.node2))
+        // A null terminal is GROUND, not a missing node.
+        //
+        // hasNode(null) is false, so testing both terminals with a plain !hasNode() rejected every
+        // ground-referenced wire in the mod -- which is the ordinary way to attach anything to
+        // ground. The incremental admittance update was then skipped while addStaticResidual and
+        // computeRHS went on using the new conductance, so the matrix and the right hand side
+        // disagreed and nothing said so. A divider whose lower leg was rewritten from 20 to 10
+        // ohms settled at 3.333 V instead of 2.500, and a capacitor whose conductance doubled on a
+        // sub-tick rate change diverged geometrically at G_new/(1/R + G_old) per step.
+        //
+        // stamp() has always handled a null terminal correctly -- it stamps the diagonal of the
+        // node that exists -- so only the guard was wrong. What it is really for is rejecting
+        // wires whose nodes belong to some other island, and a null terminal never does.
+        if(wire.node1 != null && !hasNode(wire.node1))
             return;
-        if(wire.node1.getIndex() == -1 || wire.node2.getIndex() == -1) {
+        if(wire.node2 != null && !hasNode(wire.node2))
+            return;
+        if((wire.node1 != null && wire.node1.getIndex() == -1)
+                || (wire.node2 != null && wire.node2.getIndex() == -1)) {
             PowerGrid.LOGGER.error("Node index negative even though it shouldn't be?", new Throwable());
             return;
         }
