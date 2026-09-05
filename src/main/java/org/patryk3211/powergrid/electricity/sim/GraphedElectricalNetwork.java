@@ -453,10 +453,24 @@ public class GraphedElectricalNetwork extends ElectricalNetwork {
         return graph;
     }
 
+    /**
+     * Whether to fold series wires away before solving.
+     * <p>
+     * Null-guarded because the solver runs before {@code ModdedConfigs.register()} has: a
+     * dedicated server prepares networks during world load, and the unit tests never register
+     * configs at all -- five of them died here on a null dereference rather than on anything they
+     * were testing. Off is the shipped default, so the fallback is what an unconfigured caller
+     * would have got anyway.
+     */
+    private static boolean seriesWireOptimization() {
+        var configs = ModdedConfigs.server();
+        return configs != null && configs.electricity.solver.seriesWireOptimization.get();
+    }
+
     @Override
     public void prepare(int multiTicks) {
         preparing = true;
-        if(ModdedConfigs.server().electricity.solver.seriesWireOptimization.get()) {
+        if(seriesWireOptimization()) {
             var cleanNodes = new HashSet<IElectricNode>();
             var changed = true;
             while(changed) {
