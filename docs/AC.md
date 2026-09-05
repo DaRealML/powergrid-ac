@@ -635,6 +635,39 @@ All four now derive their expectation from the theta in force rather than from a
 `IntegrationSchemeTest` existed to pin the defect and now pins the fix, keeping the old figures in
 its javadoc so they stay findable.
 
+#### The alternator's armature reactance was broken, and this is how it surfaced
+
+`AlternatorCoupling` stamps its armature inductance longhand into the voltage-source row instead of
+delegating to `InductorWire`, so the scheme change went straight past it — exactly as the note in
+§3.9 predicted. Carrying it across turned up a worse problem.
+
+`VoltageSourceCoupling` stamps `V+ - V- - R*I = e`, with the residual holding the right-hand side
+and `getCurrent()` returning the row's own state unnegated. Integrating `L*dI/dt` into that gives
+
+```
+V+ - V- - (R + L/dt) * I = e - (L/dt) * I_prev
+```
+
+so the history term belongs on the right with a **minus**. It was written with a plus, so the two
+terms added instead of cancelling and the machine presented an internal impedance of about
+`2L/dt` — purely resistive-looking, and proportional to the sub-tick rate. RMS current into a 2 Ω
+load:
+
+| pole pairs | 16 sub-ticks | 32 | 128 | 512 | analytic |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1.36 A | 0.73 A | 0.19 A | 0.05 A | **9.64 A** |
+| 4 | 1.38 A | 0.73 A | — | — | **6.63 A** |
+
+Thirty times the current at one sub-tick rate as at another, from a knob that is meant to be
+invisible, and two hundred times short at the fine end. Corrected, the same rig gives 9.63, 9.64,
+9.64, 9.64 against an analytic 9.64.
+
+**Nothing caught it because nothing ran it.** `armatureInductance` defaults to zero and is only set
+from `CommutatorBlockEntity`, so every test in the suite — `AlternatorTest` included — ran the
+machine with no reactance at all. `ArmatureReactanceTest` now covers it, and its first assertion is
+the one that would have caught this without any reference solution: *the current a machine delivers
+cannot depend on how finely the solver is stepping.*
+
 #### Not done
 
 The magnitude could be made exact rather than +5% by **pre-warping** the stamped value, since the
@@ -962,7 +995,7 @@ which is why it was not taken here.
 ## 7. Verification
 
 Tests run against the real solver with no Minecraft present, using the existing `TestHelper`
-harness. **75 new tests, all passing.**
+harness. **78 new tests, all passing.**
 
 | Test | Asserts |
 |---|---|
@@ -1017,7 +1050,7 @@ inspection. That is what makes them regression tests rather than descriptions.
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **138 / 124**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **141 / 127**. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
