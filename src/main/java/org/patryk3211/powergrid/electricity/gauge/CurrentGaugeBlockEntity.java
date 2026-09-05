@@ -95,7 +95,12 @@ public class CurrentGaugeBlockEntity extends GaugeBlockEntity {
 
     @Override
     public float getValue() {
-        return (float) wire.current();
+        // What an ammeter shows. A moving-coil movement would read the mean, which is zero on a
+        // symmetric alternating current; every practical AC ammeter reads RMS instead, and so does
+        // this. Reading the instantaneous current sampled once per world tick made the needle sit
+        // wherever in the cycle the tick happened to end -- and permanently at zero for any
+        // frequency dividing 20 Hz evenly.
+        return (float) wire.rmsCurrent();
     }
 
     @Override

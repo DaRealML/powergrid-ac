@@ -134,7 +134,13 @@ public class HvBreakerBlockEntity extends ElectricKineticBlockEntity {
 
         if(wire != null) {
             if (state && setting.getValue() != 0 && !level.isClientSide && wire.isConverged()) {
-                if (Math.abs(wire.current()) > setting.getValue()) {
+                // A breaker's rating is an RMS current, not a peak one, and the
+                // instantaneous current passes through zero twice a cycle whatever its
+                // amplitude. Sampled once per world tick as this is, a frequency dividing 20 Hz
+                // evenly lands on the same point of the waveform every tick -- at 20, 40 or 60 Hz
+                // that point is a zero crossing, so the breaker would never trip at all. The
+                // settled magnitude also stops a healthy load tripping it on a peak.
+                if (wire.lastRmsCurrent() > setting.getValue()) {
                     state = false;
                     wire.setState(false);
                     charge.setValueNoUpdate(0);

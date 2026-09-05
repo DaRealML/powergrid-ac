@@ -78,7 +78,10 @@ public class FuseHolderBlockEntity extends ElectricBlockEntity {
     @Override
     public void electricalTick() {
         if(fuseWire.getState()) {
-            if(fuseWire.isConverged() && Math.abs(fuseWire.current()) > setting.value) {
+            // A fuse is a thermal device, so its rating is RMS. FuseSwitchWire was moved onto
+            // the settled magnitude earlier on this branch; this holder, which runs the same test
+            // once per world tick, was missed.
+            if(fuseWire.isConverged() && fuseWire.lastRmsCurrent() > setting.value) {
                 setState(FuseState.BLOWN);
             }
         }

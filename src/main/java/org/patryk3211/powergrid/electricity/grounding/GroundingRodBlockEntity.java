@@ -123,10 +123,14 @@ public class GroundingRodBlockEntity extends ElectricBlockEntity {
         if(!level.isClientSide && damageTickCounter++ >= 10) {
             damageTickCounter = 0;
             // Limit radius to 10 block to avoid having to scan the whole world
-            var sourceDamage = Math.abs(wire.getResistance() * wire.current() / DANGER_POTENTIAL);
+            // RMS, because what a current does to a body is governed by its RMS value and
+            // because this samples once every ten world ticks -- an instantaneous reading at a
+            // frequency dividing 20 Hz evenly would sit on a zero crossing forever and the rod
+            // would be harmless however much fault current it was carrying.
+            var sourceDamage = Math.abs(wire.getResistance() * wire.lastRmsCurrent() / DANGER_POTENTIAL);
             if(sourceDamage < 1)
                 return;
-            var dangerRadius = Math.min(Math.abs(wire.getResistance() * wire.current() / (2 * Math.PI * DANGER_POTENTIAL)), 10);
+            var dangerRadius = Math.min(Math.abs(wire.getResistance() * wire.lastRmsCurrent() / (2 * Math.PI * DANGER_POTENTIAL)), 10);
             var blockRadius = (int) Math.round(dangerRadius);
             var bb = new AABB(worldPosition.offset(-blockRadius, -blockRadius, -blockRadius).getCenter(), worldPosition.offset(blockRadius, blockRadius, blockRadius).getCenter());
             var sqrDist = dangerRadius * dangerRadius;
