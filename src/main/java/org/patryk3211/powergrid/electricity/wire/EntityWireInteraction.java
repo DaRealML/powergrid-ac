@@ -128,8 +128,19 @@ public class EntityWireInteraction {
                 wire2.remove();
         }
 
+        /**
+         * Current through the creature, as RMS rather than as one instantaneous sample.
+         * <p>
+         * What a current does to a body is governed by its RMS value, and the instantaneous
+         * current passes through zero twice a cycle whatever its amplitude. Worse, this is sampled
+         * once per world tick, and a frequency that divides 20 Hz evenly lands on the same point
+         * of the waveform every tick — so at 10, 20, 40 or 60 Hz the sample sat exactly on a zero
+         * crossing and grabbing a live wire was perfectly safe however much current it carried.
+         * {@code rmsCurrent()} falls back to the instantaneous magnitude with no sub-ticks, so
+         * direct current is unaffected.
+         */
         public double current() {
-            return (wire1 != null ? Math.abs(wire1.current()) : 0) + (wire2 != null ? Math.abs(wire2.current()) : 0);
+            return (wire1 != null ? wire1.rmsCurrent() : 0) + (wire2 != null ? wire2.rmsCurrent() : 0);
         }
     }
 
@@ -206,7 +217,7 @@ public class EntityWireInteraction {
         }
 
         public double totalCurrent() {
-            double sum = !groundJustAdded && ground != null ? Math.abs(ground.current()) : 0;
+            double sum = !groundJustAdded && ground != null ? ground.rmsCurrent() : 0;
             groundJustAdded = false;
             var iter = wires.iterator();
             while(iter.hasNext()) {

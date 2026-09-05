@@ -181,6 +181,19 @@ public class CordEntity extends BaseWireEntity implements IComplexRaycast {
     }
 
     @Override
+    public float heatingCurrent() {
+        if(wire1 == null || wire2 == null)
+            return 0;
+        if(!wire1.isConverged() || !wire2.isConverged())
+            return 0;
+        // The same aggregation current() uses, so only the instantaneous-to-RMS change is made
+        // here. Summing the two conductors' magnitudes and squaring the total is not the same as
+        // summing their squares, but that is how this cord has always been heated and correcting
+        // it is a balance decision rather than part of this one.
+        return (float) (wire1.rmsCurrent() + wire2.rmsCurrent());
+    }
+
+    @Override
     public float measuredCurrent() {
         if(wire1 == null || wire2 == null)
             return 0;

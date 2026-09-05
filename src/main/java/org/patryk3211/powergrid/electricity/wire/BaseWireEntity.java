@@ -88,6 +88,26 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
     }
 
     public abstract float current();
+
+    /**
+     * The current to compute resistive heating from.
+     * <p>
+     * Heating goes as the <em>mean</em> of the current squared, and {@link #current()} is one
+     * instantaneous sample taken after the tick's solve. On a steady supply those are the same
+     * number; on an alternating one they are not, and the difference is not noise that averages
+     * away. The phase advance per world tick is {@code 2*pi*f*0.05}, so a frequency that divides
+     * 20 Hz evenly lands on the same point of the waveform every tick forever — measured, a wire
+     * carrying 10 A peak at 10, 20, 40 or 60 Hz sampled <b>exactly zero</b> heating and could
+     * never burn however hard it was driven.
+     * <p>
+     * Overridden to an RMS wherever the underlying wire keeps one. The default is
+     * {@link #current()} because a subclass with no sub-tick accumulators has nothing better, and
+     * because {@code rmsCurrent()} itself falls back to the instantaneous magnitude when the
+     * network is not sub-stepping — so direct-current behaviour is unchanged either way.
+     */
+    public float heatingCurrent() {
+        return current();
+    }
     public abstract float measuredCurrent();
 
     @Override
@@ -116,9 +136,9 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             return;
 
         float energy = 0;
-        // We have to use current here since the wire might be a transmission line,
-        // which needs special resistance handling.
-        var I = current();
+        // Current rather than power() because the wire might be a transmission line, which needs
+        // special resistance handling -- but the RMS current, since this is squared.
+        var I = heatingCurrent();
         energy += I * I * getResistance() / 20f;
         if(!overheated) {
             // If wire is overheated it is considered dead.

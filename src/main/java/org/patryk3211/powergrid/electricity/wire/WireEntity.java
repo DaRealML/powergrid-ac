@@ -47,6 +47,11 @@ public abstract class WireEntity extends BaseWireEntity {
     }
 
     @Override
+    public float heatingCurrent() {
+        return wire == null || !wire.isConverged() ? 0 : (float) wire.rmsCurrent();
+    }
+
+    @Override
     public float measuredCurrent() {
         return Math.abs(current());
     }
