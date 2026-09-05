@@ -541,6 +541,10 @@ public class ModdedBlocks {
             .blockstate(horizontalAxisBlock("block/spark_gap/block"))
             .initialProperties(SharedProperties::wooden)
             .transform(axeOrPickaxe())
+            // The gap had no thermal entry at all, so ThermalBehaviour.fromConfig had nothing to
+            // read and the arc's energy went nowhere. Sized between the MV switch and the
+            // contactor: a gap is a small thing whose whole job is to be arced across.
+            .transform(CThermal.maxPower(120, 1.5f))
             .item()
                 .model(itemWithParent("block/spark_gap/item"))
                 .build()

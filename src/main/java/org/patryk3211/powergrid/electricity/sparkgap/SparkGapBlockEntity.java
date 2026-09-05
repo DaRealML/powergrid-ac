@@ -34,16 +34,28 @@ import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.particles.HvSparkSoundInstance;
 import org.patryk3211.powergrid.electricity.particles.SparkSoundOwner;
 import org.patryk3211.powergrid.electricity.particles.ZapParticleData;
-import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
+import org.patryk3211.powergrid.electricity.sim.special.ArcWire;
+import org.patryk3211.powergrid.collections.ModdedConfigs;
+import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
+import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.utility.Lang;
 
 import java.util.List;
 
 public class SparkGapBlockEntity extends ElectricBlockEntity implements SparkSoundOwner {
-    private SwitchedWire plasmaChannel;
+    private ArcWire plasmaChannel;
 
     protected SparkGapValueBehaviour setting;
     private boolean wasSparking;
+
+    /**
+     * Whether the gap is lit, as the client knows it.
+     * <p>
+     * Kept separately from the wire's own state because the client has no wire — it runs a
+     * {@code DummyElectricalNetwork} — and because {@code read} can arrive before
+     * {@code buildCircuit} has made one.
+     */
+    private boolean sparking;
 
     public SparkGapBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -59,19 +71,57 @@ public class SparkGapBlockEntity extends ElectricBlockEntity implements SparkSou
 
     @Override
     public void electricalTick() {
-        if(!plasmaChannel.getState() && Math.abs(plasmaChannel.potentialDifference()) > setting.getVoltage()) {
-            plasmaChannel.setState(true);
-            notifyUpdate();
-        } else if(plasmaChannel.getState() && Math.abs(plasmaChannel.current()) < setting.getCurrent()) {
-            plasmaChannel.setState(false);
+        if(plasmaChannel == null)
+            return;
+
+        // The scroll setting is a strike voltage, which for a real gap is a length: a millimetre of
+        // dry air stands off about 3 kV. Setting the gap from it keeps the number the player dialled
+        // in meaning exactly what it used to mean, while making it a physical quantity the arc can
+        // use for its column voltage and its recovery as well as for breakdown.
+        plasmaChannel.setGap((float) (setting.getVoltage() / dielectricStrength()));
+
+        // The arc decides for itself whether it is lit. It strikes when the gap breaks down and goes
+        // out at a current zero unless the still-hot gas lets it restrike, which is why it now
+        // behaves oppositely on the two kinds of supply -- and the right way round. The previous
+        // rule here tested |i| against a fixed current ONCE per world tick, which never extinguished
+        // an alternating arc (the sample almost never lands near a zero) and would extinguish a
+        // steady one, exactly inverted from what a real gap does.
+        var lit = plasmaChannel.isStruck();
+        if(lit != sparking) {
+            sparking = lit;
             notifyUpdate();
         }
+
+        // Arc power is the voltage the column sustains times the current through it, not i^2*R
+        // through the channel conductance, which is a modelling artefact. Joules over a world tick
+        // become watts by multiplying by the tick rate.
+        if(thermalBehaviour != null) {
+            var joules = plasmaChannel.drainEnergy();
+            if(joules > 0)
+                thermalBehaviour.applyTickPower(joules * 20);
+        } else {
+            plasmaChannel.drainEnergy();
+        }
+    }
+
+    private static float dielectricStrength() {
+        var configs = ModdedConfigs.server();
+        return configs == null ? 3e6f : configs.electricity.arcDielectricStrength.getF();
+    }
+
+    @Override
+    public @Nullable ThermalBehaviour specifyThermalBehaviour() {
+        // An arc deposits real energy and the gap is what has to get rid of it. Without this the
+        // spark gap was the one arc in the mod whose power went nowhere at all.
+        return ThermalBehaviour.fromConfig(this);
     }
 
     @Override
     public void tick() {
         super.tick();
-        if(level.isClientSide && plasmaChannel.getState()) {
+        // The synced flag, not the wire: the client runs a DummyElectricalNetwork and never
+        // solves, so the wire's own state is meaningless there.
+        if(level.isClientSide && sparking) {
             var center = worldPosition.getCenter().subtract(0, 0.125f, 0);
             float offset = (1 + setting.getValue() * 2.8f / 18f) / 33f;
 
@@ -93,22 +143,22 @@ public class SparkGapBlockEntity extends ElectricBlockEntity implements SparkSou
             }
         }
         if(level.isClientSide) {
-            if (!wasSparking && plasmaChannel.getState()) {
+            if (!wasSparking && sparking) {
                 makeSparkSound();
             }
-            wasSparking = plasmaChannel.getState();
+            wasSparking = sparking;
         }
     }
 
     @Override
     public boolean isSparking() {
-        return plasmaChannel.getState();
+        return sparking;
     }
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
-        plasmaChannel.setState(tag.getBoolean("State"));
+        sparking = tag.getBoolean("State");
     }
 
     @Environment(EnvType.CLIENT)
@@ -119,13 +169,22 @@ public class SparkGapBlockEntity extends ElectricBlockEntity implements SparkSou
     @Override
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
-        tag.putBoolean("State", plasmaChannel.getState());
+        tag.putBoolean("State", sparking);
     }
 
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
-        plasmaChannel = builder.connectSwitch(1, builder.terminalNode(0), builder.terminalNode(1), false);
+        var electricity = ModdedConfigs.server().electricity;
+        plasmaChannel = new ArcWire(
+                electricity.arcElectrodeFall.getF(),
+                electricity.arcColumnGradient.getF(),
+                1 / electricity.arcChannelResistance.getF(),
+                electricity.arcDielectricStrength.getF(),
+                electricity.arcDeionisationTime.getF(),
+                (float) (setting.getVoltage() / dielectricStrength()),
+                builder.terminalNode(0), builder.terminalNode(1));
+        builder.add(plasmaChannel);
     }
 
     public static class BoxTransform extends CenteredSideValueBoxTransform {

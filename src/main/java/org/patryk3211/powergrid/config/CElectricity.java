@@ -81,6 +81,12 @@ public class CElectricity extends ConfigBase {
     public final ConfigInt solarPanelNOCT = i(45, 0, 100, "solarPanelNOCT", Comments.solarPanelNOCT);
     public final ConfigInt solarPanelMaxSize = i(25, 1, "solarPanelMaxSize", Comments.solarPanelMaxSize);
 
+    public final ConfigFloat arcElectrodeFall = f(30, 0, "arcElectrodeFall", Comments.arcElectrodeFall);
+    public final ConfigFloat arcColumnGradient = f(5000, 0, "arcColumnGradient", Comments.arcColumnGradient);
+    public final ConfigFloat arcChannelResistance = f(0.02f, 0.0001f, "arcChannelResistance", Comments.arcChannelResistance);
+    public final ConfigFloat arcDielectricStrength = f(3e6f, 1, "arcDielectricStrength", Comments.arcDielectricStrength);
+    public final ConfigFloat arcDeionisationTime = f(0.002f, 0, "arcDeionisationTime", Comments.arcDeionisationTime);
+
     public final ConfigFloat hvSwitchSparkExtinguishRPMFactor = f(1, 0, "hvSwitchSparkExtinguishRPMFactor", Comments.hvSwitchSparkExtinguishRPMFactor);
     public final ConfigFloat hvSwitchSparkMinimumCurrent = f(0.1f, 0, "hvSwitchSparkMinimumCurrent", Comments.hvSwitchSparkMinimumCurrent);
     public final ConfigFloat hvSwitchSparkPotentialFactor = f(1000, 0, "hvSwitchSparkPotentialFactor", Comments.hvSwitchSparkPotentialFactor);
@@ -163,6 +169,12 @@ public class CElectricity extends ConfigBase {
         public static final String solarPanelImp = "Controls the current part of the max power point, (should be around 92% of the Isc)";
         public static final String solarPanelNOCT = "This is the Nominal Operating Cell Temp of the solar cells in the panel";
         public static final String solarPanelMaxSize = "Controls maximum number of solar panels in a single multiblock";
+
+        public static final String arcElectrodeFall = "Volts an electric arc drops at its electrodes, independent of gap length and of current. Together with arcColumnGradient this is what makes an arc behave unlike a resistor: its voltage barely moves when its current changes.";
+        public static final String arcColumnGradient = "Volts per metre along an arc's plasma column. The arc's total voltage is arcElectrodeFall plus this times the gap length, so a longer gap sustains a higher voltage and is harder to keep lit.";
+        public static final String arcChannelResistance = "Series resistance of a struck arc channel, in ohms. Small: an arc's voltage comes from its electrode fall and column, not from this. Raising it makes arcs behave more like the resistors they used to be modelled as.";
+        public static final String arcDielectricStrength = "Volts per metre a cold gap withstands before it breaks down. Dry air is about 3000000, i.e. 3 kV per millimetre. Lower it to make arcs strike across wider gaps.";
+        public static final String arcDeionisationTime = "Seconds a gap takes to recover its full cold strength after an arc goes out. An alternating supply gives the arc a current zero twice a cycle; if the gap has not recovered by the time the voltage comes back, the arc restrikes and appears continuous. Raising this makes arcs easier to clear and alternating-current switchgear more effective.";
 
         public static final String hvSwitchSparkExtinguishRPMFactor = "RPM required to cleanly turn off a HV switch for a given current flowing through it";
         public static final String hvSwitchSparkMinimumCurrent = "Minimum current for a HV switch spark to continue existing";
