@@ -17,11 +17,12 @@ import org.patryk3211.powergrid.collections.ModdedMenus;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.WattmeterWire;
 
 import java.util.List;
 
 public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuProvider {
-    private ElectricWire series;
+    private WattmeterWire series;
     private ElectricWire shunt;
 
     double lastEnergy;
@@ -69,7 +70,12 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
     public void tick() {
         applyPower(series);
         lastEnergy = energy;
-        energy += series.current() * shunt.potentialDifference() * 0.05 / (measurementPrecision ? 3_600 : 3_600_000);
+        // Real power over this tick times the tick length, not one instantaneous sample of the
+        // product. An energy meter is the one instrument whose error COMPOUNDS instead of averaging
+        // away, and the sampling is not even unbiased: the phase advances by 2*pi*f*0.05 per world
+        // tick, so a frequency dividing 20 Hz evenly reads the same point of the waveform forever.
+        // At 20, 40 and 60 Hz that point is a zero crossing and the meter recorded no energy at all.
+        energy += series.drainRealPower() * 0.05 / (measurementPrecision ? 3_600 : 3_600_000);
         if(energy < 0) {
             lastEnergy += 100000;
             energy = 100000 + energy;
@@ -94,8 +100,12 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(3);
-        series = builder.connect(resistance("series"), builder.terminalNode(0), builder.terminalNode(1));
         shunt = builder.connect(resistance("shunt"), builder.terminalNode(0), builder.terminalNode(2));
+        // Built after the shunt because it holds a reference to it: the series branch accumulates
+        // the product of its own current and the shunt's voltage as the solver steps.
+        series = new WattmeterWire(resistance("series"), shunt,
+                builder.terminalNode(0), builder.terminalNode(1));
+        builder.add(series);
     }
 
     @Override

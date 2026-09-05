@@ -27,6 +27,7 @@ import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.info.customdisplay.CustomDisplayBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
+import org.patryk3211.powergrid.electricity.sim.special.WattmeterWire;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
@@ -34,7 +35,7 @@ import java.util.List;
 
 public class PowerGaugeBlockEntity extends GaugeBlockEntity {
     private static final float[] MAX_VALUES = new float[] { 20, 200, 2000, 20000 };
-    private ElectricWire series;
+    private WattmeterWire series;
     private ElectricWire shunt;
 
     public PowerGaugeBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
@@ -63,6 +64,9 @@ public class PowerGaugeBlockEntity extends GaugeBlockEntity {
     @Override
     public void electricalTick() {
         applyPower(series);
+        // Ends this tick's average and starts the next. Only the server steps the solver, so only
+        // the server has an average to end.
+        series.drainRealPower();
     }
 
     @Override
@@ -86,8 +90,11 @@ public class PowerGaugeBlockEntity extends GaugeBlockEntity {
     public void buildCircuit(CircuitBuilder builder) {
         float seriesResistance = resistance("series");
         builder.setTerminalCount(3);
-        series = builder.connect(seriesResistance, builder.terminalNode(0), builder.terminalNode(1));
         shunt = builder.connect(resistance("shunt_range_20w"), builder.terminalNode(0), builder.terminalNode(2));
+        // The series branch knows its own sense branch, so it can accumulate the product of the two
+        // as the solver steps rather than multiplying one sample of each once per world tick.
+        series = new WattmeterWire(seriesResistance, shunt, builder.terminalNode(0), builder.terminalNode(1));
+        builder.add(series);
     }
 
     @Override
@@ -121,7 +128,19 @@ public class PowerGaugeBlockEntity extends GaugeBlockEntity {
 
     @Override
     public float getValue() {
-        return (float) (series.current() * shunt.potentialDifference());
+        // Real power -- the MEAN of voltage times current -- rather than the instantaneous product
+        // of one sample of each. For a sinusoid the instantaneous product swings between zero and
+        // twice the real power at twice supply frequency and goes negative on a reactive load, and
+        // because block entities tick once per world tick, a frequency dividing 20 Hz evenly
+        // sampled the same point of the waveform forever: at 20, 40 and 60 Hz that point is a zero
+        // crossing, so this gauge read a flat zero however much power was flowing.
+        //
+        // On the client there are no sub-tick samples to average -- it runs a DummyElectricalNetwork
+        // and never solves -- so realPower() falls back to the instantaneous product, which is
+        // exactly what this returned before. The needle a player sees is therefore unchanged until
+        // the value is synced; what is corrected here is the server's own reading, which is what
+        // drives the comparator output.
+        return (float) series.realPower();
     }
 
     @Override
