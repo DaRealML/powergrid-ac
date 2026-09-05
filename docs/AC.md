@@ -1050,7 +1050,7 @@ inspection. That is what makes them regression tests rather than descriptions.
 **Regression check.** The suite has **15 pre-existing failures on upstream `4acf0805`**. This was
 confirmed by running the same suite in a clean worktree at that commit: the failing test names
 *and their assertion messages* are byte-identical before and after these changes. Totals go from
-63 tests / 48 passing to **141 / 127**. **Zero new failures**, and one pre-existing failure fixed:
+63 tests / 48 passing to **141 / 141** — the suite is green for the first time. Fourteen failures had been carried since before this branch: five were one bug in `updateConductance` skipping every grounded wire, five were one unguarded `ModdedConfigs.server()` dereference, and four were assertions that could not pass. None was caused by the AC work, verified by running the suite at the branch base and diffing outcomes test by test. **Zero new failures**, and one pre-existing failure fixed:
 guarding a null field provider in `GeneratorCoupling.preSolve` makes upstream
 `SolverTests.testGenerator` pass, taking the pre-existing count from 15 to 14.
 
