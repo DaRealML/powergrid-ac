@@ -46,6 +46,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.PowerGrid;
 import org.patryk3211.powergrid.collections.*;
+import org.patryk3211.powergrid.electricity.arc.ArcFlash;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.DebugItem;
 import org.patryk3211.powergrid.electricity.wire.registry.WireItemEntry;
@@ -468,6 +469,12 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             var source = ModdedDamageTypes.LIVE_WIRE_CUTTING.simpleDamageSource(level());
             player.hurt(source, damage);
         }
+        // And the arc, which is a different event from the shock above. The shock is current
+        // through whoever is holding the cutters; the flash is the arc drawn across the parting
+        // conductors, whose power is its own voltage times the current, and which burns anyone
+        // standing near it rather than only the person doing the cutting. Silent below the energy
+        // that would do a point of damage, so cutting a dead or lightly loaded wire costs nothing.
+        ArcFlash.parting(level(), position(), I);
         kill();
     }
 

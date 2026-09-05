@@ -81,6 +81,9 @@ public class CElectricity extends ConfigBase {
     public final ConfigInt solarPanelNOCT = i(45, 0, 100, "solarPanelNOCT", Comments.solarPanelNOCT);
     public final ConfigInt solarPanelMaxSize = i(25, 1, "solarPanelMaxSize", Comments.solarPanelMaxSize);
 
+    public final ConfigFloat arcFlashJoulesPerDamage = f(100, 0.1f, "arcFlashJoulesPerDamage", Comments.arcFlashJoulesPerDamage);
+    public final ConfigFloat arcFlashPartingTime = f(0.2f, 0, "arcFlashPartingTime", Comments.arcFlashPartingTime);
+
     public final ConfigFloat arcElectrodeFall = f(30, 0, "arcElectrodeFall", Comments.arcElectrodeFall);
     public final ConfigFloat arcColumnGradient = f(5000, 0, "arcColumnGradient", Comments.arcColumnGradient);
     public final ConfigFloat arcChannelResistance = f(0.02f, 0.0001f, "arcChannelResistance", Comments.arcChannelResistance);
@@ -170,6 +173,8 @@ public class CElectricity extends ConfigBase {
         public static final String solarPanelNOCT = "This is the Nominal Operating Cell Temp of the solar cells in the panel";
         public static final String solarPanelMaxSize = "Controls maximum number of solar panels in a single multiblock";
 
+        public static final String arcFlashJoulesPerDamage = "Joules of arc energy, at the arc itself, that do one point of damage to a nearby creature. Incident energy falls off as the square of the distance, so this also sets how far the flash reaches: a bigger arc has a real standoff and a small one hurts nobody. Raise it to make arc flashes less dangerous.";
+        public static final String arcFlashPartingTime = "Seconds an arc is assumed to burn when a live connection is pulled apart by hand. The energy released is the arc voltage times the current times this, so it scales what cutting a live wire or unplugging a live cord costs.";
         public static final String arcElectrodeFall = "Volts an electric arc drops at its electrodes, independent of gap length and of current. Together with arcColumnGradient this is what makes an arc behave unlike a resistor: its voltage barely moves when its current changes.";
         public static final String arcColumnGradient = "Volts per metre along an arc's plasma column. The arc's total voltage is arcElectrodeFall plus this times the gap length, so a longer gap sustains a higher voltage and is harder to keep lit.";
         public static final String arcChannelResistance = "Series resistance of a struck arc channel, in ohms. Small: an arc's voltage comes from its electrode fall and column, not from this. Raising it makes arcs behave more like the resistors they used to be modelled as.";

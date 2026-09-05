@@ -28,6 +28,7 @@ public enum ModdedDamageTypes {
     OVERLOADED_MACHINE("overloaded_machine"),
     ZAP("zap"),
     LIVE_WIRE_CUTTING("live_wire_cutting"),
+    ARC_FLASH("arc_flash"),
     ELECTROCUTION("electrocution"),
     SPINNING_ROTOR("spinning_rotor"),
     ACID("acid");

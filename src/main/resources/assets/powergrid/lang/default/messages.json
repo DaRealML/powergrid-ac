@@ -43,6 +43,8 @@
   "death.attack.zap.item": "%1$s was zapped by %2$s using %3$s",
   "death.attack.zap.player": "%1$s was zapped by %2$s whilst trying to escape %3$s",
 
+  "death.attack.arc_flash": "%s was caught in an arc flash",
+  "death.attack.arc_flash.player": "%s was caught in an arc flash whilst trying to escape %s",
   "death.attack.live_wire_cutting": "%s wasn't careful when cutting wires",
   "death.attack.electrocution": "%s was electrocuted",
   "death.attack.electrocution.player": "%s was electrocuted whilst trying to escape %s",

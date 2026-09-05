@@ -15,6 +15,7 @@
  */
 package org.patryk3211.powergrid.electricity.wire.powercord;
 
+import org.patryk3211.powergrid.electricity.arc.ArcFlash;
 import dev.ryanhcode.sable.companion.SableCompanion;
 import net.createmod.ponder.api.level.PonderLevel;
 import net.fabricmc.api.EnvType;
@@ -430,6 +431,12 @@ public class CordEntity extends BaseWireEntity implements IComplexRaycast {
      * @return True if the item has been returned to the player
      */
     public boolean cordDetach(Player player, boolean secondEndpoint) {
+        // Pulling a live cord out of its socket parts two conductors under load, which is exactly
+        // what draws an arc -- and this was the one disconnection in the mod with no consequence at
+        // all. Cutting a wire has always checked its current; this checked nothing. Read here
+        // because the entity is discarded before the end of the method.
+        var current = Math.abs(current());
+
         var handStack = player.getMainHandItem();
         boolean itemInHand = handStack.getItem() == getItem();
         if(!handStack.isEmpty() && !itemInHand)
@@ -442,6 +449,7 @@ public class CordEntity extends BaseWireEntity implements IComplexRaycast {
         stack.set(ModdedDataComponents.CONNECTION_DATA.get(), WireConnection.of(secondEndpoint ? endpoint1 : endpoint2));
         player.setItemInHand(InteractionHand.MAIN_HAND, stack);
         itemCount = 0;
+        ArcFlash.parting(level(), position(), current);
         discard();
         return true;
     }
