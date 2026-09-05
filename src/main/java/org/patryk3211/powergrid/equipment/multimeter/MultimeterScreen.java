@@ -52,9 +52,19 @@ import java.util.ArrayList;
  * still the better view for comparing phase by eye, hence the toggle.
  *
  * <h2>Text placement</h2>
- * The readout rows lay their columns out by measuring, from the right edge inwards and the left
- * edge outwards, and stop when the two groups would meet. Fixed pixel offsets were what let a
- * long reading run into the column beside it.
+ * The readout rows lay their columns out in <em>reserved</em> slots, each as wide as the widest
+ * string its formatter can produce, and each reading is drawn right-aligned inside its own slot.
+ * <p>
+ * Measuring the live strings instead — walking a cursor rightwards by {@code font.width(previous)}
+ * — is what made the whole row squirm. The font is proportional, so every digit that changed
+ * width dragged the columns beside it along, several times a second; and because each field was
+ * drawn only if it still fitted, fields blinked in and out as the widths crossed the space left.
+ * Reserved slots cost a few pixels of unused width and buy a readout that holds still.
+ * <p>
+ * Two other things keep it still, both of them what a real bench meter does. The digits are held
+ * and refreshed four times a second rather than every frame ({@link #READOUT_HOLD_MILLIS}), and
+ * the thousands prefix is chosen with hysteresis ({@link #decadeFor}) so a reading sitting on a
+ * range boundary does not flap between {@code 999 mV} and {@code 1.00 V}.
  */
 @Environment(EnvType.CLIENT)
 public class MultimeterScreen extends Screen {
@@ -79,6 +89,31 @@ public class MultimeterScreen extends Screen {
 
     /** Gap between adjacent columns and controls. */
     private static final int GAP = 6;
+
+    /**
+     * How often the printed numbers are allowed to change, in milliseconds.
+     * <p>
+     * A real bench meter updates its display a few times a second rather than continuously, and
+     * the reason applies exactly here: four significant figures redrawn every frame is unreadable
+     * even when nothing moves, and every digit that changes width drags its neighbours around.
+     * Only the digits are held — the trace keeps drawing at the full sample rate.
+     */
+    private static final long READOUT_HOLD_MILLIS = 250;
+
+    /** Thousands prefixes, indexed by {@code decade + 1}. */
+    private static final String[] PREFIXES = { "m", "", "k", "M" };
+
+    /** One channel's printed values, held still between refreshes. */
+    private static final class Readout {
+        float latest;
+        float rms;
+
+        /** 0 for base units, -1 milli, 1 kilo, 2 mega. Moved only by {@link #decadeFor}. */
+        int decade;
+    }
+
+    private static final Readout[] readouts = new Readout[MultimeterChannel.MAX_CHANNELS];
+    private static long readoutsRefreshedAt;
 
     /** One lane per channel, rather than every channel about a shared zero line. */
     private static boolean stacked = true;
@@ -219,9 +254,86 @@ public class MultimeterScreen extends Screen {
         return false;
     }
 
-    private Component format(int channel, float value) {
+    /**
+     * Re-read every channel's printed values, at most once per {@link #READOUT_HOLD_MILLIS}.
+     * <p>
+     * Called once per frame from the render pass. {@code System.currentTimeMillis()} rather than
+     * a tick count because this is a property of what the eye can read, not of the simulation —
+     * the readout should settle at the same rate whether the server is keeping up or not.
+     */
+    private static void refreshReadouts() {
+        var now = System.currentTimeMillis();
+        if(readouts[0] != null && now - readoutsRefreshedAt < READOUT_HOLD_MILLIS)
+            return;
+        readoutsRefreshedAt = now;
+        for(int c = 0; c < MultimeterChannel.MAX_CHANNELS; ++c) {
+            var readout = readouts[c];
+            if(readout == null)
+                readouts[c] = readout = new Readout();
+            readout.latest = MultimeterTrace.latest(c);
+            readout.rms = MultimeterTrace.rms(c);
+            readout.decade = decadeFor(Math.max(Math.abs(readout.latest), Math.abs(readout.rms)),
+                    readout.decade);
+        }
+    }
+
+    /**
+     * Which thousands prefix to print a magnitude in, with hysteresis.
+     * <p>
+     * Stepping up at 1000 and back down at 1000 makes a reading that sits on the boundary flap
+     * between {@code 999 mV} and {@code 1.00 V} several times a second — a change of width, of
+     * digit count and of unit all at once. Coming back down only below 900 gives a 10% deadband,
+     * which is what an autoranging meter does and for the same reason.
+     */
+    private static int decadeFor(double magnitude, int decade) {
+        if(!(magnitude > 0) || !Double.isFinite(magnitude))
+            return decade;
+        var scaled = magnitude / Math.pow(1000, decade);
+        // Also the rounded boundary: at 999.96 the four-figure form is "1000.0", a character wider
+        // than anything else it prints, so step the prefix before that rather than at a flat 1000.
+        if(scaled >= 999.95 && decade < 2)
+            return decade + 1;
+        if(scaled < 0.9 && decade > -1)
+            return decade - 1;
+        return decade;
+    }
+
+    /**
+     * A reading at four significant figures in a given prefix.
+     * <p>
+     * Four is deliberate rather than arbitrary: {@code 9.999}, {@code 10.00} and {@code 100.0} are
+     * all five characters, so the digits change without the string changing width and the column
+     * beside it has no reason to move.
+     */
+    private static String reading(int channel, float value, int decade) {
+        var scaled = value / Math.pow(1000, decade);
+        var magnitude = Math.abs(scaled);
+        String digits;
+        // The thresholds are the ROUNDED boundaries, not the round numbers. Banding on 10 and 100
+        // would send 9.9996 down the three-decimal path, where it rounds back up and prints
+        // "10.000" -- six characters where every other value in the range gives five, which is
+        // the exact width jump this formatter exists to avoid.
+        if(!Double.isFinite(scaled))
+            digits = "----";
+        else if(magnitude >= 99.995)
+            digits = String.format("%.1f", scaled);
+        else if(magnitude >= 9.9995)
+            digits = String.format("%.2f", scaled);
+        else
+            digits = String.format("%.3f", scaled);
         var unit = MultimeterTrace.isCurrent(channel) ? Unit.CURRENT : Unit.VOLTAGE;
-        return unit.formatWithPrefixes(value).component();
+        return digits + " " + PREFIXES[decade + 1] + unit.string();
+    }
+
+    /** Width reserved for one reading: the widest string {@link #reading} can produce. */
+    private int readingSlot() {
+        return font.width("-000.0 mA");
+    }
+
+    /** Draw text right-aligned so that it ends at {@code slotRight}, wherever its width lands. */
+    private void drawRightAligned(GuiGraphics graphics, String text, int slotRight, int y, int colour) {
+        graphics.drawString(font, Lang.text(text).component(), slotRight - font.width(text), y,
+                colour, false);
     }
 
     /** The timebase control's caption: the window it selects, or what automatic chose. */
@@ -260,6 +372,9 @@ public class MultimeterScreen extends Screen {
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics, mouseX, mouseY, partialTick);
+        // Before anything is measured or drawn, so every column on this frame agrees about what
+        // the numbers are and about how wide they will be.
+        refreshReadouts();
 
         var channels = MultimeterTrace.channelCount();
         var left = (width - PANEL_WIDTH) / 2;
@@ -541,13 +656,15 @@ public class MultimeterScreen extends Screen {
                              int x, int y, int plotRight,
                              double frequency, double sampleRate, double referencePhase) {
         var colour = MultimeterTrace.colour(channel);
+        var readout = readouts[channel];
 
-        // Right group, right to left.
+        // Right group, right to left, in RESERVED widths. Every offset below is a constant or a
+        // slot width, never font.width() of a value that changes -- that is the whole fix.
         var rightEdge = plotRight;
 
-        var scale = Lang.text("±" + format(channel, range).getString()).component();
-        rightEdge -= font.width(scale);
-        graphics.drawString(font, scale, rightEdge, y, COLOUR_TEXT_DIM, false);
+        var scale = "±" + reading(channel, range, decadeFor(Math.abs(range), readout.decade));
+        drawRightAligned(graphics, scale, rightEdge, y, COLOUR_TEXT_DIM);
+        rightEdge -= readingSlot() + font.width("±");
 
         if(frequency > 0) {
             // Phase relative to the strongest channel. Absolute phase is meaningless on its own —
@@ -557,42 +674,44 @@ public class MultimeterScreen extends Screen {
             var relative = phasor.phaseDegrees() - referencePhase;
             while(relative <= -180) relative += 360;
             while(relative > 180) relative -= 360;
-            var phase = Lang.text(String.format("%+.0f°", relative)).component();
-            rightEdge -= font.width(phase) + GAP;
-            graphics.drawString(font, phase, rightEdge, y, colour, false);
+            drawRightAligned(graphics, String.format("%+.0f°", relative), rightEdge, y, colour);
         }
+        // Reserved whether or not a frequency was measured, so the columns to the left do not
+        // shift the moment the estimator finds or loses a signal.
+        rightEdge -= font.width("-180°") + GAP;
 
         // A channel the server could only sample once per world tick is drawn as a staircase, and
         // without saying so that looks like a broken probe rather than a coarse one. Shown only
         // when it differs from the headline rate, so it costs nothing in the normal case.
         var channelRate = MultimeterTrace.channelRate(channel);
-        if(channelRate < MultimeterTrace.sampleRate()) {
-            var slow = Lang.text(channelRate + " Hz").component();
-            rightEdge -= font.width(slow) + GAP;
-            graphics.drawString(font, slow, rightEdge, y, COLOUR_WARN, false);
-        }
+        if(channelRate < MultimeterTrace.sampleRate())
+            drawRightAligned(graphics, channelRate + " Hz", rightEdge, y, COLOUR_WARN);
+        rightEdge -= font.width("0000 Hz") + GAP;
 
-        // Left group, left to right, stopping before the right group.
+        // Left group, at fixed offsets. The channel swatch and label are constant width, and each
+        // reading is right-aligned inside its own reserved slot, so a digit changing width moves
+        // nothing. Drawn only if the slot genuinely fits, which is a decision about the window
+        // size rather than about the current value -- so it does not flicker frame to frame.
         graphics.fill(x, y + 1, x + 6, y + 7, colour);
         var cursor = x + 10;
 
         var label = Lang.text("CH" + (channel + 1)).component();
-        if(cursor + font.width(label) < rightEdge) {
-            graphics.drawString(font, label, cursor, y, COLOUR_TEXT_DIM, false);
-            cursor += font.width(label) + GAP;
-        }
+        graphics.drawString(font, label, cursor, y, COLOUR_TEXT_DIM, false);
+        cursor += font.width("CH4") + GAP;
 
-        var now = format(channel, MultimeterTrace.latest(channel));
-        if(cursor + font.width(now) < rightEdge) {
-            graphics.drawString(font, now, cursor, y, colour, false);
-            cursor += font.width(now) + GAP * 2;
+        var slot = readingSlot();
+        if(cursor + slot <= rightEdge) {
+            drawRightAligned(graphics, reading(channel, readout.latest, readout.decade),
+                    cursor + slot, y, colour);
+            cursor += slot + GAP * 2;
         }
 
         var rms = Lang.translateDirect("gui.multimeter.rms");
-        var rmsValue = format(channel, MultimeterTrace.rms(channel));
-        if(cursor + font.width(rms) + GAP + font.width(rmsValue) < rightEdge) {
+        var rmsWidth = font.width(rms);
+        if(cursor + rmsWidth + 3 + slot <= rightEdge) {
             graphics.drawString(font, rms, cursor, y, COLOUR_TEXT_DIM, false);
-            graphics.drawString(font, rmsValue, cursor + font.width(rms) + 3, y, COLOUR_TEXT, false);
+            drawRightAligned(graphics, reading(channel, readout.rms, readout.decade),
+                    cursor + rmsWidth + 3 + slot, y, COLOUR_TEXT);
         }
     }
 }
