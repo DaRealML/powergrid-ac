@@ -200,6 +200,25 @@ public class ArcWireTest extends TestHelper {
     }
 
     @Test
+    void quenchingPutsTheArcOutAndKeepsItOut() {
+        // What a closing contact does. A zero-length gap withstands zero volts, so an arc left to
+        // its own devices at that moment would read as permanently broken down; the switch has to
+        // say so explicitly. After quenching, the gap must also be treated as cold, or the next
+        // sub-tick would restrike it through the still-hot recovery path.
+        var rig = new Rig(3000, 0, 200, GAP);
+        rig.run(20, 32);
+        Assertions.assertTrue(rig.arc.isStruck(), "The arc should be burning before it is quenched");
+
+        rig.arc.quench();
+        Assertions.assertFalse(rig.arc.isStruck(), "Quenching should put it out at once");
+
+        rig.arc.setGap(0f);
+        rig.run(20, 32);
+        Assertions.assertFalse(rig.arc.isStruck(),
+                "A quenched arc across closed contacts must stay out, not relight on a zero gap");
+    }
+
+    @Test
     void anArcDoesNotCostTheIslandItsLinearFastPath() {
         // The reason the arc is stamped as a piecewise-linear Norton source rather than as a
         // Newton-iterated negative resistance. A genuine ISolverHook makes hasHooks() true, and the

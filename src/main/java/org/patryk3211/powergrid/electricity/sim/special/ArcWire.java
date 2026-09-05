@@ -78,6 +78,17 @@ public class ArcWire extends AbstractElectricWire implements IOuterHook, IStatic
      */
     public static final double OPEN_CONDUCTANCE = 1e-9;
 
+    /**
+     * Gap below which there is no arc, in metres.
+     * <p>
+     * An arc is a column of plasma and a column needs length. More practically: the strength of a
+     * gap is its length times the dielectric strength, so a gap of zero withstands zero volts and
+     * would read as permanently broken down — closed contacts would hold an arc lit forever
+     * instead of shorting it out, which is the opposite of what touching contacts do. Ten microns
+     * is far below any gap the mod can produce and comfortably above floating-point noise.
+     */
+    public static final float MINIMUM_GAP = 1e-5f;
+
     /** Volts dropped at the electrodes, independent of gap length and of current. */
     private final float electrodeFall;
 
@@ -185,6 +196,21 @@ public class ArcWire extends AbstractElectricWire implements IOuterHook, IStatic
         return drained;
     }
 
+    /**
+     * Put the arc out and treat the gap as fully recovered.
+     * <p>
+     * For the case physics cannot express here: contacts that have closed. A real arc between
+     * touching contacts is shorted out by the contacts themselves, but the gap length this class
+     * reasons from goes to zero at exactly that moment — and a zero-length gap withstands zero
+     * volts, so it would read as permanently broken down and hold the arc lit forever. A closing
+     * switch says so explicitly instead.
+     */
+    public void quench() {
+        setStruck(false);
+        darkSeconds = Double.MAX_VALUE;
+        previousSign = 0;
+    }
+
     private double deltaTime() {
         return network == null ? 0.05 : network.getDeltaTime();
     }
@@ -225,6 +251,15 @@ public class ArcWire extends AbstractElectricWire implements IOuterHook, IStatic
                 setStruck(false);
                 darkSeconds = 0;
             }
+        }
+
+        if(gapMetres < MINIMUM_GAP) {
+            // Contacts touching. There is no column to sustain, and the conductors themselves are
+            // the better path, so whatever was burning is shorted out.
+            if(struck)
+                quench();
+            previousSign = 0;
+            return;
         }
 
         if(!struck) {

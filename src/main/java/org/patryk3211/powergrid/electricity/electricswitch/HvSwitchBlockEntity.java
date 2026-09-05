@@ -39,6 +39,7 @@ import org.patryk3211.powergrid.electricity.particles.HvSparkSoundInstance;
 import org.patryk3211.powergrid.electricity.particles.SparkSoundOwner;
 import org.patryk3211.powergrid.electricity.particles.ZapParticleData;
 import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
+import org.patryk3211.powergrid.electricity.sim.special.ArcWire;
 import org.patryk3211.powergrid.kinetics.base.ElectricKineticBlockEntity;
 
 import java.util.List;
@@ -47,6 +48,16 @@ public class HvSwitchBlockEntity extends ElectricKineticBlockEntity implements S
     protected LerpedFloat rod;
     @Nullable
     private SwitchedWire wire;
+
+    /**
+     * The arc across the parting contacts, in parallel with them.
+     * <p>
+     * A switch really is these two things at once: a pair of contacts, and the gap between them.
+     * The contacts conduct when closed and the gap conducts when it has broken down, so modelling
+     * them as one wire that changes resistance was always a compromise — and the value it took
+     * while sparking was a random 0.5 to 5 ohms, which is the one thing an arc is not.
+     */
+    private ArcWire arc;
 
     // Only used for audio
     private int state = 1;
@@ -115,6 +126,23 @@ public class HvSwitchBlockEntity extends ElectricKineticBlockEntity implements S
         return ModdedConfigs.server().electricity.hvSwitchSparkPotentialFactor.getF() * x * x;
     }
 
+    /**
+     * Contact separation in metres, derived from the strike voltage this switch was already tuned
+     * around.
+     * <p>
+     * {@link #sparkPotential()} is the voltage the parting contacts can withstand, and a gap's
+     * strength is its length times the dielectric strength of the air in it — so dividing gives the
+     * length. Deriving it this way rather than inventing a new number means
+     * {@code hvSwitchSparkPotentialFactor} keeps meaning exactly what it meant, while the gap it
+     * implies now also sets the arc's column voltage and how fast it recovers.
+     * <p>
+     * At a fully closed rod this is zero, and {@link ArcWire#MINIMUM_GAP} then refuses to let an arc
+     * exist at all — which is the right answer for touching contacts.
+     */
+    private float contactGap() {
+        return sparkPotential() / ModdedConfigs.server().electricity.arcDielectricStrength.getF();
+    }
+
     private static float sparkCurrent() {
         return ModdedConfigs.server().electricity.hvSwitchSparkMinimumCurrent.getF();
     }
@@ -127,6 +155,19 @@ public class HvSwitchBlockEntity extends ElectricKineticBlockEntity implements S
     @Override
     public void tick() {
         applyPower(wire);
+        if(arc != null && !level.isClientSide) {
+            arc.setGap(contactGap());
+            // Arc power is its own voltage times its current, not i^2*R, and it lands in the same
+            // thermal behaviour the contacts use. A switch that keeps arcing is a switch that
+            // eventually destroys itself, which is what really happens.
+            if(thermalBehaviour != null) {
+                var joules = arc.drainEnergy();
+                if(joules > 0)
+                    thermalBehaviour.applyTickPower(joules * 20);
+            } else {
+                arc.drainEnergy();
+            }
+        }
 
         super.tick();
         rod.tickChaser();
@@ -159,24 +200,31 @@ public class HvSwitchBlockEntity extends ElectricKineticBlockEntity implements S
         if(sparking) {
             if(wire == null)
                 electricBehaviour.rebuildCircuit(false);
-            float openness = 1 - rod.getValue();
-            // 0.5-5 Ohms for the arc resistance
-            wire.setResistance(0.5 + level.random.nextFloat() * 4.5);
-            wire.setState(true);
-            if(sparkTicks >= 3 && !level.isClientSide) {
-                if (isClosed() && wire.getResistance() > getResistance()) {
-                    // The switch has closed with a better contact than the spark.
+            // The contacts behave as contacts. The arc beside them does the conducting, at its own
+            // constant voltage, instead of the wire pretending to be an arc by taking a random
+            // resistance between 0.5 and 5 ohms every tick.
+            wire.setResistance(getResistance());
+            wire.setState(isClosed());
+            if(!level.isClientSide && arc != null) {
+                if(isClosed()) {
+                    // Contacts have met. They are the better path and they short the arc out.
+                    arc.quench();
                     sparking = false;
-                } else if (level.random.nextFloat() < openness * 0.9 - 0.1) {
-                    // Random chance for the arc to go away.
-                    sparking = false;
-                } else if(Math.abs(wire.current()) < sparkCurrent()) {
-                    // Not enough current for spark to continue to exist
-                    sparking = false;
-                }
-                if(!sparking) {
-                    wire.setResistance(getResistance());
-                    wire.setState(isClosed());
+                } else if(sparkTicks >= 3) {
+                    // Otherwise the arc decides for itself. It goes out at a current zero unless
+                    // the gap is still hot enough to restrike, so an alternating supply clears it
+                    // within a half cycle of the gap winning and a steady one does not clear at all
+                    // until the contacts have parted far enough. That asymmetry is the whole point,
+                    // and it replaces a random chance per tick that knew nothing about either.
+                    //
+                    // A real arc also needs a minimum current to keep itself ionised, which is what
+                    // hvSwitchSparkMinimumCurrent is. It is compared against the SETTLED magnitude
+                    // rather than the instantaneous one: an alternating current passes through zero
+                    // twice a cycle whatever its amplitude, so an instantaneous test would clear
+                    // every healthy arc at its first zero crossing.
+                    if(arc.lastRmsCurrent() < sparkCurrent())
+                        arc.quench();
+                    sparking = arc.isStruck();
                 }
             }
         } else if(!rod.settled()) {
@@ -306,8 +354,19 @@ public class HvSwitchBlockEntity extends ElectricKineticBlockEntity implements S
         if(isClosed() || sparking || (rod != null && rod.getValue() > 0.1f)) {
             splitCooldown = 0;
             wire = builder.connectSwitch(getResistance(), builder.terminalNode(0), builder.terminalNode(1), isClosed());
+            var electricity = ModdedConfigs.server().electricity;
+            arc = new ArcWire(
+                    electricity.arcElectrodeFall.getF(),
+                    electricity.arcColumnGradient.getF(),
+                    1 / electricity.arcChannelResistance.getF(),
+                    electricity.arcDielectricStrength.getF(),
+                    electricity.arcDeionisationTime.getF(),
+                    rod == null ? 0 : contactGap(),
+                    builder.terminalNode(0), builder.terminalNode(1));
+            builder.add(arc);
         } else {
             wire = null;
+            arc = null;
         }
     }
 }
