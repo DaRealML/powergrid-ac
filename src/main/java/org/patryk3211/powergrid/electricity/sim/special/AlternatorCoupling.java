@@ -359,7 +359,14 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         if(!isConverged())
             return;
 
-        // Advance the inductance's history before the current it is derived from is replaced.
+        // Advance the inductance's history BEFORE the current it is derived from is replaced.
+        //
+        // The ordering here is load-bearing and its failure is silent. Assigning previousCurrent
+        // first makes (current - previousCurrent) identically zero, previousInductorVoltage decays
+        // to nothing, and what is left is backward Euler with a = L/(theta*dt) -- an inductance
+        // inflated by exactly 1/theta, which is 1.818 at the shipped 0.55. Measured that way the
+        // machine's internal impedance reads 1.818 times the analytic value at every sub-tick rate,
+        // with no instability and no NaN to give it away. ArmatureReactanceTest catches it.
         var current = getCurrent();
         var dt = deltaTime();
         if(armatureInductance > 0 && dt > 0) {
