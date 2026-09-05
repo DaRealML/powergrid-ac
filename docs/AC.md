@@ -1098,10 +1098,62 @@ What this means:
 
 **Magnetic T-model transformer.** The assessment proposes a new transformer with winding
 resistance, leakage inductance and a magnetising branch, built from `InductorWire` plus mutual
-inductance through `CouplingNode`. It is not here, for two reasons: it needs its own block, and
-the existing ideal `TransformerCoupling` already passes AC unchanged, so it is an enhancement
+inductance through `CouplingNode`. It is not here: it needs its own block, so it is an enhancement
 rather than a prerequisite. The existing transformer's `G_MIN/2` stabilising shunts and its
 zero-resistance warning are unchanged.
+
+This section used to add that "the existing ideal `TransformerCoupling` already passes AC
+unchanged", which is true and reads as reassurance when it is in fact the defect. It passes AC
+unchanged **because it passes everything unchanged.** `TransformerBlockEntity.buildCircuit`
+computes `primaryInductance = turns² * coreAl` and the mutual and stray inductances from it, all in
+henries, and then hands them to `CircuitBuilder.connect(float resistance, …)` and
+`couple(ratio, float resistance, …)` — so every one of them is stamped as an ohm. The transformer
+therefore has **no frequency dependence at all.** Measured on the small core, 4:8 turns into a
+100 Ω load at the shipped config:
+
+| | DC | 4.533 Hz | 72.533 Hz | true magnetising X |
+|---|---:|---:|---:|---:|
+| secondary / primary | 1.999596 | 1.999596 | 1.999596 | — |
+| phase | 0.00° | −0.00° | 0.00° | — |
+| primary current | 10.5976 A | 10.5976 A | 10.5976 A | — |
+| no-load input Z | — | 239.98 Ω ∠180° | 239.98 Ω ∠180° | 6.8 kΩ … 109 kΩ |
+
+Identical to six significant figures from DC to the top of the alternator's range, and the no-load
+magnetising branch is a **resistor burning 120 W continuously** where a real magnetising reactance
+consumes no real power. A battery on the primary appears on the secondary at full turns ratio.
+
+This is not an oversight to be quietly corrected: `electricity.transformerMutualInductanceMultiplier`
+is documented as "Multiplies the mutual inductance of transformers **to get a resistance**", so the
+ohm reading is deliberate, and it is what the whole block is balanced around. Converting the
+T-network to real inductances would change magnetising current, regulation under load, DC blocking
+and heat, and is a balance decision rather than a bug fix. It is recorded here with numbers so that
+decision can be taken on evidence.
+
+**Transmission lines shift the phase of a purely resistive circuit.** `TransmissionLinePort` splits
+one circuit across two islands and exchanges voltage and current in `postUpperSolve`, so each end
+sees the other's node voltage from the **previous sub-tick**. That delay is one sub-tick — 40.8° of
+phase at 72.5 Hz and 32 sub-ticks — partly masked by the fixed `Ieq = 0.5*Ieq + 0.5*I` relaxation
+in `startIteration`, which carries its own state across sub-ticks and has no `dt` in it.
+
+Measured against the identical circuit solved as a single island, which is what the line *is* when
+both endpoints land in the same island. Source 240 V peak, 1 Ω source, 5 Ω line, 50 Ω load — no
+reactance anywhere, so every row should read 0.000°:
+
+| f | sub-ticks | \|G\| direct | \|G\| split | magnitude error | phase error |
+|---:|---:|---:|---:|---:|---:|
+| 4.533 Hz | 8 | 0.017857 | 0.018049 | +1.07% | −5.87° |
+| 36.267 Hz | 32 | 0.017857 | 0.018636 | +4.36% | −12.00° |
+| 72.533 Hz | 32 | 0.017857 | 0.021156 | **+18.47%** | **−26.25°** |
+
+This is **on by default** for any line above `solver.transmissionLineThreshold` = 0.2 Ω. The config
+comment describes "propagation delay of roughly 1 tick", which was written for the direct-current
+era; it is now one *sub-tick*, a shorter time but a far larger fraction of an electrical cycle. The
+port also implements `ISolverHook`, so it forces the full Newton loop — about 20 iterations per
+sub-tick were observed — on an island that would otherwise take the linear fast path.
+
+The delay is inherent to splitting the solve and cannot be removed while the split exists, so the
+options are a trade rather than a fix: raise the threshold so AC grids split less, predict the far
+end forward by one sub-tick, or accept it and document the limit. Not decided here.
 
 **Three-phase.** Out of scope. The single-phase machine is the prerequisite for it.
 
