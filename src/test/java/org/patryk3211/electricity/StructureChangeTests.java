@@ -226,6 +226,9 @@ public class StructureChangeTests extends TestHelper {
         Assertions.assertEquals(2.5f, N1.getVoltage(), "N1 voltage incorrect");
         Assertions.assertEquals(2f, N2.getVoltage(), "N2 voltage incorrect");
         Assertions.assertEquals(5f / 20, V1.getCurrent(), "V1 current incorrect");
-        Assertions.assertEquals(4f / 20, V2.getCurrent(), "V2 current incorrect");
+        // A tolerance, because 4f/20 is not exactly representable: widened to double it is
+        // 0.20000000298023224 against the solver's 0.2, so the no-delta overload could never pass.
+        // Its sibling above survives only because 5f/20 = 0.25 is a power of two.
+        Assertions.assertEquals(4f / 20, V2.getCurrent(), 1e-6, "V2 current incorrect");
     }
 }

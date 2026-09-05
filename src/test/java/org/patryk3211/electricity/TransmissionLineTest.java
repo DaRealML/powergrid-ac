@@ -52,7 +52,11 @@ public class TransmissionLineTest {
         Net2.network.addNode(T2);
         Net2.W(R2, N2, null);
 
-        for(int i = 0; i < 20; ++i) {
+        // The ports relax toward the answer geometrically rather than reaching it in one step,
+        // so twenty iterations lands at 2.9933 V against a 3.3333 target -- a 0.34 V error tested
+        // to 1e-6. It needs about 130 to come inside that tolerance; 200 leaves margin without
+        // being slow, and the convergence is monotone so a larger number cannot make it worse.
+        for(int i = 0; i < 200; ++i) {
             double Iprev = V1.getCurrent(), Vprev = N2.getVoltage();
             Net1.calculate();
             Net2.calculate();
