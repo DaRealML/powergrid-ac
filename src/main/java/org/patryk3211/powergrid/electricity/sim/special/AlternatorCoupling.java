@@ -18,6 +18,7 @@ package org.patryk3211.powergrid.electricity.sim.special;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
+import org.patryk3211.powergrid.electricity.sim.node.ITimeAwareWire;
 import org.patryk3211.powergrid.electricity.sim.solver.IResidualAdder;
 import org.patryk3211.powergrid.electricity.sim.solver.ISubTickRate;
 
@@ -60,14 +61,27 @@ import static org.patryk3211.powergrid.electricity.sim.ElectricalNetwork.G_MIN;
  * <h2>Armature reactance</h2>
  * A real winding has inductance, and without it two alternators connected in parallel are two
  * ideal voltage sources fighting each other — any phase difference produces a current limited
- * only by winding resistance. The armature inductance is stamped with the same backward-Euler
- * companion model the rest of the mod uses for inductors. Starting from
- * {@code V+ - V- - R*i - L*di/dt = e} and taking {@code di/dt ~ (i - i_prev)/dt}:
+ * only by winding resistance. The armature inductance is stamped with the same theta-method the
+ * rest of the mod uses for inductors — see {@link org.patryk3211.powergrid.electricity.sim.node.ITimeAwareWire#getTheta()}.
+ * Starting from {@code V+ - V- - R*i - L*di/dt = e} and integrating {@code di/dt} with weight
+ * {@code theta} on the new step:
  * <pre>
- *     V+ - V- - (R + L/dt) * i = e - (L/dt) * i_prev
+ *     V+ - V- - (R + L/(theta*dt)) * i = e - (L/(theta*dt)) * i_prev - ((1-theta)/theta) * v_prev
  * </pre>
- * so the inductance costs one addition to the source row's diagonal and one term on the right
- * hand side.
+ * so the inductance costs one addition to the source row's diagonal and two terms on the right
+ * hand side. At {@code theta = 1} the last term is identically zero and this is the backward Euler
+ * it used to be.
+ *
+ * <h2>Where {@code v_prev} comes from</h2>
+ * That history term is the previous step's voltage across the <em>inductance</em>, and this class
+ * never sees its terminal voltages — it is a coupling row, and all it knows is its own current.
+ * It does not need them. The same relation one step back rearranges to
+ * <pre>
+ *     v[n] = (L/(theta*dt)) * (i[n] - i[n-1]) - ((1-theta)/theta) * v[n-1]
+ * </pre>
+ * which is a recursion in the current it already stores. Kept here rather than routed through
+ * {@code InductorWire} because the inductance belongs to the source row, not to a branch between
+ * two nodes.
  *
  * <h2>Why the phase advances unconditionally</h2>
  * Every reactive component in the mod gates its state update on {@code isConverged()}, and the
@@ -112,6 +126,9 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
     /** Source current from the previous sub-tick, for the inductor companion model. */
     private double previousCurrent = 0;
+
+    /** Previous step's voltage across the armature inductance. Always 0 at {@code theta = 1}. */
+    private double previousInductorVoltage = 0;
 
     /** Effective series resistance last written to the matrix, to avoid redundant updates. */
     private float appliedResistance = Float.NaN;
@@ -208,17 +225,30 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         return network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
     }
 
+    /**
+     * The island's integration weight.
+     * <p>
+     * Read from the network rather than from config for the same reason
+     * {@link org.patryk3211.powergrid.electricity.sim.ElectricalNetwork#getTheta()} caches it: a
+     * change has to go through a conductance update, and every island holds the value it last
+     * stamped with.
+     */
+    private double theta() {
+        return network == null ? ITimeAwareWire.DEFAULT_THETA : network.getTheta();
+    }
+
     private static double wrap(double angle) {
         return AcSampling.wrapAngle(angle);
     }
 
     /**
-     * Push {@code R + L/dt} into the source row, but only when it actually changed. Every write
-     * counts as a conductance update, and enough of those trigger a full matrix rebuild — so
+     * Push {@code R + L/(theta*dt)} into the source row, but only when it actually changed. Every
+     * write counts as a conductance update, and enough of those trigger a full matrix rebuild — so
      * writing the same value every sub-tick would be quietly expensive.
      */
     private void applyEffectiveResistance(double dt) {
-        var effective = (float) (acBaseResistance + (dt > 0 ? armatureInductance / dt : 0));
+        var effective = (float) (acBaseResistance
+                + (dt > 0 ? armatureInductance / (theta() * dt) : 0));
         if(effective == appliedResistance)
             return;
         appliedResistance = effective;
@@ -302,11 +332,25 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         // correction. The plain source contribution is the one line below.
         residual.add(index, getVoltage());
 
-        // Companion source of the armature inductance: (L/dt) * i_prev.
+        // Companion source of the armature inductance, and both terms are NEGATIVE.
+        //
+        // The row this stamps into is V+ - V- - R*I = e, with the residual carrying the right hand
+        // side and getCurrent() returning the row's own state -- so integrating L*dI/dt into it
+        // gives V+ - V- - (R + L/(theta*dt))*I = e - (L/(theta*dt))*I_prev - ((1-theta)/theta)*v_prev
+        // and the history belongs on the RHS with a minus. It was written with a plus, which made
+        // the two terms add rather than cancel: the machine presented an internal impedance of
+        // about 2L/dt, purely resistive-looking and PROPORTIONAL TO THE SUB-TICK RATE. Measured
+        // into a 2 ohm load at one pole pair it delivered 1.36 A at 16 sub-ticks and 0.049 A at
+        // 512, against an analytic 9.64 A -- so the armature reactance had never worked, and
+        // nothing noticed because armatureInductance defaults to 0 and only CommutatorBlockEntity
+        // ever sets it, leaving every test in the suite running a machine with no reactance at all.
         if(armatureInductance > 0) {
             var dt = deltaTime();
-            if(dt > 0)
-                residual.add(index, armatureInductance / dt * previousCurrent);
+            if(dt > 0) {
+                var theta = theta();
+                residual.add(index, -armatureInductance / (theta * dt) * previousCurrent
+                        - (1 - theta) / theta * previousInductorVoltage);
+            }
         }
     }
 
@@ -315,7 +359,15 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         if(!isConverged())
             return;
 
-        previousCurrent = getCurrent();
+        // Advance the inductance's history before the current it is derived from is replaced.
+        var current = getCurrent();
+        var dt = deltaTime();
+        if(armatureInductance > 0 && dt > 0) {
+            var theta = theta();
+            previousInductorVoltage = armatureInductance / (theta * dt) * (current - previousCurrent)
+                    - (1 - theta) / theta * previousInductorVoltage;
+        }
+        previousCurrent = current;
 
         // Electrical torque. Instantaneous power is e*i = lambda*omega*sin(p*theta)*i, and
         // torque is power over speed, so omega cancels and the load on the shaft is
