@@ -144,7 +144,14 @@ public class ElectromagnetBlockEntity extends ElectricBlockEntity implements Mag
 
     @Override
     public float getFieldStrength() {
-        double I = wire.current();
+        // RMS, because what magnetises something is a sustained field and this reading is already
+        // a magnitude gated at a threshold. An electromagnet pulls whichever way the current
+        // flows, so nothing here wanted the sign; what it did want was a number that does not
+        // collapse twice a cycle. Sampled instantaneously once per world tick, a frequency
+        // dividing 20 Hz evenly reads the same point of the waveform forever, and at 20, 40 or
+        // 60 Hz that point is a zero crossing -- so the magnet would never magnetise anything at
+        // all, however much current it was carrying.
+        double I = wire.rmsCurrent();
         if(isVirtual())
             I = wire.potentialDifference() * wire.conductance();
         double field = Math.abs(I * 0.1);

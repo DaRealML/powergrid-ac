@@ -129,7 +129,11 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
     public void electricalTick() {
         applyPower(coil);
         if(coil.isConverged()) {
-            coilPull = (float) (Mth.clamp(Math.abs(coil.current()) * 5, 0, 2) * 0.5 + coilPull * 0.5);
+            // The half-and-half filter below smooths the RESULT, but it was smoothing a
+            // sequence of instantaneous samples, and no amount of smoothing recovers a signal
+            // that is sampled at the same point of every cycle. At 20 Hz that point is a zero
+            // crossing, so the pile would never have been squeezed at all.
+            coilPull = (float) (Mth.clamp(coil.rmsCurrent() * 5, 0, 2) * 0.5 + coilPull * 0.5);
             refreshResistance();
             setUnsaved();
         }
