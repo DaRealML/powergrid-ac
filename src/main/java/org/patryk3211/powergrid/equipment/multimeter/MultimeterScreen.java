@@ -115,6 +115,15 @@ public class MultimeterScreen extends Screen {
     private static final Readout[] readouts = new Readout[MultimeterChannel.MAX_CHANNELS];
     private static long readoutsRefreshedAt;
 
+    /**
+     * The measurement line, held between refreshes for the same reason the channel readouts are.
+     * <p>
+     * It carries five numbers that all move at once, so redrawing it every frame made the busiest
+     * row on the panel the least readable. Held at {@link #READOUT_HOLD_MILLIS} it settles.
+     */
+    private static String summaryLine = "";
+    private static long summaryRefreshedAt;
+
     /** One lane per channel, rather than every channel about a shared zero line. */
     private static boolean stacked = true;
 
@@ -508,8 +517,20 @@ public class MultimeterScreen extends Screen {
             return;
         }
 
+        // Rebuilt on the readout cadence rather than every frame. Everything below is also
+        // formatted to a FIXED field width -- %8.3g pads to eight characters whether it prints
+        // "     950" or "9.50e+05" -- because the old %.3g changed width with the value and
+        // dragged every segment after it sideways, and the truncation loop at the end then made
+        // whole segments appear and vanish as the line grew and shrank.
+        var now = System.currentTimeMillis();
+        if(now - summaryRefreshedAt < READOUT_HOLD_MILLIS && !summaryLine.isEmpty()) {
+            graphics.drawString(font, Lang.text(summaryLine).component(), x, y, COLOUR_TEXT_DIM, false);
+            return;
+        }
+        summaryRefreshedAt = now;
+
         var segments = new ArrayList<String>();
-        segments.add(String.format("f %.2f Hz", frequency));
+        segments.add(String.format("f %6.2f Hz", frequency));
 
         var voltage = -1;
         var current = -1;
@@ -527,10 +548,10 @@ public class MultimeterScreen extends Screen {
             if(i.magnitude() > 1e-9) {
                 var z = MultimeterPhasor.impedance(v, i);
                 // Sign of the reactance is the whole point: + is inductive, - is capacitive.
-                segments.add(String.format("Z %.3g%sj%.3g Ω",
+                segments.add(String.format("Z %8.3g%sj%8.3g Ω",
                         z.real(), z.imaginary() >= 0 ? "+" : "-", Math.abs(z.imaginary())));
                 var gamma = MultimeterPhasor.reflectionCoefficient(z, 50);
-                segments.add(String.format("SWR %.2f", MultimeterPhasor.standingWaveRatio(gamma)));
+                segments.add(String.format("SWR %6.2f", MultimeterPhasor.standingWaveRatio(gamma)));
 
                 // Power, which is what the impedance above actually costs. Real power comes
                 // straight from the samples rather than from the phasors, so it stays right on a
@@ -540,11 +561,11 @@ public class MultimeterScreen extends Screen {
                 var real = MultimeterPhasor.realPower(windows[voltage], windows[current]);
                 var apparent = MultimeterPhasor.apparentPower(windows[voltage], windows[current]);
                 var factor = MultimeterPhasor.powerFactor(real, apparent);
-                segments.add(String.format("P %.3g W", real));
-                segments.add(String.format("S %.3g VA", apparent));
+                segments.add(String.format("P %8.3g W", real));
+                segments.add(String.format("S %8.3g VA", apparent));
                 // Lagging means the current is behind the voltage, which is what an inductive load
                 // does; the sign of the reactance already established which it is.
-                segments.add(String.format("PF %.3f %s", Math.abs(factor),
+                segments.add(String.format("PF %5.3f %s", Math.abs(factor),
                         Math.abs(z.imaginary()) < z.real() * 1e-3 ? ""
                                 : z.imaginary() >= 0 ? "lag" : "lead").trim());
             }
@@ -558,7 +579,8 @@ public class MultimeterScreen extends Screen {
             line.setLength(0);
             line.append(candidate);
         }
-        graphics.drawString(font, Lang.text(line.toString()).component(), x, y, COLOUR_TEXT_DIM, false);
+        summaryLine = line.toString();
+        graphics.drawString(font, Lang.text(summaryLine).component(), x, y, COLOUR_TEXT_DIM, false);
     }
 
     private void drawGrid(GuiGraphics graphics, int plotLeft, int plotTop, int plotRight,

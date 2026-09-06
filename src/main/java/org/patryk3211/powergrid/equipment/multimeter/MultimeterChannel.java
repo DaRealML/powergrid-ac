@@ -24,6 +24,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
+import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
 import org.patryk3211.powergrid.electricity.wire.BaseWireEntity;
 import org.patryk3211.powergrid.electricity.wire.powercord.CordEntity;
 import org.patryk3211.powergrid.electricity.wire.CircuitBoardEndpoint;
@@ -308,9 +309,19 @@ public class MultimeterChannel {
             var negativeNode = resolveNode(level, negative);
             if(positiveNode == null || negativeNode == null)
                 return null;
-            // The two ends may sit in different islands; sample in the one holding the positive
-            // lead, which is where the waveform of interest is.
-            var network = positiveNode.getNetwork();
+            // The two ends may sit in different islands, and which island the sampler is attached
+            // to does NOT decide what it measures: ProbeSampler.read() reads both nodes directly,
+            // so the island only decides how OFTEN it fires. Taking the positive lead's island
+            // unconditionally therefore threw away samples for no reason, and lost them entirely
+            // when that lead's node had no network at all -- the sampler was never attached, the
+            // server sent an empty array, and the client fell back to drawing the four-hertz
+            // synced node voltage as a staircase beside a current channel sampled a hundred and
+            // twenty-eight times a tick.
+            //
+            // Sub-tick rates are already assigned when this runs -- WorldNetworks.tick calls
+            // setSubTicks on every island, and pulls the transmission-line ones into lockstep,
+            // before it attaches any sampler -- so the faster of the two can simply be asked for.
+            var network = fasterOf(positiveNode.getNetwork(), negativeNode.getNetwork());
             if(network == null)
                 return null;
             var sampler = ProbeSampler.voltage(positiveNode, negativeNode);
@@ -333,6 +344,22 @@ public class MultimeterChannel {
         var sampler = ProbeSampler.current(wire);
         network.addObserver(sampler);
         return sampler;
+    }
+
+    /**
+     * Whichever of two islands is being stepped more finely, ignoring nulls.
+     * <p>
+     * A voltage probe reads both of its nodes directly, so it samples the same waveform whichever
+     * island's hook list it rides. All that changes is the rate, and more is better.
+     */
+    @Nullable
+    private static ElectricalNetwork fasterOf(@Nullable ElectricalNetwork a,
+                                              @Nullable ElectricalNetwork b) {
+        if(a == null)
+            return b;
+        if(b == null)
+            return a;
+        return b.getSubTicks() > a.getSubTicks() ? b : a;
     }
 
     @Nullable
