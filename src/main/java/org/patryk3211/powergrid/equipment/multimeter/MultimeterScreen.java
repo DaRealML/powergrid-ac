@@ -531,6 +531,22 @@ public class MultimeterScreen extends Screen {
                         z.real(), z.imaginary() >= 0 ? "+" : "-", Math.abs(z.imaginary())));
                 var gamma = MultimeterPhasor.reflectionCoefficient(z, 50);
                 segments.add(String.format("SWR %.2f", MultimeterPhasor.standingWaveRatio(gamma)));
+
+                // Power, which is what the impedance above actually costs. Real power comes
+                // straight from the samples rather than from the phasors, so it stays right on a
+                // distorted waveform; apparent power is the product of the two RMS values, and
+                // their ratio is the power factor. On anything reactive these are three different
+                // numbers, and a meter that shows only one of them is hiding the interesting part.
+                var real = MultimeterPhasor.realPower(windows[voltage], windows[current]);
+                var apparent = MultimeterPhasor.apparentPower(windows[voltage], windows[current]);
+                var factor = MultimeterPhasor.powerFactor(real, apparent);
+                segments.add(String.format("P %.3g W", real));
+                segments.add(String.format("S %.3g VA", apparent));
+                // Lagging means the current is behind the voltage, which is what an inductive load
+                // does; the sign of the reactance already established which it is.
+                segments.add(String.format("PF %.3f %s", Math.abs(factor),
+                        Math.abs(z.imaginary()) < z.real() * 1e-3 ? ""
+                                : z.imaginary() >= 0 ? "lag" : "lead").trim());
             }
         }
 

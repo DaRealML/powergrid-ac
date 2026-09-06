@@ -171,6 +171,58 @@ public final class MultimeterPhasor {
      * current lagging voltage, negative is capacitive. This is the quantity a Smith chart plots,
      * and the thing that a magnitude-only meter cannot tell you.
      */
+    /**
+     * Real power, in watts: the mean of voltage times current over the window.
+     * <p>
+     * Taken straight from the samples rather than from the fitted phasors, and deliberately so.
+     * The mean of the product is what real power <em>is</em>, whatever shape the waveform has, so
+     * this stays correct on the distorted current a rectifier draws or on anything else with
+     * harmonics — where a phasor-derived figure would silently report only the fundamental's
+     * contribution and miss the rest.
+     * <p>
+     * The two arrays are assumed to be the same window on the same time axis, which is what the
+     * caller passes; a length mismatch is treated as no measurement rather than half of one.
+     */
+    public static double realPower(float[] voltage, float[] current) {
+        if(voltage == null || current == null || voltage.length != current.length || voltage.length == 0)
+            return 0;
+        var sum = 0.0;
+        for(int k = 0; k < voltage.length; ++k)
+            sum += (double) voltage[k] * current[k];
+        return sum / voltage.length;
+    }
+
+    /**
+     * Apparent power, in volt-amps: the product of the two RMS values.
+     * <p>
+     * What the load costs the grid to supply, as opposed to what it actually consumes. On anything
+     * reactive the two differ, and the difference is the whole reason power factor is a thing an
+     * electrician cares about.
+     */
+    public static double apparentPower(float[] voltage, float[] current) {
+        if(voltage == null || current == null || voltage.length != current.length || voltage.length == 0)
+            return 0;
+        double vSum = 0, iSum = 0;
+        for(int k = 0; k < voltage.length; ++k) {
+            vSum += (double) voltage[k] * voltage[k];
+            iSum += (double) current[k] * current[k];
+        }
+        return Math.sqrt(vSum / voltage.length) * Math.sqrt(iSum / current.length);
+    }
+
+    /**
+     * Real over apparent power, in the range -1 to 1.
+     * <p>
+     * Zero when nothing is flowing, rather than a division by zero. Negative means real power is
+     * flowing back the other way, which is what a probe sees when it is pointed at a source rather
+     * than at a load.
+     */
+    public static double powerFactor(double realPower, double apparentPower) {
+        if(!(apparentPower > 1e-12))
+            return 0;
+        return Math.max(-1, Math.min(1, realPower / apparentPower));
+    }
+
     public static Phasor impedance(Phasor voltage, Phasor current) {
         return voltage.dividedBy(current);
     }
