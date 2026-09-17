@@ -18,6 +18,11 @@ Upstream simulates a grid that is entirely direct-current. This fork adds the ma
 more to the point, goes looking for everything that quietly assumed DC:
 
 - **An alternator** with pole pairs, a real armature reactance, and torque fed back to the shaft.
+- **Three-phase, built rather than placed.** Each alternator block on a shaft is its own winding with
+  a winding-angle slider, so three at 0°, 120° and 240° are a three-phase machine, wired star or delta
+  by hand — with constant shaft torque on a balanced load, and a short circuit if a delta winding is
+  reversed. Three ordinary transformers make star-star, delta-delta, delta-star and star-delta banks
+  with the textbook √3 ratios and 30° shifts.
 - **Sub-tick solving.** A Minecraft tick is 50 ms; a 72 Hz waveform is not visible at 20 Hz. Islands
   carrying an alternating source subdivide the world tick and solve many times inside it.
 - **A second-order integration scheme.** The solver used backward Euler, which at the sampling this
@@ -48,8 +53,8 @@ Treat this as a demo, not a release.
 
 - **None of it has been verified in a running game.** The test suite is headless; block entities,
   rendering, networking and anything needing Minecraft loaded cannot be covered by it.
-- 162 automated tests pass, covering the solver, the companion models, the arc, and the measurement
-  maths.
+- 177 automated tests pass, covering the solver, the companion models, the arc, three-phase
+  machines and transformer banks, and the measurement maths.
 - Several known defects are documented rather than fixed, because fixing them is a balance decision
   rather than a correctness one — most notably that **the transformer has no frequency dependence at
   all** and passes DC at full turns ratio.

@@ -25,6 +25,9 @@ shipped defaults every DC network is solved exactly as it was before.
 | Motor inductive reactance | `ElectricMotorBlockEntity`, `ConstantSpeedMotorBlockEntity` | Backend-agnostic — §3.11 |
 | Phasors / complex impedance | `MultimeterPhasor` | Measurement only, not a solver — §3.10 |
 | Rectification | *nothing added* — `PNJunctionWire` already does it | — |
+| Three-phase windings | `AlternatorCoupling`, `RotorBehaviour`, `CommutatorBlockEntity` | Backend-agnostic; slider not runtime-tested — §3.15, §5.4 |
+| Three-phase transformer banks | *nothing added* — three transformers already are one | Verified by test — §3.15 |
+| AC sources on the game clock | `ACVoltageSourceCoupling`, `ACCurrentSourceNode`, `WorldNetworks` | Backend-agnostic — §3.8, §3.15 |
 
 The magnetic (T-model) transformer from the feasibility assessment is **not** included. See §9.
 
@@ -212,11 +215,20 @@ ACVoltageSourceCoupling:  v(t) = dc + amplitude * sin(2*pi*f*t + offset)
 ACCurrentSourceNode:      i(t) = dc + amplitude * sin(2*pi*f*t + offset)
 ```
 
-Both integrate their angle per sub-tick rather than evaluating it from an absolute clock. That
-keeps the waveform continuous when the frequency is retuned — an absolute-time sine jumps to
-wherever the new frequency's phase happens to be — and it keeps the source running through
-warm-up, the same reasoning as the alternator's shaft angle. Amplitude is the peak; RMS
-accessors convert.
+In a world, both take their angle from the game time: `WorldNetworks.preTick` hands every island
+the level's game time before it is stepped, and each source adds the time it has stepped through
+the current tick. That is what gives the phase offset a meaning between two blocks. An integrated
+angle starts wherever its source was built, and a circuit rebuild starts it again from zero, so two
+sources set 120° apart used to sit at whatever angle build order left them. The price is that
+retuning the frequency now steps the waveform, since the new frequency's absolute phase is
+somewhere else; in game the only way to retune is a command that sets the amplitude in the same
+breath. The fraction of a cycle is taken in two parts so a billion ticks of game time costs no
+precision (`theWorldClockIsContinuousAcrossTicksAtAnyGameTime`).
+
+Without a world -- the tests -- there is no game time, and both integrate their angle per sub-tick
+as they always did, which keeps the waveform continuous across a retune and keeps the source
+running through warm-up, the same reasoning as the alternator's shaft angle. Amplitude is the
+peak; RMS accessors convert.
 
 The phase offset exists so several sources can be given a fixed relationship: three at 0, 2π/3
 and 4π/3 form a balanced three-phase set, which is pinned by a test asserting their instantaneous
@@ -231,7 +243,7 @@ any hook runs, so a source whose `isSource()` depended on its amplitude would bo
 that count and silently stop advancing its own phase.
 
 The two creative source blocks now use these, which makes the existing
-`/source set <pos> <value> [frequency] [dc]` command work on the **current** source as well —
+`/source set <pos> <value> [frequency] [dc] [phase]` command work on the **current** source as well —
 it previously threw `UnsupportedOperationException`. A steady output is simply zero amplitude
 with a DC offset. This fixed three defects in the old hand-rolled sine: it advanced its clock by
 `0.05 / multiTicks` read from the global config floor rather than the rate its island was
@@ -678,6 +690,169 @@ loop permits one. Neither was measured; neither is needed for real power to come
 
 ---
 
+### 3.15 Three-phase
+
+There is no three-phase block, and nothing here adds one. A three-phase generator is three
+alternator blocks on one shaft; a three-phase transformer is three ordinary transformers. Both are
+arrangements a player builds, and the physics that makes the arrangement worth building --
+constant shaft torque, a neutral that carries nothing, the thirty-degree shift of a delta-star bank
+-- falls out of the solver rather than being written in.
+
+#### A winding is an alternator block
+
+Every alternator block on a shaft is now its own winding, with its own coupling and its own two
+terminals. It used to be otherwise: `CommutatorBlockEntity` made every commutator after the first on
+an assembly a `ProxyElectricBehaviour` of that first one, so a second alternator was a second set of
+terminals on the *same* source. That rule is kept for the DC commutator, whose commutators at
+either end of an armature really do tap one winding, and dropped for the alternator. A commutator
+and an alternator on the same shaft are two separate machines, as an exciter dynamo on the end of a
+real alternator's shaft is.
+
+Each winding has a position round the stator, set by the winding-angle slider (§5.4), and
+
+```
+e(t) = lambda * omega * sin(p * theta - windingAngle)
+```
+
+Minus, because a winding further round in the direction of rotation meets each pole later and so
+lags. The consequence a player cares about is that the obvious settings give the obvious sequence:
+
+| Winding angles | What it is |
+|---|---|
+| 0, 120, 240 | Three-phase, L1-L2-L3: each phase lags the one before by 120° |
+| 0, 240, 120 | Three-phase, reversed sequence |
+| 0, 180 | Split-phase: two halves of a centre-tapped winding |
+| 0, 90 | Two-phase |
+| 0, 60, 120, 180, 240, 300 | Six-phase |
+
+Reversing the shaft reverses the sequence, as it does on a real machine.
+
+**Star:** tie one terminal of each winding together; that junction is the neutral, and the
+line-to-line voltage is √3 times each winding's. **Delta:** connect each winding's end to the next
+one's start, round the loop. A delta with every winding the right way round circulates nothing,
+because three balanced EMFs sum to zero at every instant. With one winding reversed the loop EMF is
+twice a winding's, driven through three armature impedances with no load in the way:
+
+```
+I_circulating = 2E / 3Z  =  2 * 25.1 V / (3 * 0.503 ohm)  =  33.3 A peak   (240 rpm, one pole pair, shipped L)
+```
+
+That is a short circuit, and it is what a player gets for chaining a delta backwards.
+
+#### One shaft angle, read by every winding
+
+A winding's spacing only means something if every winding on the shaft agrees on `theta`, and
+private integrators do not. Each would start from wherever it was built, so the 120° a player
+dialled in would be offset by build order, and two windings in islands stepped at different
+sub-tick rates would sum different numbers of float timesteps and drift apart for as long as the
+world ran.
+
+So the angle now lives on the rotor assembly. `RotorBehaviour` keeps a `shaftAngle` in radians and
+advances it once per world tick, in its block-entity tick, by the speed the solve just used.
+Networks solve in `SERVER_LEVEL_PRE`, ahead of every block entity, so that speed is exactly the one
+every winding read for the whole solve. Each winding then adds the time it has itself stepped
+through the current tick (`AcSampling.TickTimer`), which means windings in different islands read
+the true angle at their own sample instants and agree at every instant, not only at tick
+boundaries. Peripheral segments mirror the controller's angle every tick, so whichever segment
+becomes the controller after a split carries the value on. It is saved as `ShaftAngle` on the
+rotor. `IRotor.getShaftAngle()` defaults to NaN, and a rotor that returns it leaves each coupling
+integrating privately as before -- which is what every pre-existing alternator test still runs.
+
+The per-block `Phase` NBT key is no longer written or read. A world saved by an earlier build of
+this branch reloads each alternator at shaft angle zero, which is one step in phase, once.
+
+`windingsInIslandsSteppedAtDifferentRatesStayInStep` and `aWindingAddedToARunningMachineStartsInStep`
+both fail when the test shaft is made to return NaN -- that is, with private integrators -- and pass
+with the shared angle. That was checked by running them both ways, not by inspection.
+
+#### What balanced three-phase buys
+
+**Constant torque.** One winding on a resistive load puts `e*i`, a sine squared, on the shaft: the
+torque swings between about zero and twice its mean at twice the supply frequency. Three balanced
+windings sum `sin²(x) + sin²(x − 120°) + sin²(x − 240°) = 3/2` for every `x`, and the armature's
+lag does not change that because it is the same on every phase. Measured per sub-tick, the single
+winding's peak-to-peak torque is over 1.9 times its mean and the three-phase machine's is under
+10⁻⁴ of its mean, at three times the mean torque.
+
+**A neutral that carries nothing** on a balanced load, so three conductors deliver three times the
+power of one phase, where three separate single-phase circuits would need six.
+
+#### Transmission: banks of three transformers
+
+A transformer block's two coils are isolated from each other and from ground, so three of them
+wire into any of the standard banks. Put each primary coil across a line and the neutral for a star
+primary, or across two lines for a delta; the same choice on the secondary side.
+
+| Bank | Secondary voltage | Shift | Verified by |
+|---|---|---|---|
+| Star-star | line = ratio × supply line | 0° | `starStarAndDeltaDeltaShiftNothing` |
+| Delta-delta | line = ratio × supply line | 0° | same |
+| Delta-star (Dyn11) | phase = √3 × ratio × supply phase | phase +30° | `deltaStarStepsThePhaseVoltageUpByRootThree…` |
+| Star-delta (Yd1) | line = ratio × supply phase | line −30° | `starDeltaMovesTheLineVoltageThirtyDegreesBack` |
+
+None of this needed a solver change. A probe run before any of this work stamped three small
+transformers exactly as `TransformerBlockEntity.buildCircuit` does, 10:10 turns into 10 Ω per phase,
+and measured the delta-star phase voltage at **414.3 V, +30.0°** against an ideal 415.7 V: the
+0.3 % is the winding and source resistance the load current flows through. It was the same with the
+secondary neutral floating or grounded. The tests stamp the transformer the same way, including
+`buildCircuit`'s swap of the two coils when the primary has more turns, and cover 10:40 and 40:10.
+
+**Why distribution banks carry a neutral.** With loads of 10, 100 and 100 Ω on a delta-star
+secondary, a connected neutral holds all three phases within 1 % of their voltage -- and a delta
+primary is what makes that work from a three-wire feed, because the delta circulates the unbalanced
+part instead of needing a neutral upstream. Leave the load's neutral off and its star point floats
+to where Millman's theorem puts it, `V_m = Σ(V_k/R_k) / Σ(1/R_k) = 0.75 E` towards the heavy phase:
+that phase collapses to a quarter of its voltage and the two light ones rise to 1.52 times theirs.
+The test asserts those numbers within 3 %.
+
+Caveats, each measured:
+
+- **The transformer is still resistive** (§9). Ratios and shifts are right because they come from
+  the ideal coupling, but the magnetising branch burns real power and nothing depends on frequency.
+- **`splittingTransformers` lags on AC.** The option (off by default) splits a 1:1 transformer's two
+  sides into separate islands joined by `SplitTransformerControllerWire`, which hands each side the
+  other's voltage from the previous step through a two-sample average. The magnitude survives --
+  0.997 -- but at 4 Hz into 10 Ω the secondary lags by **12.2° at 8 sub-ticks and 3.3° at 32**, about
+  1.4 sub-ticks. In a delta-star bank that turns +30° into roughly +18°. The config comment now says
+  so. Leave it off on an AC grid.
+- **Transmission lines delay by a sub-tick** (§9). Three conductors of equal length are delayed
+  equally, which keeps the phases 120° apart; conductors of different lengths do not.
+- Transformer and variac heating and hum now use the RMS current over the tick. They squared one
+  per-tick sample, so a loaded transformer at 20, 40 or 60 Hz could sit on a zero crossing and never
+  warm up.
+
+#### A bench three-phase supply
+
+The creative sources take a phase in degrees on the end of the existing command:
+
+```
+/source set <pos> <value> <frequency> <dc_offset> <phase>
+```
+
+Three at one frequency with phases 0, −120 and −240 are a balanced L1-L2-L3 supply. The command's
+phase is a phase *angle*, positive leading, where the alternator's slider is a winding *position*,
+positive lagging -- both are the usual convention for what they describe, and both give L1-L2-L3
+for the obvious numbers.
+
+For that to mean anything between two blocks, their angles need a common reference, and they had
+none: each integrated from wherever it was built, and a rebuild started it again from zero. In a
+world both AC sources now take their angle from the game time (§3.8), so sources at one frequency
+differ by exactly their offsets, through rebuilds and reloads.
+
+#### Not done
+
+- **No three-phase motor.** A motor is still one coil. A rotating-field motor -- several motors on a
+  shaft with winding angles, self-starting, reversed by swapping two lines -- is the natural next
+  step and is its own subsystem; until it exists, three-phase pays off in torque and conductors, not
+  in what it can drive.
+- **Separately driven alternators are not synchronised.** Two machines on two shafts each run their
+  own speed controller, so their phases drift. Whether the once-per-tick torque feedback produces
+  enough synchronising torque to pull paralleled machines into step is untested.
+- **Nothing names the vector group.** Dyn1 versus Dyn11 is which way round the secondary star is
+  wired; nothing checks it.
+
+---
+
 ## 4. The linear fast path
 
 This is independent of AC and helps existing DC grids. It should be reviewable on its own.
@@ -717,8 +892,9 @@ depends on network size and on how much time is spent inside the solve versus ar
 
 Pole pairs set the electrical frequency, and that is a decision with a real cost attached, so it
 is exposed where the player makes it rather than buried in a config file. Right-click and hold on
-the side of an alternator opens Create's standard value slider, 1 to 16 pairs, and the readout
-shows the resulting frequency at the shaft's speed ceiling:
+the flat side of an alternator clockwise of its facing, seen from above, opens Create's standard
+value slider, 1 to 16 pairs, and the readout shows the resulting frequency at the shaft's speed
+ceiling. The opposite side carries the winding angle (§5.4).
 
 | Pole pairs | f at 272 rpm | Sub-ticks at 32 samples/cycle |
 |---|---|---|
@@ -943,6 +1119,25 @@ The sign of the reactance is the payoff: it distinguishes an inductive load from
 which two RMS magnitudes never can. `(Z - Z0)/(Z + Z0)` **is** the Smith chart coordinate, so a
 graphical chart is now only a rendering job on top of numbers that already exist.
 
+### 5.4 Winding-angle slider on the alternator
+
+Where round the stator this block's winding sits, in electrical degrees, 0 to 345 in 15° steps.
+Physics in §3.15. Fifteen degrees lands on every spacing a real machine uses -- 180, 120, 90 and 60
+-- and the notches every 60° make the three-phase positions two notches apart. It is on the flat
+side counter-clockwise of the block's facing, opposite the pole pairs.
+
+The two sliders are on opposite faces rather than side by side because they would not fit on one.
+A side face is ten pixels wide and twelve tall, and Create hit-tests a value box as a sphere of
+four pixels radius (`ValueBoxTransform.testHit`, `scale / 2` at the default scale of 0.5), so two
+boxes on one face would overlap and a click in the overlap would go to whichever behaviour was
+registered first. Both use `CenteredSideValueBoxTransform` at its default position, as the pole-pair
+slider always did; whether that sits well on the model has not been seen.
+
+`AlternatorWindingAngleBehaviour` has its own `BehaviourType`, is registered only on an
+`AlternatorBlock`, before `ElectricBehaviour`, and is pushed into the coupling by hand in `read` --
+all for the reasons given for the pole pairs above. `getDegrees()` folds whatever integer a save
+holds into range, because `ScrollValueBehaviour.read` does not clamp.
+
 ---
 
 ## 6. Files changed
@@ -960,7 +1155,11 @@ graphical chart is now only a rendering job on top of numbers that already exist
 | `sim/special/{Capacitor,Inductor,CRSeries,LRSeries}Wire.java` | Corrected trapezoidal expressions; rate-independent leakage, §3.9. |
 | `electricity/creative/CreativeSourceBlockEntity.java` | Both creative sources are now real alternating components; AC works on the current source too, §3.8. |
 | `config/CSolver.java` | `acSamplesPerCycle` (32), `acMaxSubTicks` (16). |
-| `inductionrotor/CommutatorBlockEntity.java` | Picks the coupling class by block; pushes the sampling policy; persists `Phase`; does not flip terminal polarity for an alternator. |
+| `inductionrotor/CommutatorBlockEntity.java` | Picks the coupling class by block; pushes the sampling policy; does not flip terminal polarity for an alternator. Alternators are never proxies of another commutator, and carry a winding-angle slider; the shaft angle moved to the rotor, §3.15. |
+| `rotor/RotorBehaviour.java` | Keeps and saves the shaft angle every winding reads, §3.15. |
+| `sim/special/IRotor.java` | `getShaftAngle()`/`getShaftTick()`, defaulting to "no angle". |
+| `transformer/TransformerBlockEntity.java`, `variac/VariacBlockEntity.java` | Heating and hum from RMS current, §3.15. |
+| `commands/SourceCommand.java` | Optional `phase` argument, §3.15. |
 | `collections/ModdedBlocks.java`, `ModdedBlockEntities.java` | Registers the alternator, reusing the commutator's models and block-entity type. |
 
 ### Added
@@ -974,6 +1173,8 @@ graphical chart is now only a rendering job on top of numbers that already exist
 | `sim/special/ACCurrentSourceNode.java` | Bench alternating current source. |
 | `inductionrotor/AlternatorBlock.java` | Empty subclass of `CommutatorBlock`; exists so the block entity can tell the two apart. |
 | `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
+| `inductionrotor/AlternatorWindingAngleBehaviour.java` | Click-and-hold slider for the winding angle, §5.4. |
+| `test/.../ThreePhaseAlternatorTest.java`, `ThreePhaseTransmissionTest.java`, `PhasorFit.java` | 13 tests and an independent phasor fit, §7. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
 | `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
 | `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java`, `MotorReactanceTest.java`, `ReactivePhaseTest.java` | 54 tests, §7. |
@@ -1022,6 +1223,17 @@ harness. **78 new tests, all passing.**
 | `phaseOffsetsMakeABalancedThreePhaseSet` | Three sources 120° apart sum to zero |
 | `offsetShiftsTheWaveformWithoutChangingItsSwing` | DC offset arithmetic |
 | `retuningFrequencyDoesNotStepTheWaveform` | Integrated phase stays continuous |
+| `sourcesOnTheWorldClockKeepTheirOffsetsWhateverTheBuildOrder` | Sources built 777 ticks apart, in islands at different rates, differ by exactly their offsets |
+| `theWorldClockIsContinuousAcrossTicksAtAnyGameTime` | No step at a tick boundary at a billion ticks of game time |
+| `windingsAt0And120And240AreABalancedThreePhaseSet` | L2 lags L1 by 120°, full EMF on each, instantaneous sum zero |
+| `reversingTheShaftReversesThePhaseSequence` | Turned backwards, L2 leads |
+| `windingsInIslandsSteppedAtDifferentRatesStayInStep` | Same angle after 100,000 ticks at 32 and 4 sub-ticks — **fails with private integrators** |
+| `aWindingAddedToARunningMachineStartsInStep` | A late winding joins at the running angle — **fails with private integrators** |
+| `aBalancedThreePhaseLoadPutsASteadyTorqueOnTheShaft` | One winding's torque ripple > 1.9× mean; three windings' < 10⁻⁴, at 3× the torque |
+| `aDeltaWiredCorrectlyCirculatesNothing` / `aDeltaWithOneWindingReversedShortCircuitsTheMachine` | Zero, and 2E/3Z within 2 % |
+| `deltaStarStepsThePhaseVoltageUpByRootThree…` / `starDeltaMovesTheLineVoltageThirtyDegreesBack` / `starStarAndDeltaDeltaShiftNothing` | Ratios within 1 %, shifts within 0.05° |
+| `theTurnsRatioScalesTheWholeBank` | 10:40 and 40:10 delta-star, including `buildCircuit`'s coil swap |
+| `anUnbalancedLoadOnAConnectedNeutralKeepsItsVoltages` / `…WithoutItsNeutralFloatsTheStarPoint` | Within 1 % with a neutral; Millman's 0.25 E and 1.52 E within 3 % without |
 | `PhasorTest` (9 tests) | Amplitude recovery, DC rejection, the 90° convention, resistive and reactive impedance signs, frequency estimation, SWR, non-integer cycle counts |
 | `motorCoilPresentsInductiveReactance` | Motor coil is sqrt(R² + X²), not R |
 | `motorPowerFactorLagsUnderAc` | cos(phi) = R/\|Z\|; not purely resistive |
@@ -1071,7 +1283,10 @@ now take it, and their numbers did not move.
 - **The native backend was not built or run.** See §8.
 - **Two alternators have never been paralleled.** Phase-locking is the design's most interesting
   claim and it is the least tested; the tests cover a single machine.
-- **Save/load of phase was not exercised**, only implemented.
+- **Save/load of the shaft angle was not exercised**, only implemented.
+- **No three-phase machine or bank has been built in game.** The windings, the shared shaft angle and
+  the transformer banks are tested against the solver; the sliders, the proxy change on a real
+  assembly, and whether star and delta are pleasant to wire by hand are not.
 
 ---
 
@@ -1155,7 +1370,9 @@ The delay is inherent to splitting the solve and cannot be removed while the spl
 options are a trade rather than a fix: raise the threshold so AC grids split less, predict the far
 end forward by one sub-tick, or accept it and document the limit. Not decided here.
 
-**Three-phase.** Out of scope. The single-phase machine is the prerequisite for it.
+**Three-phase motor.** Three-phase generation and transmission are in, §3.15; a motor that runs on
+a rotating field is not, and until one exists no load draws three-phase differently from three
+single-phase loads.
 
 **Rectifier block.** None added — `PNJunctionWire` already exists and a bridge can be built from
 it. Note that any network containing one is nonlinear, so it keeps the full Newton path at every
