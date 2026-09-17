@@ -77,6 +77,30 @@ public class AlternatorPolePairsBehaviour extends ScrollValueBehaviour {
      * client. Reading and writing our own key on top of the inherited one settles both directions;
      * the inherited key is still written, and simply ignored.
      */
+    /**
+     * Which slider on this block a click belongs to.
+     * <p>
+     * {@code ValueSettingsBehaviour.netId()} defaults to 0 for everything, and the server routes an
+     * incoming setting to the FIRST behaviour whose id matches the packet
+     * ({@code ValueSettingsPacket.applySettings}). Two sliders on one block therefore both answer
+     * to 0, and every adjustment of either lands on whichever was registered first -- so the
+     * winding angle never moved and the pole pairs took its numbers instead. The ids have to be
+     * distinct, and only within this block entity.
+     */
+    @Override
+    public int netId() {
+        return 0;
+    }
+
+    /**
+     * And the same again for Create's clipboard, which keys copied settings by
+     * {@code getClipboardKey()} -- "Settings" for every value behaviour unless it says otherwise.
+     */
+    @Override
+    public String getClipboardKey() {
+        return "PolePairs";
+    }
+
     private static final String KEY = "PolePairs";
 
     @Override
