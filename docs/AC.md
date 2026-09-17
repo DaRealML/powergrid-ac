@@ -1203,6 +1203,24 @@ slider always did; whether that sits well on the model has not been seen.
 all for the reasons given for the pole pairs above. `getDegrees()` folds whatever integer a save
 holds into range, because `ScrollValueBehaviour.read` does not clamp.
 
+#### Two sliders on one block share three things, and all three had to be separated
+
+This is the alternator's alone: no other block entity in the mod carries two value behaviours, and
+no Create block entity does either, so nothing guards the defaults. Reported from in game as "the
+sliders do not work", and it was three defaults at once:
+
+| What | Default | What it did |
+|---|---|---|
+| `ScrollValueBehaviour.write` | `nbt.putInt("ScrollValue", …)` | Both wrote one key in the block's single compound and both read the survivor back -- live, since that compound is also what `sendData` syncs |
+| `ValueSettingsBehaviour.netId()` | `0` | `ValueSettingsPacket.applySettings` routes a setting to the FIRST behaviour whose id matches, so every adjustment of either slider landed on the pole pairs |
+| `getClipboardKey()` | `"Settings"` | Create's clipboard would copy one and paste it into the other |
+
+Each behaviour now writes and reads its own NBT key, returns its own `netId` (0 and 1, which only
+have to be distinct within the block entity), and names its own clipboard key. None of it can be
+covered by a test -- a behaviour needs a `SmartBlockEntity`, which needs Minecraft -- so it was
+found by reading Create's source against a screenshot of the board setting 150 degrees while the
+block still read 0.
+
 ---
 
 ## 6. Files changed
