@@ -270,6 +270,16 @@ public class MultimeterScreen extends Screen {
      * a tick count because this is a property of what the eye can read, not of the simulation —
      * the readout should settle at the same rate whether the server is keeping up or not.
      */
+    /**
+     * The frequency measured on the last frame, for the readout's RMS window.
+     * <p>
+     * One frame stale by construction: the readouts are refreshed before the frame measures
+     * anything, so that every column agrees on the numbers and their widths. A frequency that
+     * moved since the last frame moves the RMS window by a fraction of a cycle, which is the very
+     * error this is here to remove, and the readouts only refresh four times a second anyway.
+     */
+    private static double lastFrequency;
+
     private static void refreshReadouts() {
         var now = System.currentTimeMillis();
         if(readouts[0] != null && now - readoutsRefreshedAt < READOUT_HOLD_MILLIS)
@@ -280,7 +290,7 @@ public class MultimeterScreen extends Screen {
             if(readout == null)
                 readouts[c] = readout = new Readout();
             readout.latest = MultimeterTrace.latest(c);
-            readout.rms = MultimeterTrace.rms(c);
+            readout.rms = MultimeterTrace.rms(c, lastFrequency);
             readout.decade = decadeFor(Math.max(Math.abs(readout.latest), Math.abs(readout.rms)),
                     readout.decade);
         }
@@ -458,6 +468,7 @@ public class MultimeterScreen extends Screen {
         var reference = MultimeterPhasor.strongestChannel();
         var frequency = reference < 0 || reference >= channels ? 0
                 : MultimeterPhasor.estimateFrequency(windows[reference], sampleRate);
+        lastFrequency = frequency;
         var referencePhase = frequency <= 0 ? 0
                 : MultimeterPhasor.goertzel(windows[reference], frequency, sampleRate).phaseDegrees();
 

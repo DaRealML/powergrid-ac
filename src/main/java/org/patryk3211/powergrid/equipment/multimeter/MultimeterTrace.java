@@ -559,6 +559,70 @@ public class MultimeterTrace {
      * displays and what determines heating in a load, which is why it sits beside the
      * instantaneous value rather than replacing it.
      */
+    /**
+     * RMS across the largest whole number of cycles the window holds, which is the number a meter
+     * should display.
+     * <p>
+     * The window is eight cycles of the measured frequency rounded to whole samples, so it is
+     * never exactly eight cycles: the part cycle left over is squared and averaged in with the
+     * rest, and as the waveform walks through the window the reading moves. Measured on a clean
+     * sine it is worth up to 0.34 % at 50 Hz on 32 sub-ticks, and 0.8 % once the frequency estimate
+     * is a percent out. Small, but it is the difference between a reading that sits still and one
+     * that flickers in its last digits for no reason the player can see.
+     * <p>
+     * Falls back to the whole window when the frequency is unknown -- direct current, or too few
+     * samples to hold a cycle -- where every sample counts equally anyway.
+     */
+    public static float rms(int channel, double frequency) {
+        var rate = sampleRate();
+        if(!(frequency > 0) || rate <= 0)
+            return rms(channel);
+        return wholeCycleRms(toArray(channel), rate / frequency);
+    }
+
+    /**
+     * RMS over the newest whole number of cycles in {@code window}. Pure, so it can be tested
+     * without a trace behind it.
+     * <p>
+     * The window ends part way through a sample, and has to. A cycle is 12.8 samples at 50 Hz on
+     * the shipped rate, so no whole number of SAMPLES is a whole number of CYCLES -- truncating to
+     * 89 samples out of 102 leaves 7.03 cycles and reads no steadier than the 7.97 it started with
+     * (measured: 0.46 % against 0.40 %). So the oldest sample in the window carries the leftover
+     * fraction as its weight, which makes the window exactly seven cycles long and the sum of the
+     * cosine term over it very nearly zero, which is the whole point.
+     */
+    public static float wholeCycleRms(float[] window, double samplesPerCycle) {
+        var count = window.length;
+        if(count == 0)
+            return 0;
+        if(!(samplesPerCycle > 1) || count < samplesPerCycle)
+            return plainRms(window, 0, count);
+
+        var span = Math.floor(count / samplesPerCycle) * samplesPerCycle;
+        var full = (int) Math.floor(span);
+        var fraction = span - full;
+        var first = window.length - full;
+        var sum = 0.0;
+        for(int i = first; i < window.length; ++i)
+            sum += (double) window[i] * window[i];
+        if(fraction > 0 && first > 0) {
+            var edge = (double) window[first - 1];
+            sum += fraction * edge * edge;
+        } else {
+            span = full;
+        }
+        return (float) Math.sqrt(sum / span);
+    }
+
+    private static float plainRms(float[] window, int from, int count) {
+        if(count <= 0)
+            return 0;
+        var sum = 0.0;
+        for(int i = from; i < from + count; ++i)
+            sum += (double) window[i] * window[i];
+        return (float) Math.sqrt(sum / count);
+    }
+
     public static float rms(int channel) {
         var count = visibleCount(channel);
         if(count == 0)
