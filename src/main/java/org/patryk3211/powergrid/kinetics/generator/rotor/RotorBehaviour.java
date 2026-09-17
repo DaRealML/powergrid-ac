@@ -36,6 +36,7 @@ import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.collections.ModdedDamageTypes;
 import org.patryk3211.powergrid.collections.ModdedTags;
 import org.patryk3211.powergrid.electricity.base.ElectricBehaviour;
+import org.patryk3211.powergrid.electricity.sim.special.AcSampling;
 import org.patryk3211.powergrid.electricity.sim.special.IRotor;
 import org.patryk3211.powergrid.kinetics.generator.IRotorAssemblyPart;
 
@@ -66,6 +67,14 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
     // Angle is only for rendering and doesn't have to be saved.
     private float angle = 0;
     private int overspeedTicks = 0;
+
+    // The shaft angle the electrical side reads, in radians, as of the start of the current world
+    // tick. Unlike the render angle above this one is authoritative: every alternator winding on
+    // the assembly derives its EMF from it, so it is saved, and peripherals mirror the controller
+    // every tick so that whichever segment becomes the controller after a split carries the value
+    // on instead of restarting the machine from zero.
+    private double shaftAngle = 0;
+    private long shaftTick = 0;
 
     private boolean hasSoundSource = false;
     private IForceSource forceSupplier = null;
@@ -169,12 +178,20 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
             if(Float.isNaN(angularVelocity))
                 angularVelocity = 0;
         }
+        if(!clientPacket && compound.contains("ShaftAngle")) {
+            var saved = compound.getDouble("ShaftAngle");
+            if(Double.isFinite(saved))
+                shaftAngle = AcSampling.wrapAngle(saved);
+        }
     }
 
     @Override
     public void write(CompoundTag compound, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(compound, registries, clientPacket);
         compound.putFloat("AngularVelocity", angularVelocity);
+        // Server state only. The client renders from its own angle and runs no windings.
+        if(!clientPacket)
+            compound.putDouble("ShaftAngle", shaftAngle);
     }
 
     @Override
@@ -232,6 +249,16 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
         return controller.angle;
     }
 
+    @Override
+    public double getShaftAngle() {
+        return getControllerOrThis().shaftAngle;
+    }
+
+    @Override
+    public long getShaftTick() {
+        return getControllerOrThis().shaftTick;
+    }
+
     public static int getMaxRotationSpeed() {
         return ModdedConfigs.server().kinetics.generatorControls.rotorRPMMax.get();
     }
@@ -269,6 +296,15 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
             /* Get the old and current Angular Velocity */
             var oldAV = getOldAngVel();
             var velocity = getAngularVelocity();
+
+            // Advance the shaft by the speed the electrical solve has just used, and before this
+            // tick changes that speed. Networks solve in the level's pre-tick, ahead of every block
+            // entity, so a winding spent the whole of that solve reading the speed as it stands
+            // here; advancing by anything else would put a small step into every winding's angle
+            // at each tick boundary. The radians accessor, not a conversion of `velocity`, because
+            // it is the one the windings call and it carries float rounding of its own.
+            shaftAngle = AcSampling.wrapAngle(shaftAngle + getAngularVelocityRadians() * AcSampling.TICK_SECONDS);
+            ++shaftTick;
 
             float friction = Math.abs(velocity * 20f * inertia);
             friction = Math.min(friction, segmentCount * ModdedConfigs.server().kinetics.generatorControls.rotorSegmentFriction.getF());
@@ -338,6 +374,8 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
             // Fetch values from controller
             angularVelocity = getAngularVelocity();
             angle = getAngle();
+            shaftAngle = getShaftAngle();
+            shaftTick = getShaftTick();
         }
         getWorld().blockEntityChanged(getPos());
         damageCalc();

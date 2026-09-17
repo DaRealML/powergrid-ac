@@ -37,4 +37,27 @@ public interface IRotor {
     default float getAngularVelocityRadians() {
         return getAngularVelocity() * (float) Math.PI / 30f;
     }
+
+    /**
+     * Mechanical angle of the shaft at the start of the current world tick, in radians, or NaN
+     * when this rotor does not keep one.
+     * <p>
+     * A rotor that keeps an angle is what lets several windings share one shaft: each derives its
+     * electrical angle from this value instead of integrating a private copy, so they cannot drift
+     * apart and a winding added to a running machine starts in step with the rest. A rotor that
+     * returns NaN leaves each winding to integrate its own angle, as they always did.
+     *
+     * @see AcSampling.TickTimer
+     */
+    default double getShaftAngle() {
+        return Double.NaN;
+    }
+
+    /**
+     * A counter that changes whenever {@link #getShaftAngle()} advances. Only its changes carry
+     * meaning; the value itself is arbitrary.
+     */
+    default long getShaftTick() {
+        return 0;
+    }
 }

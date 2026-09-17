@@ -83,6 +83,33 @@ import static org.patryk3211.powergrid.electricity.sim.ElectricalNetwork.G_MIN;
  * {@code InductorWire} because the inductance belongs to the source row, not to a branch between
  * two nodes.
  *
+ * <h2>Windings, and why they share the shaft's angle</h2>
+ * A polyphase machine is several windings round one rotor, spaced around the stator. This class is
+ * one winding: {@link #setWindingAngle(double)} is its position in electrical degrees, so the EMF is
+ * <pre>
+ *     e(t) = lambda * omega * sin(p * theta - windingAngle)
+ * </pre>
+ * and three instances on one rotor at 0, 120 and 240 degrees are a three-phase alternator.
+ * <p>
+ * Minus, because a winding further round the stator in the direction of rotation meets each pole
+ * later, and so lags. That makes 0, 120 and 240 the familiar L1, L2, L3 sequence, each phase
+ * lagging the one before, rather than the reverse; and it makes the sequence reverse when the
+ * shaft does, which is how a real machine behaves.
+ * <p>
+ * That only holds if the three agree on {@code theta}, and private integrators do not. Each would
+ * start from wherever it was built -- and a rebuilt circuit took whatever angle was last loaded
+ * from the save -- so the spacing the player dialled in would be offset by history, and any
+ * rounding difference between islands stepped at different rates would accumulate for as long as
+ * the world runs. So
+ * when the rotor keeps a shaft angle ({@link IRotor#getShaftAngle()}) every winding reads it and
+ * adds only the time it has itself stepped through the current tick; see
+ * {@link AcSampling.TickTimer}. The private integrator remains for a rotor that keeps no angle.
+ * <p>
+ * Nothing else about the machine is per winding. Excitation comes from the same field, torque from
+ * every winding lands on the same rotor, and that last point is where three-phase earns its keep:
+ * the torque of one winding on a resistive load pulses at twice the supply frequency, between zero
+ * and double its mean, while three balanced windings sum to a constant.
+ *
  * <h2>Why the phase advances unconditionally</h2>
  * Every reactive component in the mod gates its state update on {@code isConverged()}, and the
  * network deliberately forces a non-converged tick after any structural change so components
@@ -118,10 +145,19 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     /** Armature (synchronous) inductance in henries. Zero disables the companion model. */
     private double armatureInductance = 0;
 
-    /** Shaft angle in radians, wrapped to [0, 2*pi). Integrated once per solver sub-tick. */
+    /**
+     * Shaft angle in radians, wrapped to [0, 2*pi), as of the sub-tick being solved. Read from the
+     * rotor when it keeps one, integrated here when it does not.
+     */
     private double phase = 0;
 
-    /** sin(p * phase) for the sub-tick currently being solved, reused for the torque term. */
+    /** Position of this winding around the stator, in electrical radians. */
+    private double windingAngle = 0;
+
+    /** Where this winding is inside the current world tick, against the rotor's shaft angle. */
+    private final AcSampling.TickTimer shaftTimer = new AcSampling.TickTimer();
+
+    /** sin(p * phase - windingAngle) for the sub-tick being solved, reused for the torque term. */
     private double phaseSine = 0;
 
     /** Source current from the previous sub-tick, for the inductor companion model. */
@@ -185,9 +221,11 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     }
 
     /**
-     * Shaft angle in radians. Exposed so the owning block entity can persist it: unlike the
-     * render angle on the rotor, this value must survive a save/load or every machine on the
-     * grid comes back with an undefined phase relationship to its neighbours.
+     * Shaft angle in radians as of the last sub-tick solved.
+     * <p>
+     * When the rotor keeps a shaft angle this is derived from it and {@link #setPhase(double)} is
+     * overwritten on the next sub-tick; persistence then belongs to the rotor. Only a rotor with
+     * no angle of its own leaves this coupling as the keeper of the value.
      */
     public double getPhase() {
         return phase;
@@ -199,7 +237,27 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         this.phase = wrap(phase);
     }
 
-    /** Instantaneous EMF as a fraction of peak, i.e. sin(p * theta). Useful for gauges. */
+    /**
+     * Where this winding sits around the stator, in electrical radians.
+     * <p>
+     * Electrical rather than mechanical, because that is the angle a player is choosing: on a
+     * machine with {@code p} pole pairs, 120 electrical degrees is {@code 120/p} degrees of
+     * actual stator, and asking for the latter would make the right setting depend on a second
+     * slider.
+     */
+    public void setWindingAngle(double radians) {
+        if(Double.isFinite(radians))
+            this.windingAngle = wrap(radians);
+    }
+
+    public double getWindingAngle() {
+        return windingAngle;
+    }
+
+    /**
+     * Instantaneous EMF as a fraction of peak, i.e. {@code sin(p * theta - windingAngle)}. Useful
+     * for gauges.
+     */
     public double getPhaseSine() {
         return phaseSine;
     }
@@ -319,8 +377,12 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
         // Advance the clock first, then evaluate the waveform at the new angle. Unconditional
         // by design — see the class comment.
-        phase = wrap(phase + omega * dt);
-        phaseSine = Math.sin(polePairs * phase);
+        var shaft = acRotor.getShaftAngle();
+        if(Double.isNaN(shaft))
+            phase = wrap(phase + omega * dt);
+        else
+            phase = wrap(shaft + omega * shaftTimer.step(acRotor.getShaftTick(), dt));
+        phaseSine = Math.sin(polePairs * phase - windingAngle);
 
         applyEffectiveResistance(dt);
         setVoltage(acField * omega * phaseSine);
@@ -388,6 +450,7 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
     @Override
     public String toString() {
-        return String.format("Alternator(%s p=%d theta=%.3f V=%g)", positive, polePairs, phase, getVoltage());
+        return String.format("Alternator(%s p=%d theta=%.3f winding=%.0fdeg V=%g)",
+                positive, polePairs, phase, Math.toDegrees(windingAngle), getVoltage());
     }
 }

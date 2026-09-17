@@ -31,7 +31,6 @@ import org.patryk3211.powergrid.electricity.sim.calculation.Precalculated;
 import org.patryk3211.powergrid.electricity.sim.calculation.PrecalculatedN;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import com.simibubi.create.foundation.blockEntity.behaviour.CenteredSideValueBoxTransform;
-import net.minecraft.core.Direction;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
@@ -51,16 +50,13 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     private boolean updateBehaviour = true;
     private float emf;
 
-    // Shaft angle of an alternator, in radians. Held here rather than on the rotor because the
-    // rotor's own angle is a render-only value that is neither synced nor saved, while an AC
-    // grid needs its machines to come back from a reload with their phase relationships intact.
-    // Unused by the DC commutator.
-    private double phase;
-
-    // Pole-pair slider, present only on the alternator. Null on a commutator, so every read
-    // must be guarded.
+    // Pole-pair and winding-angle sliders, present only on the alternator. Null on a commutator,
+    // so every read must be guarded. The shaft angle both depend on lives on the rotor assembly,
+    // not here: every winding on a shaft has to read the same one.
     @Nullable
     private AlternatorPolePairsBehaviour polePairs;
+    @Nullable
+    private AlternatorWindingAngleBehaviour windingAngle;
 
     private final PrecalculatedN<Float, Precalculated<Float>> totalFieldStrength = new PrecalculatedN<>(CommutatorBlockEntity::fieldSum, 0.0f);
 
@@ -103,10 +99,32 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
             alternator.setArmatureInductance(solver.acArmatureInductance.getF());
             if(polePairs != null)
                 alternator.setPolePairs(polePairs.getPolePairs());
-            // Restore the phase read from NBT, so a reloaded grid comes back with its machines
-            // in the same relative positions they were saved in.
-            alternator.setPhase(phase);
+            if(windingAngle != null)
+                alternator.setWindingAngle(windingAngle.getRadians());
         }
+    }
+
+    private boolean isAlternator() {
+        return getBlockState().getBlock() instanceof AlternatorBlock;
+    }
+
+    /**
+     * Whether this block and another commutator on the same shaft are two views of one source.
+     * <p>
+     * They are for the DC machine, whose commutators at either end of an armature tap the same
+     * winding. They are not for an alternator: each alternator block is a winding of its own, at
+     * its own angle, with its own terminals -- which is what makes three of them on a shaft a
+     * three-phase machine rather than one source with three sets of terminals. A commutator and an
+     * alternator on the same shaft are two separate machines too, the way an exciter dynamo sits on
+     * the end of a real alternator's shaft.
+     */
+    private boolean sharesSourceWith(CommutatorBlockEntity other) {
+        return !isAlternator() && !other.isAlternator();
+    }
+
+    private void applyWindingAngle(int ignored) {
+        if(source instanceof AlternatorCoupling alternator && windingAngle != null)
+            alternator.setWindingAngle(windingAngle.getRadians());
     }
 
     /**
@@ -123,14 +141,26 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     }
 
     /**
-     * Places the slider on the flat sides of the housing — never on the shaft axis, where the
-     * rotor assembly continues, and never on top, which carries the terminals.
+     * Places the pole-pair slider on one flat side of the housing — never on the shaft axis,
+     * where the rotor assembly continues, and never on top, which carries the terminals.
+     * <p>
+     * One side rather than both, because the other now carries the winding angle. A side face is
+     * ten pixels wide and twelve tall, and Create hit-tests a value box as a sphere of four pixels
+     * radius, so two boxes on one face could not be placed without their hit regions overlapping;
+     * a click there would go to whichever behaviour happened to be registered first.
      */
     public static class PolePairsBox extends CenteredSideValueBoxTransform {
         public PolePairsBox() {
-            super((state, direction) -> direction.getAxis() != Direction.Axis.Y
-                    && state.hasProperty(CommutatorBlock.HORIZONTAL_FACING)
-                    && state.getValue(CommutatorBlock.HORIZONTAL_FACING).getAxis() != direction.getAxis());
+            super((state, direction) -> state.hasProperty(CommutatorBlock.HORIZONTAL_FACING)
+                    && state.getValue(CommutatorBlock.HORIZONTAL_FACING).getClockWise() == direction);
+        }
+    }
+
+    /** The winding angle, on the flat side opposite the pole pairs. */
+    public static class WindingAngleBox extends CenteredSideValueBoxTransform {
+        public WindingAngleBox() {
+            super((state, direction) -> state.hasProperty(CommutatorBlock.HORIZONTAL_FACING)
+                    && state.getValue(CommutatorBlock.HORIZONTAL_FACING).getCounterClockWise() == direction);
         }
     }
 
@@ -149,10 +179,14 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         // does not find, so adding one for some blocks of a shared block-entity type is safe.
         // This must come before ElectricBehaviour, whose constructor builds the circuit
         // immediately and reads the selected value.
-        if(getBlockState().getBlock() instanceof AlternatorBlock) {
+        if(isAlternator()) {
             polePairs = new AlternatorPolePairsBehaviour(this, new PolePairsBox());
             polePairs.withCallback(this::applyPolePairs);
             behaviours.add(polePairs);
+
+            windingAngle = new AlternatorWindingAngleBehaviour(this, new WindingAngleBox());
+            windingAngle.withCallback(this::applyWindingAngle);
+            behaviours.add(windingAngle);
         }
 
         electricBehaviour = new ElectricBehaviour(this);
@@ -206,17 +240,17 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
         resistance = tag.getFloat("Resistance");
-        phase = tag.getDouble("Phase");
         if(source != null) {
             source.setEmfValue(tag.getFloat("EmfState"));
             source.setResistance(resistance);
             if(source instanceof AlternatorCoupling alternator) {
-                alternator.setPhase(phase);
-                // super.read() has just fanned out to the behaviours, so the slider now holds
-                // its saved value. ScrollValueBehaviour.read assigns the field directly without
+                // super.read() has just fanned out to the behaviours, so the sliders now hold
+                // their saved values. ScrollValueBehaviour.read assigns the field directly without
                 // firing the callback, so the coupling has to be updated here by hand.
                 if(polePairs != null)
                     alternator.setPolePairs(polePairs.getPolePairs());
+                if(windingAngle != null)
+                    alternator.setWindingAngle(windingAngle.getRadians());
             }
         } else {
             emf = tag.getFloat("EmfState");
@@ -229,8 +263,6 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         if(source != null) {
             tag.putFloat("EmfState", (float) source.getEmfValue());
             tag.putFloat("Resistance", resistance);
-            if(source instanceof AlternatorCoupling alternator)
-                tag.putDouble("Phase", alternator.getPhase());
         }
     }
 
@@ -246,7 +278,7 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
                 if(segment.blockEntity instanceof InductionRotorBlockEntity rotor) {
                     resistance += ResistanceValues.get(rotor.getBlockState().getBlock());
                     rotors.add(rotor.totalField);
-                } else if(segment.blockEntity instanceof CommutatorBlockEntity commutator) {
+                } else if(segment.blockEntity instanceof CommutatorBlockEntity commutator && sharesSourceWith(commutator)) {
                     if(commutator.source != null) {
                         // Source already exists on a different block, this will be a proxy.
                         proxyTarget.setValue(commutator.worldPosition);

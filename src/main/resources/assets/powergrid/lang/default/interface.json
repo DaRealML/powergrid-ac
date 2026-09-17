@@ -40,6 +40,7 @@
   "powergrid.gui.carbon_pile.current_resistance": "Current resistance:",
 
   "powergrid.gui.alternator.pole_pairs": "Pole pairs",
+  "powergrid.gui.alternator.winding_angle": "Winding angle",
   "powergrid.gui.multimeter.title": "Multimeter",
   "powergrid.gui.multimeter.steady": "Steady (no alternating component)",
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",
