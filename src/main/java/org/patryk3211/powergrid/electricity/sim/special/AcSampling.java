@@ -68,4 +68,65 @@ public final class AcSampling {
             rate <<= 1;
         return Math.min(rate, ceiling);
     }
+
+    /**
+     * Phase of a sine at {@code frequency} referenced to the world's game time, in {@code [0, 2*pi)}.
+     * <p>
+     * The fractional cycle count is taken in two parts. Game time grows without bound -- a year of
+     * play is over six hundred million ticks -- and at mains frequency {@code f * t} is then a
+     * number in the hundreds of millions; folding the tick part to its fraction first keeps the
+     * sub-tick part from being added to a value that has already spent most of a double's digits.
+     *
+     * @param tick    game time of the tick being solved
+     * @param elapsed seconds from the start of that tick, from a {@link TickTimer}
+     */
+    public static double anchoredPhase(double frequency, long tick, double elapsed) {
+        var whole = frequency * TICK_SECONDS * tick;
+        var cycles = (whole - Math.floor(whole)) + frequency * elapsed;
+        return TWO_PI * (cycles - Math.floor(cycles));
+    }
+
+    /**
+     * Time into the current world tick, for a component whose angle is anchored to a clock it
+     * does not own.
+     *
+     * <h2>Why an anchor rather than an accumulator</h2>
+     * Two sources that each integrate their own angle agree on frequency but not on phase: each
+     * starts from wherever it was built, and a circuit rebuild starts it again from zero. That is
+     * fine for one machine on its own and useless for three windings that must sit 120 degrees
+     * apart. Anchoring every component to one shared value per world tick -- a shaft angle, or the
+     * world's game time -- makes the phase relationship a property of the settings rather than of
+     * build order.
+     *
+     * <h2>Why the anchor is per world tick and the fraction is per component</h2>
+     * Islands step at different sub-tick rates, so two components anchored to the same clock do
+     * not sample at the same instants. Each therefore measures its own position inside the tick
+     * by summing its own timesteps, and resets that sum when the anchor's tick counter moves. Both
+     * then read the true angle at their own sample times, which is exactly what is wanted: the
+     * windings agree at every instant, not merely at the tick boundaries.
+     * <p>
+     * If the anchor fails to advance for a tick -- a frozen tick, a rotor in a chunk that did not
+     * tick -- the elapsed time simply keeps growing and the angle extrapolates at the last known
+     * speed, which is what an integrator would have done anyway.
+     */
+    public static final class TickTimer {
+        private long tick = Long.MIN_VALUE;
+        private double elapsed;
+
+        /**
+         * Advance by one sub-tick.
+         *
+         * @param currentTick the anchor's counter; any change restarts the count
+         * @param dt          this sub-tick's timestep in seconds
+         * @return seconds from the start of the anchor's tick to the end of this sub-tick
+         */
+        public double step(long currentTick, double dt) {
+            if(currentTick != tick) {
+                tick = currentTick;
+                elapsed = 0;
+            }
+            elapsed += dt;
+            return elapsed;
+        }
+    }
 }

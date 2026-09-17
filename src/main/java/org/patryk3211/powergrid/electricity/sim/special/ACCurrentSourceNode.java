@@ -58,8 +58,14 @@ public class ACCurrentSourceNode extends CurrentSourceNode implements IOuterHook
     private double phaseOffset;
     private double dcOffset;
 
-    /** Integrated angle in radians, wrapped to {@code [0, 2*pi)}. */
+    /**
+     * Angle in radians, wrapped to {@code [0, 2*pi)}, before the offset is added. Anchored to game
+     * time in a world and integrated without one, for the reasons given on
+     * {@link ACVoltageSourceCoupling}.
+     */
     private double phase;
+
+    private final AcSampling.TickTimer worldTimer = new AcSampling.TickTimer();
 
     private int samplesPerCycle = 32;
     private int maxSubTicks = 16;
@@ -138,7 +144,11 @@ public class ACCurrentSourceNode extends CurrentSourceNode implements IOuterHook
     public void preSolve() {
         var network = getNetwork();
         var dt = network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
-        phase = AcSampling.wrapAngle(phase + TWO_PI * frequency * dt);
+        var worldTick = network == null ? -1 : network.getWorldTick();
+        if(worldTick < 0)
+            phase = AcSampling.wrapAngle(phase + TWO_PI * frequency * dt);
+        else
+            phase = AcSampling.anchoredPhase(frequency, worldTick, worldTimer.step(worldTick, dt));
         setCurrent(dcOffset + amplitude * Math.sin(phase + phaseOffset));
     }
 

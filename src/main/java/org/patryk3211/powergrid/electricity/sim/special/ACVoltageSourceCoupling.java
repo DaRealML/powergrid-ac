@@ -35,13 +35,27 @@ import static org.patryk3211.powergrid.electricity.sim.special.AcSampling.TWO_PI
  * right thing for testing a filter, driving a rectifier, or measuring a component's reactance
  * without a rotor in the way.
  *
- * <h2>Phase is integrated, not computed from a clock</h2>
- * The angle advances by {@code 2*pi*f*dt} each sub-tick rather than being evaluated from an
- * absolute time. That matters because it stays continuous when the frequency is changed: a
- * source retuned from 4 Hz to 12 Hz carries on from the angle it had reached, instead of jumping
- * to wherever the new frequency's absolute phase happens to be and putting a step into the
- * waveform. It also means the source keeps running through warm-up, which
- * {@link #preSolve()} is not gated on — the same reasoning as the alternator's shaft angle.
+ * <h2>In a world, phase is read from the game time</h2>
+ * When the island carries a world tick ({@link org.patryk3211.powergrid.electricity.sim.ElectricalNetwork#getWorldTick()}),
+ * the angle is {@code 2*pi*f*t} with {@code t} the game time plus this source's own position in
+ * the tick. That is what gives {@link #setPhaseOffset(double)} a meaning between sources that
+ * were not built together. An integrated angle starts wherever its source was built, and a
+ * circuit rebuild -- any wire placed anywhere on the island -- starts it again from zero, so two
+ * sources set 120 degrees apart would in practice sit at whatever angle build order left them.
+ * Anchored to game time, two sources at one frequency differ by exactly their offsets, and still
+ * do after a rebuild or a reload.
+ * <p>
+ * The cost is on retuning. Changing the frequency moves the absolute phase of the new frequency,
+ * so the waveform steps. That is the right trade for a reference supply, and in game the only
+ * way to retune is a command that sets the amplitude in the same breath anyway. If the level's
+ * clock stops while networks keep solving -- a frozen tick rate -- the angle extrapolates from
+ * the last tick, and steps back once time resumes.
+ *
+ * <h2>Without a world, phase is integrated</h2>
+ * The angle advances by {@code 2*pi*f*dt} each sub-tick. It stays continuous when the frequency
+ * is changed: a source retuned from 4 Hz to 12 Hz carries on from the angle it had reached. It
+ * also keeps running through warm-up, which {@link #preSolve()} is not gated on — the same
+ * reasoning as the alternator's shaft angle.
  *
  * <h2>Amplitude is peak, not RMS</h2>
  * {@code amplitude} is the peak of the sine. For a sinusoid the RMS value a meter would show is
@@ -58,8 +72,10 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
      */
     private double dcOffset;
 
-    /** Integrated angle in radians, wrapped to {@code [0, 2*pi)}. */
+    /** Angle in radians, wrapped to {@code [0, 2*pi)}, before {@link #phaseOffset} is added. */
     private double phase;
+
+    private final AcSampling.TickTimer worldTimer = new AcSampling.TickTimer();
 
     private int samplesPerCycle = 32;
     private int maxSubTicks = 16;
@@ -150,7 +166,11 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
     @Override
     public void preSolve() {
         var dt = network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
-        phase = AcSampling.wrapAngle(phase + TWO_PI * frequency * dt);
+        var worldTick = network == null ? -1 : network.getWorldTick();
+        if(worldTick < 0)
+            phase = AcSampling.wrapAngle(phase + TWO_PI * frequency * dt);
+        else
+            phase = AcSampling.anchoredPhase(frequency, worldTick, worldTimer.step(worldTick, dt));
         setVoltage(dcOffset + amplitude * Math.sin(phase + phaseOffset));
     }
 

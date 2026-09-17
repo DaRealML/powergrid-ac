@@ -88,6 +88,11 @@ public class ElectricalNetwork implements IStamped {
     // before prepare() and held here so the stepping loop can read it back per island.
     private int subTicks = 1;
 
+    // The world's game time for the tick being solved, or -1 when there is no world -- the unit
+    // tests, and anything solved before WorldNetworks has handed one over. A shared clock for
+    // alternating sources: see ACVoltageSourceCoupling for why they need one.
+    private long worldTick = -1;
+
     public static Logger LOGGER = null;
 
     public Function<Boolean, Integer> maxIterations = b -> 200;
@@ -194,6 +199,15 @@ public class ElectricalNetwork implements IStamped {
 
     public void setSubTicks(int subTicks) {
         this.subTicks = Math.max(subTicks, 1);
+    }
+
+    public void setWorldTick(long worldTick) {
+        this.worldTick = worldTick;
+    }
+
+    /** Game time of the tick being solved, or a negative value outside a world. */
+    public long getWorldTick() {
+        return worldTick;
     }
 
     public double getDeltaTime() {

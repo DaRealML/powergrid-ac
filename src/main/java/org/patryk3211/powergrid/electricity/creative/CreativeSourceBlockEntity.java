@@ -51,6 +51,10 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
     private float amplitude = 0;
     private float frequency = 0;
 
+    // Degrees, as typed. Only meaningful between sources because the sim anchors their angle to
+    // game time; see ACVoltageSourceCoupling.
+    private float phaseDegrees = 0;
+
     public CreativeSourceBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
     }
@@ -71,12 +75,14 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
             voltageSourceNode.setAmplitude(amplitude);
             voltageSourceNode.setFrequency(frequency);
             voltageSourceNode.setDcOffset(dc);
+            voltageSourceNode.setPhaseOffset(Math.toRadians(phaseDegrees));
             voltageSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
         }
         if(currentSourceNode != null) {
             currentSourceNode.setAmplitude(amplitude);
             currentSourceNode.setFrequency(frequency);
             currentSourceNode.setDcOffset(dc);
+            currentSourceNode.setPhaseOffset(Math.toRadians(phaseDegrees));
             currentSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
         }
     }
@@ -134,7 +140,7 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
         if(tag.contains("Overwrite"))
             overwrite = tag.getBoolean("Overwrite");
         if(tag.contains("Freq")) {
-            setValue(tag.getFloat("NodeValue"), tag.getFloat("Freq"), tag.getFloat("DC"));
+            setValue(tag.getFloat("NodeValue"), tag.getFloat("Freq"), tag.getFloat("DC"), tag.getFloat("Phase"));
         } else {
             setValue(tag.getFloat("NodeValue"));
         }
@@ -149,6 +155,7 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
             tag.putFloat("NodeValue", amplitude);
             tag.putFloat("Freq", frequency);
             tag.putFloat("DC", dc);
+            tag.putFloat("Phase", phaseDegrees);
         } else {
             tag.putFloat("NodeValue", getValue());
         }
@@ -163,6 +170,7 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
             tag.putFloat("NodeValue", amplitude);
             tag.putFloat("Freq", frequency);
             tag.putFloat("DC", dc);
+            tag.putFloat("Phase", phaseDegrees);
         } else {
             tag.putFloat("NodeValue", getValue());
         }
@@ -182,9 +190,19 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
      * that both are backed by real alternating sim components.
      */
     public void setValue(float amplitude, float frequency, float dc) {
+        setValue(amplitude, frequency, dc, 0);
+    }
+
+    /**
+     * Alternating output with a phase offset in degrees. Three sources at one frequency set to 0,
+     * -120 and -240 degrees are a balanced three-phase supply in the usual L1-L2-L3 order, and they
+     * hold that relationship through rebuilds and reloads.
+     */
+    public void setValue(float amplitude, float frequency, float dc, float phaseDegrees) {
         this.frequency = frequency;
         this.amplitude = amplitude;
         this.dc = dc;
+        this.phaseDegrees = Float.isFinite(phaseDegrees) ? phaseDegrees : 0;
         applyWaveform();
         setChanged();
     }

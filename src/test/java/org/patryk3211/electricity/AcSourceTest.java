@@ -219,6 +219,83 @@ public class AcSourceTest extends TestHelper {
                 "Phase should continue from where it was, advancing at the new rate");
     }
 
+    /** A source to ground driving its own load, in whatever island it is given. */
+    private static ACVoltageSourceCoupling loadedSource(Network net, double frequency, double degrees) {
+        var ground = net.N();
+        net.network.addNode(new VoltageSourceCoupling(ground, null, 0f, 0f));
+        var terminal = new FloatingNode();
+        var source = new ACVoltageSourceCoupling(terminal, null, 0.001f, 10, frequency);
+        source.setPhaseOffset(Math.toRadians(degrees));
+        net.network.addNode(terminal);
+        net.network.addNode(source);
+        net.W(10f, terminal, ground);
+        return source;
+    }
+
+    @Test
+    void sourcesOnTheWorldClockKeepTheirOffsetsWhateverTheBuildOrder() {
+        // L1 is built at game time 5000 and runs for 777 ticks before L2 is built, in another
+        // island stepped eight times more coarsely. Integrating privately, L2 would start from
+        // zero and sit at whatever angle that left it; and any rebuild of either island would
+        // reset one of them again. On the world clock they differ by exactly their offsets.
+        // 7.3 Hz because a frequency dividing 20 Hz lands on the same angle every tick and would
+        // make a phase comparison at tick boundaries trivially pass.
+        var frequency = 7.3;
+        var first = new Network();
+        var second = new Network();
+        var l1 = loadedSource(first, frequency, 0);
+        long tick = 5000;
+        for(; tick < 5777; ++tick) {
+            first.network.setWorldTick(tick);
+            first.network.calculate(SUB_TICKS);
+        }
+
+        var l2 = loadedSource(second, frequency, -120);
+        var ground = second.V(0);
+        var current = new ACCurrentSourceNode(1, frequency);
+        second.network.addNode(current);
+        second.W(10f, current, ground);
+        for(int n = 0; n < 50; ++n, ++tick) {
+            first.network.setWorldTick(tick);
+            first.network.calculate(SUB_TICKS);
+            second.network.setWorldTick(tick);
+            second.network.calculate(SUB_TICKS / 8);
+        }
+
+        Assertions.assertEquals(l1.getPhase(), l2.getPhase(), 1e-9,
+                "Two sources at one frequency must be at the same angle at the same game time");
+        Assertions.assertEquals(l1.getPhase(), current.getPhase(), 1e-9,
+                "The current source must keep the same clock as the voltage source");
+        Assertions.assertEquals(10 * Math.sin(l2.getPhase() - Math.toRadians(120)), l2.getVoltage(), 1e-6,
+                "And L2's output is that angle less its 120 degrees");
+    }
+
+    @Test
+    void theWorldClockIsContinuousAcrossTicksAtAnyGameTime() {
+        // A year and a half of continuous play is a billion ticks. The anchored phase folds the
+        // tick part to a fraction of a cycle before adding the sub-tick part, so neither the step
+        // across a tick boundary nor the step within one should have picked up rounding.
+        var frequency = 47.3;
+        for(var tick : new long[]{ 0, 123_456, 1_000_000_000L }) {
+            var endOfTick = org.patryk3211.powergrid.electricity.sim.special.AcSampling
+                    .anchoredPhase(frequency, tick, 0.05);
+            var startOfNext = org.patryk3211.powergrid.electricity.sim.special.AcSampling
+                    .anchoredPhase(frequency, tick + 1, 0);
+            var gap = Math.abs(Math.IEEEremainder(startOfNext - endOfTick, 2 * Math.PI));
+            Assertions.assertTrue(gap < 1e-5,
+                    "At game time " + tick + " the tick boundary should be seamless, stepped by " + gap);
+
+            var dt = 0.05 / 16;
+            var a = org.patryk3211.powergrid.electricity.sim.special.AcSampling
+                    .anchoredPhase(frequency, tick, 5 * dt);
+            var b = org.patryk3211.powergrid.electricity.sim.special.AcSampling
+                    .anchoredPhase(frequency, tick, 6 * dt);
+            var step = Math.IEEEremainder(b - a, 2 * Math.PI);
+            Assertions.assertEquals(2 * Math.PI * frequency * dt, step, 1e-5,
+                    "At game time " + tick + " one sub-tick should advance the angle by 2*pi*f*dt");
+        }
+    }
+
     @Test
     void groundReferencedSourceStillSolves() {
         // A source with a null negative terminal is referenced to the solver's datum. Worth

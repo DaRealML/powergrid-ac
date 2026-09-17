@@ -303,7 +303,11 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
 
         attachProbeSamplers();
 
+        // Read once, so every island in this solve is anchored to the same instant whatever the
+        // level's clock does while it runs.
+        var worldTick = world.getGameTime();
         for(var network : subnetworks) {
+            network.setWorldTick(worldTick);
             network.prepare(network.getSubTicks());
         }
 

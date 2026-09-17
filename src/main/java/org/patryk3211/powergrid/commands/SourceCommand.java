@@ -25,7 +25,9 @@ public class SourceCommand {
                                         .then(Commands.argument("frequency", FloatArgumentType.floatArg())
                                                 .executes(SourceCommand::setSourceWithFrequency)
                                                 .then(Commands.argument("dc_offset", FloatArgumentType.floatArg())
-                                                        .executes(SourceCommand::setSourceWithDCOffset))))));
+                                                        .executes(SourceCommand::setSourceWithDCOffset)
+                                                        .then(Commands.argument("phase", FloatArgumentType.floatArg())
+                                                                .executes(SourceCommand::setSourceWithPhase)))))));
     }
 
     private static int setSource(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
@@ -82,6 +84,32 @@ public class SourceCommand {
         be.setValue(value, freq, dc);
         be.notifyUpdate();
         source.sendSuccess(() -> Component.literal(String.format("Set source to %f %s at %f Hz with %f DC offset", value, be.isCurrentSource() ? "amps" : "volts", freq, dc)), true);
+        return Command.SINGLE_SUCCESS;
+    }
+
+    /**
+     * Phase in degrees. Sources at the same frequency keep exactly this relationship to each other
+     * wherever and whenever they were set, so three of these at 0, -120 and -240 are a three-phase
+     * supply.
+     */
+    private static int setSourceWithPhase(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
+        CommandSourceStack source = ctx.getSource();
+        var player = source.getPlayerOrException();
+
+        BlockPos pos = ctx.getArgument("position", WorldCoordinates.class).getBlockPos(source);
+        float value = ctx.getArgument("value", Float.class);
+        float freq = ctx.getArgument("frequency", Float.class);
+        float dc = ctx.getArgument("dc_offset", Float.class);
+        float phase = ctx.getArgument("phase", Float.class);
+
+        if(!(player.level().getBlockEntity(pos) instanceof CreativeSourceBlockEntity be)) {
+            source.sendFailure(Component.literal("Block is not a creative source"));
+            return 0;
+        }
+
+        be.setValue(value, freq, dc, phase);
+        be.notifyUpdate();
+        source.sendSuccess(() -> Component.literal(String.format("Set source to %f %s at %f Hz with %f DC offset and %f degrees phase", value, be.isCurrentSource() ? "amps" : "volts", freq, dc, phase)), true);
         return Command.SINGLE_SUCCESS;
     }
 }
