@@ -614,7 +614,7 @@ shipped code, real power lands at 0.99–1.00× everywhere.
 Strictly this is first order for any `theta != 0.5`. The point is the error *coefficient*, a tenth
 of backward Euler's, not the order.
 
-#### Why `acMaxSubTicks` went from 16 to 32
+#### Why `acMaxSubTicks` went from 16 to 32 (and later to 64)
 
 The one thing 0.55 does not fix at 16 sub-ticks is the impedance **magnitude** at the very top of
 the range: +21.7%, where backward Euler managed +4.9%. That is bilinear frequency warping and it is
@@ -851,6 +851,71 @@ differ by exactly their offsets, through rebuilds and reloads.
 - **Nothing names the vector group.** Dyn1 versus Dyn11 is which way round the secondary star is
   wired; nothing checks it.
 
+### 3.16 Why a generator's reading moves, and how much of it is real
+
+From a player testing the first release: the generator reads about 225 V RMS but dips to about
+217 V, and the waveform looks like a slowly rising squarish sine. Both were measured rather than
+guessed at, and the answers are different for the two halves.
+
+#### The waveform is under-sampled, and the ceiling was the cause
+
+A machine asks for `acSamplesPerCycle` samples per cycle and is refused above `acMaxSubTicks`. At
+the old ceiling of 32 the request is met up to 18 Hz and cut above it:
+
+| Pole pairs at 272 rpm | Frequency | Samples per cycle at ceiling 32 | at 64 | at 128 |
+|---|---|---|---|---|
+| 1 | 4.5 Hz | 35.3 | 35.3 | 35.3 |
+| 4 | 18.1 Hz | 35.3 | 35.3 | 35.3 |
+| 8 | 36.3 Hz | 17.6 | 35.3 | 35.3 |
+| 11 | 49.9 Hz | 12.8 | 25.7 | 51.3 |
+| 16 | 72.5 Hz | 8.8 | 17.6 | 35.3 |
+
+Nine samples a cycle drawn as a trace is a staircase, and because the count is not a whole number
+the steps walk through the waveform from cycle to cycle -- the "slowly rising" part of the report.
+The ceiling now defaults to **64**, which costs nothing on a machine below 18 Hz because a machine
+only asks for what its frequency needs, and doubles the solve rate on the ones that were being
+refused. Mains frequency still wants 128 for a smooth trace, and the config comment says so.
+
+#### The RMS window now spans whole cycles
+
+The meter's RMS was taken over the displayed window, which is eight cycles of the measured
+frequency rounded to whole samples -- so it always held a part cycle, and the reading moved as the
+waveform walked through it. Worth up to 0.4 % at 50 Hz, and more when the frequency estimate is
+out.
+
+Truncating to a whole number of samples does not fix it: at 12.8 samples a cycle no sample count is
+a whole number of cycles, and 89 samples out of 102 reads *worse* than the 102 did (0.46 % against
+0.40 %, measured). The window therefore ends part way through a sample, the oldest sample carrying
+the leftover fraction as its weight. That takes the same case to **0.13 %**.
+
+#### The rest of it is the prime mover, not the electrics
+
+Neither of those is worth 3.5 %, so the rest was measured on a shaft that ticks exactly as
+`RotorBehaviour` does -- same friction clamp, same `v += force / 20 / inertia`, same Kp/Kd governor
+with the shipped constants. A machine making about 224 V into 12 Ω, RMS read over a sliding
+eight-cycle window as the meter reads it:
+
+| Case | Mean | Ripple |
+|---|---|---|
+| Strong drive, one winding | 223.7 V | 0.47 % |
+| Strong drive, three windings | 223.9 V | 0.47 % |
+| Four times the rotor inertia | 223.7 V | 0.15 % |
+| Self-excited, shunt field coil | 278.9 V | 0.78 % |
+| Drive at its limit (`maxForce` 125) | **189.3 V** | **2.45 %** |
+
+So the electrics hold still to within half a percent, and what does not hold still is the shaft. A
+prime mover that cannot supply the torque the load is taking lets the speed fall until the two
+balance, and the EMF falls with it -- a machine that should read 224 V reads 189 V and wanders five
+times as much. The cure is input power, a heavier rotor, or a lighter load; it is not electrical.
+
+Worth knowing about the per-tick RMS: `AbstractElectricWire.rmsCurrent()` covers one world tick,
+which at 4.53 Hz is 0.23 of a cycle, and the RMS of a quarter cycle swings by more than two to one
+depending where it falls. That is why the wire smooths it into `lastRmsCurrent()` for anything that
+compares against a threshold, and why the measurements above use a sliding whole-cycle window
+instead. A test that measures per-tick RMS is measuring its own window.
+
+`GeneratorVoltageRippleTest` pins all five rows; `WholeCycleRmsTest` pins the window.
+
 ---
 
 ## 4. The linear fast path
@@ -903,8 +968,8 @@ ceiling. The opposite side carries the winding angle (§5.4).
 | 11 | 49.9 Hz | 128 |
 
 Reaching mains frequency therefore costs **16× the solver work** of the default, on any island
-holding that machine, and `acMaxSubTicks` (default 16) has to be raised to match or the waveform
-is under-sampled. That trade is the whole reason the number is a visible control.
+holding that machine, and `acMaxSubTicks` (default 64, see §3.16) has to be raised to 128 to match
+or the waveform is under-sampled. That trade is the whole reason the number is a visible control.
 
 Implementation notes for review:
 
