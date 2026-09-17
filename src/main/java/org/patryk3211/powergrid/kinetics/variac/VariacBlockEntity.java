@@ -101,15 +101,21 @@ public class VariacBlockEntity extends TunedBlockEntity implements IHaveGoggleIn
     public void tick() {
         float power = 0;
         lastCurrent = 0;
+        // RMS over the tick, not one sample of it. This runs once per world tick, and on an
+        // alternating supply a single instantaneous current is whichever point of the waveform the
+        // tick landed on -- at 20, 40 or 60 Hz the same point every time, so a loaded variac
+        // could sit on a zero crossing and never warm up. Both branches are plain resistors, so
+        // Irms^2 * R is their mean power exactly; on a steady supply rmsCurrent() is |I| and
+        // nothing changes.
         if(primaryStray != null && primaryStray.isConverged()) {
-            var I1 = primaryStray.current();
+            var I1 = primaryStray.rmsCurrent();
             power += (float) (I1 * I1 * primaryStray.getResistance());
-            lastCurrent += Math.abs(I1);
+            lastCurrent += I1;
         }
         if(mutualInductance != null && mutualInductance.isConverged()) {
-            var I3 = mutualInductance.current();
+            var I3 = mutualInductance.rmsCurrent();
             power += (float) (I3 * I3 * mutualInductance.getResistance());
-            lastCurrent += Math.abs(I3);
+            lastCurrent += I3;
         }
         if(thermalBehaviour != null && !level.isClientSide)
             thermalBehaviour.applyTickPower(power);
