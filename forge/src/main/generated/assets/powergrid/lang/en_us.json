@@ -431,6 +431,7 @@
   "powergrid.generic.unit.watt": "W",
   "powergrid.generic.unit.watt.name": "Watt",
   "powergrid.gui.alternator.pole_pairs": "Pole pairs",
+  "powergrid.gui.alternator.winding_angle": "Winding angle",
   "powergrid.gui.button_overlay.mode": "Button mode: ",
   "powergrid.gui.button_overlay.nc": "Normally closed",
   "powergrid.gui.button_overlay.no": "Normally open",
