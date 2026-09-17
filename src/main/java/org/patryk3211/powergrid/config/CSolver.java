@@ -52,7 +52,7 @@ public class CSolver extends ConfigBase {
     public final ConfigInt multiTicks = i(1, 1, "multiTicks", Comments.multiTicks);
 
     public final ConfigInt acSamplesPerCycle = i(32, 4, "acSamplesPerCycle", Comments.acSamplesPerCycle);
-    public final ConfigInt acMaxSubTicks = i(32, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
+    public final ConfigInt acMaxSubTicks = i(64, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
     public final ConfigFloat acArmatureInductance = f(0.02f, 0, "acArmatureInductance", Comments.acArmatureInductance);
 
     public final ConfigEnum<SolverBackend> solverBackend = e(SolverBackend.NATIVE, "solverBackend", Comments.solverBackend);
@@ -99,7 +99,7 @@ public class CSolver extends ConfigBase {
         public static final String multiTicks = "Experimental! This option enables all electrical networks to tick multiple times per world tick. This allows for better simulation precision when reactive components are involved but can have a significant impact on performance.";
 
         public static final String acSamplesPerCycle = "Solver samples taken per electrical cycle of an alternating source. Higher values track the waveform more accurately at a proportional cost. Only networks containing an AC source are affected; DC networks ignore this entirely.";
-        public static final String acMaxSubTicks = "Upper bound on sub-ticks per world tick that an alternating source may request. This is the real cost ceiling for AC: a network containing an alternator is solved at most this many times per tick. Rounded DOWN to a power of two in use, because a rate that does not divide the world tick evenly would space its sub-ticks unequally - so 100 behaves as 64. Prefer powers of two: 16, 32, 64, 128.";
+        public static final String acMaxSubTicks = "Upper bound on sub-ticks per world tick that an alternating source may request. This is the real cost ceiling for AC: a network containing an alternator is solved at most this many times per tick. A machine only asks for what its frequency needs, so raising this costs nothing until one runs fast enough to want it: at the default 64 a machine up to 36 Hz (8 pole pairs at full speed) gets the full 32 samples per cycle, while 50 Hz gets 26 and 72 Hz gets 18 - enough to measure but visibly stepped on the multimeter. Raise to 128 for a smooth waveform at mains frequency, at twice the solver cost on those networks. Rounded DOWN to a power of two in use, because a rate that does not divide the world tick evenly would space its sub-ticks unequally - so 100 behaves as 64. Prefer powers of two: 16, 32, 64, 128.";
         public static final String acArmatureInductance = "Armature (synchronous) inductance of an alternator winding, in henries. This is what limits circulating current when two alternators are paralleled out of phase; setting it to zero makes them ideal voltage sources that fight each other. Raising it softens the machine's response to load and increases the phase angle between voltage and current.";
 
         public static final String bjtLimAlpha = "BJT inter-iteration voltage change smoothing multiplier";
