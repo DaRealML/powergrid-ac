@@ -77,8 +77,11 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
 
     private final AcSampling.TickTimer worldTimer = new AcSampling.TickTimer();
 
-    private int samplesPerCycle = 32;
-    private int maxSubTicks = 16;
+    // Sampling policy. Zero means "not set", and the configured value is read at the point of use
+    // so that changing it in game takes effect without rebuilding the circuit. A caller that sets
+    // one explicitly -- the tests do -- overrides the config.
+    private int samplesPerCycle = 0;
+    private int maxSubTicks = 0;
 
     public ACVoltageSourceCoupling(IElectricNode positive, @Nullable IElectricNode negative, float resistance) {
         super(positive, negative, resistance);
@@ -160,7 +163,9 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
 
     @Override
     public int requiredSubTicks() {
-        return AcSampling.subTicksFor(frequency, samplesPerCycle, maxSubTicks);
+        return AcSampling.subTicksFor(frequency,
+                samplesPerCycle > 0 ? samplesPerCycle : AcSampling.configuredSamplesPerCycle(),
+                maxSubTicks > 0 ? maxSubTicks : AcSampling.configuredMaxSubTicks());
     }
 
     @Override

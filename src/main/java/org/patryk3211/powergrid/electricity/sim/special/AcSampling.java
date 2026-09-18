@@ -15,6 +15,8 @@
  */
 package org.patryk3211.powergrid.electricity.sim.special;
 
+import org.patryk3211.powergrid.collections.ModdedConfigs;
+
 /**
  * Shared arithmetic for alternating sources: angle wrapping and choosing a sub-tick rate.
  * <p>
@@ -27,7 +29,39 @@ public final class AcSampling {
     /** One world tick, in seconds. The solver's timestep is this divided by the sub-tick count. */
     public static final double TICK_SECONDS = 0.05;
 
+    /** What the sampling knobs mean with no config to read: the test suite, and early load. */
+    public static final int DEFAULT_SAMPLES_PER_CYCLE = 32;
+    public static final int DEFAULT_MAX_SUB_TICKS = 16;
+
     private AcSampling() { }
+
+    /**
+     * The sampling knobs, read at the moment they are used.
+     * <p>
+     * Every alternating component used to be handed these once, when its circuit was built, and
+     * kept the copy -- so changing them in the config screen did nothing at all until the block was
+     * replaced or the world reloaded, which is exactly how it was reported. {@code multiTicks} and
+     * {@code integrationTheta} were always read per tick; these three now are too.
+     * <p>
+     * Null is the normal case in the test suite and during early load, not an error -- the same
+     * guard {@code ElectricalNetwork.configuredTheta()} uses.
+     */
+    public static int configuredSamplesPerCycle() {
+        var configs = ModdedConfigs.server();
+        return configs == null ? DEFAULT_SAMPLES_PER_CYCLE
+                : configs.electricity.solver.acSamplesPerCycle.get();
+    }
+
+    public static int configuredMaxSubTicks() {
+        var configs = ModdedConfigs.server();
+        return configs == null ? DEFAULT_MAX_SUB_TICKS : configs.electricity.solver.acMaxSubTicks.get();
+    }
+
+    /** Zero without a config, which is what every test that never sets one expects. */
+    public static double configuredArmatureInductance() {
+        var configs = ModdedConfigs.server();
+        return configs == null ? 0 : configs.electricity.solver.acArmatureInductance.getF();
+    }
 
     /**
      * Wrap an angle into {@code [0, 2*pi)}.

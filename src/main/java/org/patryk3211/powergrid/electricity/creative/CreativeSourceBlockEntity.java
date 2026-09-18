@@ -29,7 +29,6 @@ import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.patryk3211.powergrid.collections.ModdedBlocks;
-import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.sim.special.ACCurrentSourceNode;
 import org.patryk3211.powergrid.electricity.sim.special.ACVoltageSourceCoupling;
@@ -70,20 +69,17 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
      * so any frequency above a few hertz aliased badly.
      */
     private void applyWaveform() {
-        var solver = ModdedConfigs.server().electricity.solver;
         if(voltageSourceNode != null) {
             voltageSourceNode.setAmplitude(amplitude);
             voltageSourceNode.setFrequency(frequency);
             voltageSourceNode.setDcOffset(dc);
             voltageSourceNode.setPhaseOffset(Math.toRadians(phaseDegrees));
-            voltageSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
         }
         if(currentSourceNode != null) {
             currentSourceNode.setAmplitude(amplitude);
             currentSourceNode.setFrequency(frequency);
             currentSourceNode.setDcOffset(dc);
             currentSourceNode.setPhaseOffset(Math.toRadians(phaseDegrees));
-            currentSourceNode.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
         }
     }
 

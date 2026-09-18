@@ -142,8 +142,13 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
 
     private int polePairs = 1;
 
-    /** Armature (synchronous) inductance in henries. Zero disables the companion model. */
-    private double armatureInductance = 0;
+    /**
+     * Armature (synchronous) inductance in henries. Zero disables the companion model.
+     * <p>
+     * Negative means "not set", and the configured value is read at the point of use, for the same
+     * reason as the sampling policy above.
+     */
+    private double armatureInductance = -1;
 
     /**
      * Shaft angle in radians, wrapped to [0, 2*pi), as of the sub-tick being solved. Read from the
@@ -172,8 +177,11 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     // Sampling policy. Held as fields rather than read from the mod config here so that this
     // package stays free of Minecraft imports and remains unit-testable; the owning block
     // entity pushes the configured values in.
-    private int samplesPerCycle = 32;
-    private int maxSubTicks = 16;
+    // Sampling policy. Zero means "not set", and the configured value is read at the point of use
+    // so that changing it in game takes effect without rebuilding the circuit. A caller that sets
+    // one explicitly -- the tests do -- overrides the config.
+    private int samplesPerCycle = 0;
+    private int maxSubTicks = 0;
 
     public AlternatorCoupling(IElectricNode positive, @Nullable IElectricNode negative, Number resistance, IRotor rotor) {
         super(positive, negative, resistance, rotor);
@@ -217,7 +225,7 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     }
 
     public double getArmatureInductance() {
-        return armatureInductance;
+        return armatureInductance >= 0 ? armatureInductance : AcSampling.configuredArmatureInductance();
     }
 
     /**
@@ -305,8 +313,9 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
      * writing the same value every sub-tick would be quietly expensive.
      */
     private void applyEffectiveResistance(double dt) {
+        var armature = getArmatureInductance();
         var effective = (float) (acBaseResistance
-                + (dt > 0 ? armatureInductance / (theta() * dt) : 0));
+                + (dt > 0 ? armature / (theta() * dt) : 0));
         if(effective == appliedResistance)
             return;
         appliedResistance = effective;
@@ -364,7 +373,9 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         // nothing; the rounding and ceiling rules live in AcSampling so this and the bench AC
         // source cannot drift apart.
         var frequency = Math.abs(acRotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
-        return AcSampling.subTicksFor(frequency, samplesPerCycle, maxSubTicks);
+        return AcSampling.subTicksFor(frequency,
+                samplesPerCycle > 0 ? samplesPerCycle : AcSampling.configuredSamplesPerCycle(),
+                maxSubTicks > 0 ? maxSubTicks : AcSampling.configuredMaxSubTicks());
     }
 
     @Override
@@ -406,11 +417,12 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         // 512, against an analytic 9.64 A -- so the armature reactance had never worked, and
         // nothing noticed because armatureInductance defaults to 0 and only CommutatorBlockEntity
         // ever sets it, leaving every test in the suite running a machine with no reactance at all.
-        if(armatureInductance > 0) {
+        var armature = getArmatureInductance();
+        if(armature > 0) {
             var dt = deltaTime();
             if(dt > 0) {
                 var theta = theta();
-                residual.add(index, -armatureInductance / (theta * dt) * previousCurrent
+                residual.add(index, -armature / (theta * dt) * previousCurrent
                         - (1 - theta) / theta * previousInductorVoltage);
             }
         }
@@ -431,9 +443,10 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
         // with no instability and no NaN to give it away. ArmatureReactanceTest catches it.
         var current = getCurrent();
         var dt = deltaTime();
-        if(armatureInductance > 0 && dt > 0) {
+        var armature = getArmatureInductance();
+        if(armature > 0 && dt > 0) {
             var theta = theta();
-            previousInductorVoltage = armatureInductance / (theta * dt) * (current - previousCurrent)
+            previousInductorVoltage = armature / (theta * dt) * (current - previousCurrent)
                     - (1 - theta) / theta * previousInductorVoltage;
         }
         previousCurrent = current;

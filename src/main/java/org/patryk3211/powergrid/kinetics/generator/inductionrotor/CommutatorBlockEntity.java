@@ -35,7 +35,6 @@ import org.patryk3211.powergrid.electricity.sim.calculation.PrecalculatedN;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import com.simibubi.create.foundation.blockEntity.behaviour.CenteredSideValueBoxTransform;
 import org.jetbrains.annotations.Nullable;
-import org.patryk3211.powergrid.collections.ModdedConfigs;
 import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
@@ -99,9 +98,11 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
         source.setEmfValue(emf);
         emf = 0;
         if(source instanceof AlternatorCoupling alternator) {
-            var solver = ModdedConfigs.server().electricity.solver;
-            alternator.setSamplingPolicy(solver.acSamplesPerCycle.get(), solver.acMaxSubTicks.get());
-            alternator.setArmatureInductance(solver.acArmatureInductance.getF());
+            // The sampling policy and the armature inductance are deliberately NOT pushed here.
+            // They were, and a machine then kept whatever the config said when its circuit was
+            // built -- so changing either in game did nothing until the block was replaced or the
+            // world reloaded, which is how it was reported. The coupling reads them when it uses
+            // them; see AcSampling.configuredSamplesPerCycle().
             if(polePairs != null)
                 alternator.setPolePairs(polePairs.getPolePairs());
             if(windingAngle != null)
