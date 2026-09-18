@@ -199,6 +199,69 @@ public class ThreePhaseAlternatorTest extends TestHelper {
     }
 
     @Test
+    void theVoltageBetweenTwoPhasesIsRootThreeTimesOnePhase() {
+        // What a player measures with one probe on each of two phases of a star-connected machine.
+        // Reported from in game as reading one phase's voltage instead, which is what it reads when
+        // the two windings are at the same angle -- see the test below.
+        var star = star(RPM, 0, 120, 240);
+        for(int t = 0; t < 40; ++t)
+            tick(star.net, star.shaft);
+
+        var samples = new double[2][4 * SAMPLES_PER_CYCLE];
+        var at = 0;
+        for(int t = 0; t < 4 * SAMPLES_PER_CYCLE / SUB_TICKS; ++t) {
+            star.net.network.prepare(SUB_TICKS);
+            for(int s = 0; s < SUB_TICKS; ++s, ++at) {
+                star.net.network.singleTick();
+                var l1 = star.windings[0].getPositive().getVoltage();
+                var l2 = star.windings[1].getPositive().getVoltage();
+                var neutral = star.windings[0].getNegative().getVoltage();
+                samples[0][at] = l1 - neutral;
+                samples[1][at] = l1 - l2;
+            }
+            star.shaft.advance();
+        }
+
+        var phase = PhasorFit.fit(samples[0], SAMPLES_PER_CYCLE);
+        var line = PhasorFit.fit(samples[1], SAMPLES_PER_CYCLE);
+        Assertions.assertEquals(Math.sqrt(3) * phase.magnitude(), line.magnitude(),
+                phase.magnitude() * 0.01,
+                "Line to line should be root three times phase to neutral, got " + line.magnitude()
+                        + " against " + phase.magnitude());
+        Assertions.assertEquals(30, line.degreesFrom(phase), 0.1,
+                "and lead the phase voltage by thirty degrees");
+    }
+
+    @Test
+    void twoWindingsAtTheSameAngleShowNothingBetweenThem() {
+        // The reported symptom, reproduced: two windings left at the same angle are the same
+        // waveform, so the difference between them is zero however much each one makes on its own.
+        // Before the slider routing was fixed, every winding on a machine sat at 0 degrees.
+        var star = star(RPM, 0, 0, 0);
+        for(int t = 0; t < 40; ++t)
+            tick(star.net, star.shaft);
+
+        double worstPhase = 0, worstLine = 0;
+        for(int t = 0; t < 40; ++t) {
+            star.net.network.prepare(SUB_TICKS);
+            for(int s = 0; s < SUB_TICKS; ++s) {
+                star.net.network.singleTick();
+                var neutral = star.windings[0].getNegative().getVoltage();
+                worstPhase = Math.max(worstPhase,
+                        Math.abs(star.windings[0].getPositive().getVoltage() - neutral));
+                worstLine = Math.max(worstLine, Math.abs(star.windings[0].getPositive().getVoltage()
+                        - star.windings[1].getPositive().getVoltage()));
+            }
+            star.shaft.advance();
+        }
+
+        Assertions.assertTrue(worstPhase > PEAK * 0.5,
+                "Each winding still makes its own voltage, got " + worstPhase);
+        Assertions.assertEquals(0, worstLine, PEAK * 1e-6,
+                "But there is nothing between two of them, got " + worstLine);
+    }
+
+    @Test
     void reversingTheShaftReversesThePhaseSequence() {
         // Which is how a real machine behaves, and why swapping the direction of a prime mover
         // runs every three-phase motor on the grid backwards.
