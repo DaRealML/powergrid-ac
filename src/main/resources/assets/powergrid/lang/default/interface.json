@@ -41,6 +41,9 @@
 
   "powergrid.gui.alternator.pole_pairs": "Pole pairs",
   "powergrid.gui.alternator.winding_angle": "Winding angle",
+  "powergrid.gui.alternator.info_header": "Alternator information",
+  "powergrid.gui.alternator.frequency": "Frequency",
+  "powergrid.gui.alternator.emf": "Generated voltage",
   "powergrid.gui.multimeter.title": "Multimeter",
   "powergrid.gui.multimeter.steady": "Steady (no alternating component)",
   "powergrid.gui.multimeter.voltage_vs_time": "Voltage over time",

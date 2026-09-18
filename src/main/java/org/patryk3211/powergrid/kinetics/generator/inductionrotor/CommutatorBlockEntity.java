@@ -15,7 +15,10 @@
  */
 package org.patryk3211.powergrid.kinetics.generator.inductionrotor;
 
+import com.simibubi.create.api.equipment.goggles.IHaveGoggleInformation;
 import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -37,11 +40,13 @@ import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.kinetics.generator.rotor.RotorBlockEntity;
+import org.patryk3211.powergrid.utility.Lang;
+import org.patryk3211.powergrid.utility.Unit;
 
 import java.util.HashSet;
 import java.util.List;
 
-public class CommutatorBlockEntity extends RotorBlockEntity implements IElectricEntity, IElectric {
+public class CommutatorBlockEntity extends RotorBlockEntity implements IElectricEntity, IElectric, IHaveGoggleInformation {
     protected ElectricBehaviour electricBehaviour;
     protected ThermalBehaviour thermalBehaviour;
     protected GeneratorCoupling source;
@@ -102,6 +107,64 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
             if(windingAngle != null)
                 alternator.setWindingAngle(windingAngle.getRadians());
         }
+    }
+
+    /**
+     * What this machine is set to, through goggles.
+     * <p>
+     * Added because a three-phase machine is three blocks that must disagree about exactly one
+     * number, and nothing showed that number without opening each slider in turn. A player reading
+     * zero volts between two phases can now see at a glance that both windings are at the same
+     * angle, which is what zero volts between them means.
+     */
+    @Override
+    public boolean addToGoggleTooltip(List<Component> tooltip, boolean isPlayerSneaking) {
+        if(!isAlternator())
+            return false;
+        Lang.translate("gui.alternator.info_header").forGoggles(tooltip);
+
+        Lang.builder().translate("gui.alternator.winding_angle")
+                .style(ChatFormatting.GRAY)
+                .forGoggles(tooltip);
+        Lang.builder()
+                .text((windingAngle != null ? windingAngle.getDegrees() : 0) + "°")
+                .style(ChatFormatting.AQUA)
+                .forGoggles(tooltip, 1);
+
+        var pairs = polePairs != null ? polePairs.getPolePairs() : 1;
+        Lang.builder().translate("gui.alternator.pole_pairs")
+                .style(ChatFormatting.GRAY)
+                .forGoggles(tooltip);
+        Lang.builder()
+                .text(String.valueOf(pairs))
+                .style(ChatFormatting.AQUA)
+                .forGoggles(tooltip, 1);
+
+        // Electrical frequency, which is what the pole pairs are really choosing.
+        var rpm = Math.abs(rotorBehaviour.getAngularVelocity());
+        Lang.builder().translate("gui.alternator.frequency")
+                .style(ChatFormatting.GRAY)
+                .forGoggles(tooltip);
+        Lang.builder()
+                .text(String.format("%.2f Hz", rpm * pairs / 60))
+                .style(ChatFormatting.AQUA)
+                .forGoggles(tooltip, 1);
+
+        // The EMF the winding generates, as a meter would read it. Not the terminal voltage: that
+        // is this less the drop in the winding, and it is the load that decides it.
+        if(source instanceof AlternatorCoupling alternator) {
+            var peak = Math.abs(alternator.getField() * rotorBehaviour.getAngularVelocityRadians());
+            Lang.builder().translate("gui.alternator.emf")
+                    .style(ChatFormatting.GRAY)
+                    .forGoggles(tooltip);
+            Lang.builder()
+                    .text(String.format("%.1f", peak / Math.sqrt(2)))
+                    .add(Component.nullToEmpty(" "))
+                    .add(Unit.VOLTAGE.get())
+                    .style(ChatFormatting.BLUE)
+                    .forGoggles(tooltip, 1);
+        }
+        return true;
     }
 
     private boolean isAlternator() {
