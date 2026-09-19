@@ -233,18 +233,44 @@ public class TraceReconstructionTest {
     // -- properties -----------------------------------------------------------------------------
 
     /**
+     * Where a column sits relative to the samples behind it. The curve is only as good as the
+     * samples on each side of it, so the three are measured, and bounded, separately.
+     */
+    private enum Zone {
+        /** Three or more samples from either end: the curve has neighbours on both sides. */
+        INTERIOR,
+        /** Inside the data but within three samples of an end, where one side of it is missing. */
+        END,
+        /** Reaches past the centre of the outermost sample: nothing to reconstruct, so a hold. */
+        STUB
+    }
+
+    private static Zone zoneOf(double a, double b, int visible) {
+        if(a < 0 || b > visible - 1)
+            return Zone.STUB;
+        return a < 3 || b > visible - 4 ? Zone.END : Zone.INTERIOR;
+    }
+
+    /**
      * Worst distance between what a column draws and what the true wave does inside it, as a
-     * fraction of the amplitude, over columns clear of the ends of the window.
-     * <p>
-     * Clear of the ends because there the curve has samples on one side only. A peak that falls
-     * across the first two samples is drawn flat, as it would be by any rule that cannot see past
-     * the edge, and that is a property of the window's end rather than of the reconstruction.
+     * fraction of the amplitude, over the interior columns: those with three or more samples to
+     * either side.
      */
     private static double worstError(Renderer renderer, double samplesPerCycle,
                                      int visible, int target, int width) {
+        return worstError(renderer, samplesPerCycle, visible, target, width, Zone.INTERIOR, 1);
+    }
+
+    /**
+     * The same, over the columns of one {@link Zone}, for a sine of the given amplitude. The error
+     * is taken as a fraction of that amplitude, so the result does not depend on it if the curve
+     * is scale invariant.
+     */
+    private static double worstError(Renderer renderer, double samplesPerCycle, int visible,
+                                     int target, int width, Zone zone, double amplitude) {
         var worst = 0.0;
         for(var phase : PHASES) {
-            var wave = sine(samplesPerCycle, phase);
+            Wave wave = u -> amplitude * sine(samplesPerCycle, phase).at(u);
             var y = sampled(wave, visible);
             var low = new float[width];
             var high = new float[width];
@@ -254,17 +280,21 @@ public class TraceReconstructionTest {
             for(int px = first; px < width; ++px) {
                 var a = px * per - blank - 0.5;
                 var b = (px + 1) * per - blank - 0.5;
-                if(Float.isNaN(low[px]) || a < 3 || b > visible - 4)
+                if(Float.isNaN(low[px]) || zoneOf(a, b, visible) != zone)
                     continue;
+                // The first column of a part-filled window starts a fraction of a column before
+                // the first cell does; nothing was sampled there, so it is not held to account.
+                var from = Math.max(a, -0.5);
+                var to = Math.min(b, visible - 0.5);
                 var trueLow = Double.POSITIVE_INFINITY;
                 var trueHigh = Double.NEGATIVE_INFINITY;
                 for(int q = 0; q <= 64; ++q) {
-                    var v = wave.at(a + (b - a) * q / 64);
+                    var v = wave.at(from + (to - from) * q / 64);
                     trueLow = Math.min(trueLow, v);
                     trueHigh = Math.max(trueHigh, v);
                 }
                 worst = Math.max(worst, Math.max(Math.abs(low[px] - trueLow),
-                        Math.abs(high[px] - trueHigh)));
+                        Math.abs(high[px] - trueHigh)) / amplitude);
             }
         }
         return worst;
@@ -586,6 +616,107 @@ public class TraceReconstructionTest {
         var high = new float[WIDTH];
         Assertions.assertEquals(WIDTH, RECONSTRUCTION.columns(i -> 0, 0, 100, WIDTH, low, high),
                 "An empty window has no first column");
+    }
+
+    // -- the ends of the window -----------------------------------------------------------------
+
+    /** Full windows at three sizes and a part-filled one, as {visible, target}. */
+    private static final int[][] WINDOWS = {{32, 32}, {103, 103}, {256, 256}, {45, 103}};
+
+    @Test
+    void theNewestAndOldestSamplesAreInsideTheColumnsThatEndTheTrace() {
+        // The right-hand edge is the live edge of a scope: the newest sample is the one a player is
+        // watching. Every accuracy figure above skips the ends, so nothing else would notice that
+        // the last sample had been dropped from the drawing.
+        for(double samplesPerCycle : new double[]{4, 8, 12.9, 32, 51}) {
+            for(var window : WINDOWS) {
+                for(var phase : PHASES) {
+                    var y = sampled(sine(samplesPerCycle, phase), window[0]);
+                    var low = new float[WIDTH];
+                    var high = new float[WIDTH];
+                    var first = RECONSTRUCTION.columns(i -> y[i], window[0], window[1], WIDTH,
+                            low, high);
+                    var newest = y[window[0] - 1];
+                    var oldest = y[0];
+                    var where = samplesPerCycle + " samples a cycle, window " + window[0] + " of "
+                            + window[1] + ", phase " + phase;
+                    Assertions.assertTrue(
+                            low[WIDTH - 1] - 1e-6 <= newest && newest <= high[WIDTH - 1] + 1e-6,
+                            "The last column draws " + low[WIDTH - 1] + " .. " + high[WIDTH - 1]
+                                    + " but the newest sample is " + newest + ": " + where);
+                    Assertions.assertTrue(
+                            low[first] - 1e-6 <= oldest && oldest <= high[first] + 1e-6,
+                            "The first column draws " + low[first] + " .. " + high[first]
+                                    + " but the oldest sample is " + oldest + ": " + where);
+                }
+            }
+        }
+    }
+
+    @Test
+    void aSpikeInTheNewestOrOldestSampleIsDrawn() {
+        // The same property with nothing else in the picture, so a failure names the cause.
+        var y = new float[32];
+        y[0] = -3;
+        y[31] = 5;
+        var low = new float[WIDTH];
+        var high = new float[WIDTH];
+        var first = RECONSTRUCTION.columns(i -> y[i], 32, 32, WIDTH, low, high);
+        Assertions.assertEquals(5f, high[WIDTH - 1], 1e-5f, "The newest sample should be drawn");
+        Assertions.assertEquals(-3f, low[first], 1e-5f, "The oldest sample should be drawn");
+
+        // And in a window that is still filling, where the oldest sample is not at column 0.
+        var few = new float[]{7f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, -4f};
+        var firstOfFew = RECONSTRUCTION.columns(i -> few[i], 10, 32, WIDTH, low, high);
+        Assertions.assertEquals(7f, high[firstOfFew], 1e-5f, "The oldest sample should be drawn");
+        Assertions.assertEquals(-4f, low[WIDTH - 1], 1e-5f, "The newest sample should be drawn");
+    }
+
+    @Test
+    void theCurveWithinThreeSamplesOfAnEndIsBoundedToo() {
+        // There the curve has neighbours on one side only, and the end slope is the end chord, so a
+        // peak falling across the last two samples is under-reached: up to 1 - cos(pi / N). Worst
+        // of 360 phases over all four windows: 29.3 % at 4 samples a cycle, 13.4 at 6, 7.55 at 8,
+        // 2.95 at 12.9, 1.91 at 16, 0.48 at 32, 0.19 at 51. The bounds sit a little above, and this
+        // test uses 15 phases, so it sees a little less than that.
+        double[][] bounds = {
+                {4, 0.30}, {6, 0.14}, {8, 0.08}, {12.9, 0.031}, {16, 0.02}, {32, 0.005},
+                {51, 0.002}
+        };
+        for(var bound : bounds) {
+            for(var window : WINDOWS) {
+                var error = worstError(RECONSTRUCTION, bound[0], window[0], window[1], WIDTH,
+                        Zone.END, 1);
+                Assertions.assertTrue(error <= bound[1],
+                        String.format("%.1f samples a cycle, window %d of %d: end error %.4f "
+                                + "exceeds %.4f", bound[0], window[0], window[1], error, bound[1]));
+            }
+        }
+        // The old hold was a fifth of the amplitude out at 12.9, ends included.
+        Assertions.assertTrue(worstError(OLD_HOLD, 12.9, 103, 103, WIDTH, Zone.END, 1) > 0.2,
+                "The old hold should be badly out near the ends as well");
+    }
+
+    @Test
+    void theHalfCellBeyondTheOutermostSamplesIsAHoldOfKnownSize() {
+        // No sample lies beyond the centre of the first or last cell, so that half cell holds the
+        // outermost value, which is no better than the drawing this change replaced. Holding a unit
+        // sine over half a sample costs 2 sin(pi / (2 N)) at its steepest: 24.3 % at 12.9 samples a
+        // cycle, over 4.75 columns at each end of a 32-sample window. docs/AC.md quotes the figure;
+        // if this test needs a new bound, that section does too.
+        for(double samplesPerCycle : new double[]{8, 12.9, 32}) {
+            var hold = 2 * Math.sin(Math.PI / (2 * samplesPerCycle));
+            for(var window : WINDOWS) {
+                var error = worstError(RECONSTRUCTION, samplesPerCycle, window[0], window[1], WIDTH,
+                        Zone.STUB, 1);
+                Assertions.assertTrue(error <= hold + 1e-3,
+                        "The half cell at an end was " + error + " out at " + samplesPerCycle
+                                + " samples a cycle, a hold's worst is " + hold);
+                Assertions.assertTrue(error >= 0.9 * hold,
+                        "The half cell at an end was only " + error + " out, a hold's is " + hold
+                                + ": if it is no longer a hold, docs/AC.md is out of date");
+            }
+        }
     }
 
     // -- the two regimes ------------------------------------------------------------------------
