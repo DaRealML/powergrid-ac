@@ -492,6 +492,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         // Nothing but the reference moves: currents and line voltages are identical.
         double[] blueLineToGround = new double[2];
         double[] neutralToGround = new double[2];
+        double[] secondLineToGround = new double[2];
         PhasorFit.Phasor[] current = new PhasorFit.Phasor[2];
         PhasorFit.Phasor[] lineVoltage = new PhasorFit.Phasor[2];
         for(int tied = 0; tied < 2; ++tied) {
@@ -501,12 +502,16 @@ public class WyeDeltaSystemTest extends TestHelper {
             wyeLoad(bench, feeders.far, 2);
             bench.settle();
             var s = bench.record(CYCLES, volts(machine.neutral), volts(machine.lines[0]),
-                    feeders.wires[0]::current, across(machine.lines[0], machine.lines[1]));
+                    feeders.wires[0]::current, across(machine.lines[0], machine.lines[1]), volts(machine.lines[1]));
             neutralToGround[tied] = maxAbs(s[0]);
             blueLineToGround[tied] = maxAbs(s[1]);
+            secondLineToGround[tied] = maxAbs(s[4]);
             current[tied] = fit(s[2], CYCLES);
             lineVoltage[tied] = fit(s[3], CYCLES);
         }
+        System.out.printf("blue tied: neutral %.3g V, line 1 %.3f V, line 2 %.3f V peak to ground; red tied: neutral %.3f V, line 1 %.3g V, line 2 %.3f V%n",
+                neutralToGround[0], blueLineToGround[0], secondLineToGround[0], neutralToGround[1], blueLineToGround[1],
+                secondLineToGround[1]);
         Assertions.assertEquals(0, neutralToGround[0], 1e-9, "Blue terminals tied: the star point is the anchor");
         Assertions.assertEquals(0, blueLineToGround[1], 1e-9, "Red terminals tied: line 1 is the anchor");
         Assertions.assertTrue(neutralToGround[1] > 20, "and the star point floats a phase voltage off ground, got "
@@ -721,6 +726,8 @@ public class WyeDeltaSystemTest extends TestHelper {
         var result = unbalanced(Earth.FLOATING);
         assertMatchesPaper("floating", result);
         Assertions.assertEquals(0.75 * E, result.star.abs(), E * 0.01, "The star point should be at 0.75 E");
+        System.out.printf("floating star, 10/100/100: star %.4f E, phases %.4f, %.4f, %.4f E%n", result.star.abs() / E,
+                result.loadVolts[0] / E, result.loadVolts[1] / E, result.loadVolts[2] / E);
         Assertions.assertEquals(0.25 * E, result.loadVolts[0], E * 0.01, "The heavy phase should fall to a quarter");
         Assertions.assertEquals(1.52 * E, result.loadVolts[1], E * 0.01, "The light phases should rise to 1.52 E");
         Assertions.assertEquals(1.52 * E, result.loadVolts[2], E * 0.01);
@@ -748,6 +755,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         for(int k = 0; k < 3; ++k)
             Assertions.assertEquals(floating.loadVolts[k], grounded.loadVolts[k], E * 1e-6,
                     "A single rod should not change phase " + (k + 1));
+        System.out.printf("single rod current, peak: at the source %.3g A%n", grounded.rodPeak);
         Assertions.assertEquals(0, grounded.rodPeak, 1e-9, "and should carry no current, got " + grounded.rodPeak);
         Assertions.assertEquals(0, grounded.neutralDrift, 1e-6, "It holds the star point at earth potential");
 
@@ -759,6 +767,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         for(int k = 0; k < 3; ++k)
             Assertions.assertEquals(floating.loadVolts[k], atLoad.loadVolts[k], E * 1e-6,
                     "A rod on the load's star point should not change phase " + (k + 1) + " either");
+        System.out.printf("single rod current, peak: at the load %.3g A%n", atLoad.rodPeak);
         Assertions.assertEquals(0, atLoad.rodPeak, 1e-9, "and should carry no current, got " + atLoad.rodPeak);
         Assertions.assertEquals(0, atLoad.starToGround, 1e-6, "It holds the load's star point at earth potential");
         Assertions.assertEquals(floating.star.abs(), atLoad.neutralDrift, E * 1e-3,
@@ -924,23 +933,35 @@ public class WyeDeltaSystemTest extends TestHelper {
         // broke every once-per-tick sampler in this mod. 4.5 Hz and 36 Hz do not. Each is stepped at
         // the rate its own winding asks for, at the shipped 32 samples a cycle and a cap of 64.
         //
-        // That rate is not always what AcSampling.subTicksFor gives for the exact frequency. 20 Hz and
-        // 10 Hz sit exactly on a power-of-two boundary (32 * 20 * 0.05 = 32), the shaft speed reaches
-        // the winding as a float, and the float lands a hair over: the winding asks for 64 and 32
-        // where the exact arithmetic says 32 and 16. It errs upward, so it is only a higher rate.
-        var cases = new double[][]{ { 270, 1 }, { 240, 5 }, { 150, 4 }, { 270, 8 } };
+        // The rate a winding asks for is worked out from the shaft speed times the pole pairs, and
+        // that is the mapping that matters: a winding that forgot the pole pairs would ask for the
+        // rate of a machine a fifth as fast. The expected rates below are written out by hand from
+        // 32 samples a cycle over a 50 ms tick (1.6 sub-ticks per hertz, rounded up to a power of
+        // two, capped at 64), NOT computed with AcSampling.subTicksFor, so that a change to that
+        // function shows up here too.
+        //
+        // 20 Hz and 10 Hz sit exactly on a power-of-two edge (32 * 20 * 0.05 = 32). The shaft speed
+        // reaches the winding as a float and the float lands a hair over, so the winding asks for 64
+        // and 32 where exact arithmetic says 32 and 16. It errs upward, so it is only a higher rate,
+        // and either is accepted. Tolerances are about twice the measured error of each case.
+        var cases = new double[][]{
+                // rpm, pole pairs, exact sub-ticks, current tolerance
+                { 270, 1, 8, 0.005 },     // 4.5 Hz, measured -0.25 %
+                { 240, 5, 32, 0.006 },    // 20 Hz, measured -0.29 % at the 64 the winding asks for
+                { 150, 4, 16, 0.005 },    // 10 Hz, measured -0.24 % at 32
+                { 270, 8, 64, 0.011 } };  // 36 Hz, measured -0.54 %
         for(var c : cases) {
             var rpm = (float) c[0];
             var pairs = (int) c[1];
+            var exact = (int) c[2];
             var hertz = rpm * pairs / 60.0;
-            var exact = AcSampling.subTicksFor(hertz, 32, 64);
             var r = balancedWye(rpm, pairs, 0);
             System.out.printf("%.1f Hz: winding asks %d sub-ticks (exact arithmetic %d): current %.5f expected %.5f (%.4f %%)%n",
                     hertz, r.subTicks, exact, r.current[0].magnitude(), r.expectedCurrent,
                     100 * (r.current[0].magnitude() / r.expectedCurrent - 1));
-            Assertions.assertTrue(r.subTicks >= exact && r.subTicks <= 2 * exact,
+            Assertions.assertTrue(r.subTicks >= exact && r.subTicks <= Math.min(2 * exact, 64),
                     hertz + " Hz: the winding should ask for " + exact + " sub-ticks or the next step up, asked " + r.subTicks);
-            assertBalancedWye(hertz + " Hz", r, 0.01);
+            assertBalancedWye(hertz + " Hz", r, c[3]);
         }
     }
 
@@ -979,9 +1000,11 @@ public class WyeDeltaSystemTest extends TestHelper {
         var rampTicks = 60;
         var worstPhase = 0.0;
         var worstStar = 0.0;
+        var ratesVisited = new java.util.TreeSet<Integer>();
         for(int t = 0; t < rampTicks + 40; ++t) {
             bench.shaft.rpm = RPM * Math.min(1f, (float) t / rampTicks);
             bench.subTicks = Math.max(1, machine.windings[0].requiredSubTicks());
+            ratesVisited.add(bench.subTicks);
             if(t == 0)
                 Assertions.assertEquals(1, bench.subTicks, "A machine at standstill should ask for a single sub-tick");
             bench.net.network.prepare(bench.subTicks);
@@ -998,7 +1021,13 @@ public class WyeDeltaSystemTest extends TestHelper {
         }
         Assertions.assertEquals(AcSampling.subTicksFor(bench.frequency(), 32, 64), bench.subTicks,
                 "At full speed the winding should ask for the rate the frequency needs");
-        System.out.printf("ramp: worst phase %.4f of E %.4f, worst star %.3g%n", worstPhase, E, worstStar);
+        System.out.printf("ramp: sub-tick rates visited %s, worst phase %.4f of E %.4f, worst star %.3g%n", ratesVisited,
+                worstPhase, E, worstStar);
+        // The rate has to change under the running machine, one step at a time as it speeds up, or this
+        // test says nothing about the island coping with a change of rate: the resistance and the
+        // armature companion of every winding are re-stamped at each one.
+        Assertions.assertEquals(java.util.List.of(1, 2, 4, 8), java.util.List.copyOf(ratesVisited),
+                "The ramp should pass through every power-of-two rate from 1 to 8");
         Assertions.assertTrue(worstPhase <= E * 1.001,
                 "A winding's terminal voltage cannot exceed the EMF behind it, got " + worstPhase + " V against " + E);
         Assertions.assertEquals(0, worstStar, E * 1e-6, "A balanced load's star point should never leave the machine's");
@@ -1190,12 +1219,16 @@ public class WyeDeltaSystemTest extends TestHelper {
                 volts(starUp),                                                   // 9
                 chain.load.wires[0]::current, chain.load.wires[1]::current, chain.load.wires[2]::current, // 10-12
                 chain.leads.wires[0]::current, chain.leads.wires[1]::current, chain.leads.wires[2]::current, // 13-15
-                volts(chain.machine.lines[0]), volts(chain.machine.lines[1]), volts(chain.machine.lines[2])); // 16-18
+                volts(chain.machine.lines[0]), volts(chain.machine.lines[1]), volts(chain.machine.lines[2]), // 16-18
+                across(chain.machine.lines[0], chain.machine.neutral));          // 19 generator phase voltage
 
         var generator = fit(s[0], cycles);
         var received = fit(s[1], cycles);
         var sending = fit(s[2], cycles);
         var arriving = fit(s[3], cycles);
+        var generatorPhase = fit(s[19], cycles);
+        System.out.printf("up bank shifts the phase %.4f deg, down bank %.4f deg (secondary line to line against the arriving phase)%n",
+                sending.degreesFrom(generatorPhase), received.degreesFrom(arriving));
         System.out.printf("generator line %.4f, received line %.4f (%.5f), shift %.4f deg%n",
                 generator.magnitude(), received.magnitude(), received.magnitude() / generator.magnitude(),
                 received.degreesFrom(generator));
@@ -1212,6 +1245,16 @@ public class WyeDeltaSystemTest extends TestHelper {
         Assertions.assertEquals(arriving.magnitude() / 4, received.magnitude(), 0.01 * arriving.magnitude() / 4,
                 "and the step-down bank should give the load a quarter of the arriving phase voltage");
         Assertions.assertTrue(arriving.magnitude() < sending.magnitude(), "The line should drop some of it");
+
+        // Each bank's shift on its own, because the sum below would be zero for a pair wired the wrong
+        // way round as well (-30 then +30). A delta primary puts the line voltage across each coil and
+        // the star secondary repeats it, so its phase voltage LEADS the generator's phase by 30 degrees;
+        // a delta secondary's coil carries the star primary's phase voltage, so the load's line voltage
+        // is in step with the arriving phase, which is 30 degrees BEHIND the arriving line voltage.
+        Assertions.assertEquals(30, sending.degreesFrom(generatorPhase), 0.05,
+                "The delta-star bank should put its phase voltage thirty degrees ahead of the generator's");
+        Assertions.assertEquals(0, received.degreesFrom(arriving), 0.05,
+                "and the star-delta bank should give the load a line voltage in step with the arriving phase");
 
         // Ratio 1:4 up and 4:1 down cancels; the two root threes (delta-star up, star-delta down) cancel too.
         Assertions.assertEquals(1.0, received.magnitude() / generator.magnitude(), 0.05,
@@ -1413,6 +1456,11 @@ public class WyeDeltaSystemTest extends TestHelper {
      * the line is under {@code transmissionLineThreshold}.
      */
     private static LineRun overLines(double[] ohms, boolean split, int subTicks) {
+        return overLines(ohms, split, subTicks, 2, 2, 2);
+    }
+
+    /** As above, with the three load legs' resistances given. */
+    private static LineRun overLines(double[] ohms, boolean split, int subTicks, double... legOhms) {
         var machineSide = new Bench(false, RPM, subTicks);
         var machine = wye(machineSide, true);
         var leads = feeders(machineSide, machine.lines, LEAD_OHMS);
@@ -1434,7 +1482,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         }
         var star = loadSide.N();
         for(int k = 0; k < 3; ++k)
-            loadSide.W(2f, far[k], star);
+            loadSide.W((float) legOhms[k], far[k], star);
 
         var cycles = machineSide.cyclesFor(8);
         var ticks = machineSide.ticksFor(cycles);
@@ -1496,6 +1544,11 @@ public class WyeDeltaSystemTest extends TestHelper {
         Assertions.assertEquals(-120, PhasorFit.wrapDegrees(split.current[1].degrees() - split.current[0].degrees()), 0.05);
         Assertions.assertEquals(0, unbalancePercent(split.loadLine[0], split.loadLine[1], split.loadLine[2]), 0.01,
                 "Equal delays keep the set balanced, only rotated");
+        // The figures the config comment and docs/AC.md quote: 7.3 degrees and 4.9 %. A band of about
+        // ten percent, so that changing how the port models the line cannot go by with every test green
+        // (halving the resistance term of the exchange moves them to 12.1 degrees and 11.8 %).
+        Assertions.assertEquals(7.34, shifts[0], 0.7, "Three 1 ohm split lines into 2 ohm legs: the shift");
+        Assertions.assertEquals(4.94, errorPercent(split.current[0], direct.current[0]), 0.5, "and the magnitude error");
     }
 
     @Test
@@ -1521,10 +1574,113 @@ public class WyeDeltaSystemTest extends TestHelper {
                 unbalancePercent(split.loadLine[0], split.loadLine[1], split.loadLine[2]), spread);
         for(int k = 0; k < 3; ++k)
             Assertions.assertTrue(Math.abs(shifts[k]) > 2, "Every split conductor should be visibly shifted, phase " + (k + 1) + " by " + shifts[k]);
+        // The figures docs/AC.md quotes, each within about ten percent of what was measured.
+        var quotedShift = new double[]{ 6.36, 4.66, 3.92 };
+        var quotedError = new double[]{ 2.54, 5.67, 1.12 };
+        for(int k = 0; k < 3; ++k) {
+            Assertions.assertEquals(quotedShift[k], shifts[k], 0.1 * quotedShift[k], "Phase " + (k + 1) + " shift");
+            Assertions.assertEquals(quotedError[k], errorPercent(split.current[k], direct.current[k]), 0.35,
+                    "Phase " + (k + 1) + " magnitude error");
+        }
+        Assertions.assertEquals(2.44, spread, 0.25, "The spread of the three shifts");
+        Assertions.assertEquals(4.90, unbalancePercent(split.loadLine[0], split.loadLine[1], split.loadLine[2]), 0.3,
+                "and the load's voltage unbalance, which is 4.42 % unsplit");
         Assertions.assertTrue(spread > 1,
                 "Unequal conductors should be shifted by unequal angles, spread only " + spread + " deg");
         Assertions.assertTrue(shifts[0] > shifts[1] && shifts[1] > shifts[2],
                 "and the shorter the run the larger the shift: " + java.util.Arrays.toString(shifts));
+    }
+
+    /**
+     * The one-phase counterpart of {@link #overLines}: one winding with its return grounded, a line
+     * that is a plain wire or a {@link TransmissionLinePort} pair, and a grounded load. Returns the
+     * load current's phasor.
+     */
+    private static C singlePhase(boolean split, double armL, double lineOhms, double loadOhms) {
+        var machineSide = new Bench(false, RPM, SUB_TICKS);
+        var a = machineSide.node();
+        var g = machineSide.node();
+        var w = machineSide.winding(0, a, g);
+        w.setArmatureInductance(armL);
+        machineSide.net.W(0.001f, g, null);
+        var loadSide = split ? new Network(true) : machineSide.net;
+        var far = loadSide.N();
+        ElectricWire wire = null;
+        if(split) {
+            var port1 = new TransmissionLinePort(a, (float) lineOhms, null);
+            var port2 = new TransmissionLinePort(far, (float) lineOhms, null);
+            port1.other = port2;
+            port2.other = port1;
+            machineSide.net.network.addNode(port1);
+            loadSide.network.addNode(port2);
+        } else {
+            wire = machineSide.net.W((float) lineOhms, a, far);
+        }
+        var load = loadSide.W((float) loadOhms, far, null);
+        var cycles = machineSide.cyclesFor(8);
+        var ticks = machineSide.ticksFor(cycles);
+        for(int t = 0; t < ticks; ++t)
+            step(machineSide, loadSide, split, SUB_TICKS, null);
+        var samples = new double[ticks * SUB_TICKS];
+        var at = new int[]{ 0 };
+        for(int t = 0; t < ticks; ++t)
+            step(machineSide, loadSide, split, SUB_TICKS, () -> samples[at[0]++] = load.current());
+        return phasor(fit(samples, cycles));
+    }
+
+    /** Percent the split run's current is above the unsplit one's. */
+    private static double errorPercent(C split, C direct) {
+        return 100 * (split.abs() / direct.abs() - 1);
+    }
+
+    /** Degrees the split run's current is ahead of the unsplit one's. */
+    private static double shiftDegrees(C split, C direct) {
+        return PhasorFit.wrapDegrees(split.degrees() - direct.degrees());
+    }
+
+    @Test
+    void aLongSplitLineIsStillWrongOnThreePhaseAndTheOtherWayRoundFromOnePhase() {
+        // The threshold is on the line's resistance, but what goes wrong depends on the line against
+        // the load, so a long line is not the safe side of it: 5 ohm conductors into 50 ohm legs are
+        // as far out as 1 ohm into 2 ohm, and further. The same line and load on ONE phase, in this
+        // same harness, lag by four degrees and read one or two percent high. That sign difference and
+        // the size of the gap are measured here but not explained; nothing about it was traced to a
+        // line of code. In a probe that was not kept, turning the armature inductance off left the
+        // one-phase result where it was (-4.13 degrees), so it is not the reactance.
+        var lines = new double[]{ 5, 5, 5 };
+        var direct = overLines(lines, false, SUB_TICKS, 50, 50, 50);
+        var split = overLines(lines, true, SUB_TICKS, 50, 50, 50);
+        var three = shiftDegrees(split.current[0], direct.current[0]);
+        var threeError = errorPercent(split.current[0], direct.current[0]);
+        var oneDirect = singlePhase(false, ARMATURE_L, 5, 50);
+        var oneSplit = singlePhase(true, ARMATURE_L, 5, 50);
+        var one = shiftDegrees(oneSplit, oneDirect);
+        var oneError = errorPercent(oneSplit, oneDirect);
+        System.out.printf("5 ohm lines, 50 ohm load: three phase %.3f deg, %.2f %%; one phase %.3f deg, %.2f %%%n",
+                three, threeError, one, oneError);
+        Assertions.assertEquals(43.8, three, 4.4, "Three 5 ohm split lines into 50 ohm legs");
+        Assertions.assertEquals(50.3, threeError, 5.0, "should read half as much again");
+        Assertions.assertEquals(-4.18, one, 0.5, "where one phase through the same line lags");
+        Assertions.assertEquals(1.94, oneError, 0.3, "and reads two percent high");
+    }
+
+    @Test
+    void anUnbalancedLoadOnSplitLinesIsFarWorseThanABalancedOne() {
+        // The 2 ohm balanced load of the tests above puts 5 % on the current. Hang 10/100/100 ohms on
+        // the same three 1 ohm split lines and the heavy phase, which is 0.61 A unsplit, carries 2.8 A,
+        // and the two light ones, 0.37 A, carry about 2.6 and 3.0. The sum of the three line currents
+        // is still zero; it is a circulation between the islands that the exchange is not damping.
+        var lines = new double[]{ 1, 1, 1 };
+        var direct = overLines(lines, false, SUB_TICKS, 10, 100, 100);
+        var split = overLines(lines, true, SUB_TICKS, 10, 100, 100);
+        for(int k = 0; k < 3; ++k)
+            System.out.printf("1 ohm lines, 10/100/100 load, phase %d: %.4f A unsplit, %.4f A split (%.1f %%), shift %.1f deg%n", k + 1,
+                    direct.current[k].abs(), split.current[k].abs(), errorPercent(split.current[k], direct.current[k]),
+                    shiftDegrees(split.current[k], direct.current[k]));
+        Assertions.assertEquals(0.613, direct.current[0].abs(), 0.03, "The unsplit heavy phase should carry about 0.61 A");
+        Assertions.assertEquals(2.83, split.current[0].abs(), 0.3, "The split heavy phase should carry four and a half times that");
+        Assertions.assertEquals(2.62, split.current[1].abs(), 0.3);
+        Assertions.assertEquals(2.98, split.current[2].abs(), 0.3);
     }
 
     @Test
@@ -1542,6 +1698,11 @@ public class WyeDeltaSystemTest extends TestHelper {
         var nearError = near.current[0].abs() / nearDirect.current[0].abs() - 1;
         var farError = far.current[0].abs() / farDirect.current[0].abs() - 1;
         System.out.printf("0.25 ohm: %.3f deg, %.3f %%; 1 ohm: %.3f deg, %.3f %%%n", nearShift, 100 * nearError, farShift, 100 * farError);
+        // The figures the config comment and docs/AC.md quote for the two cases, within about ten percent.
+        Assertions.assertEquals(33.6, nearShift, 3.4, "Three 0.25 ohm split lines: the shift");
+        Assertions.assertEquals(60.8, 100 * nearError, 6.1, "and the magnitude error");
+        Assertions.assertEquals(7.34, farShift, 0.7, "Three 1 ohm split lines: the shift");
+        Assertions.assertEquals(4.94, 100 * farError, 0.5, "and the magnitude error");
         Assertions.assertTrue(nearShift > 2 * farShift, "A 0.25 ohm split line should be shifted far more than a 1 ohm one, got "
                 + nearShift + " against " + farShift);
         Assertions.assertTrue(nearError > 4 * farError, "and its magnitude should be further out, got " + nearError + " against " + farError);
