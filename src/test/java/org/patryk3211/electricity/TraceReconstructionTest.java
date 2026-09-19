@@ -345,7 +345,7 @@ public class TraceReconstructionTest {
         return worst;
     }
 
-    /** Largest excursion of any column beyond +-1, or of a plateau column away from +-1. */
+    /** Largest excursion of any column beyond +-1. A hold cannot fail this; a ringing curve does. */
     private static double worstSquareLie(Renderer renderer, double samplesPerCycle,
                                          int visible, int target, int width) {
         var worst = 0.0;
@@ -362,6 +362,46 @@ public class TraceReconstructionTest {
             }
         }
         return worst;
+    }
+
+    /** How far the flat parts of a square wave were drawn from their level, and how many were seen. */
+    private record Sag(double worst, int columns) {
+    }
+
+    /**
+     * Largest distance from +-1 of a column that lies wholly inside a plateau, that is one whose
+     * every segment joins two samples of the same level. A plateau of three samples or more is
+     * flat under this curve, so any distance is a fault: a drawing that sags, or that draws
+     * nothing, has no excursion beyond +-1 to be caught by {@link #worstSquareLie}.
+     */
+    private static Sag worstPlateauSag(Renderer renderer, double samplesPerCycle, int visible,
+                                       int target, int width) {
+        var worst = 0.0;
+        var seen = 0;
+        for(var phase : PHASES) {
+            var y = sampled(square(samplesPerCycle, phase), visible);
+            var low = new float[width];
+            var high = new float[width];
+            var first = renderer.columns(i -> y[i], visible, target, width, low, high);
+            var blank = target - visible;
+            var per = (double) target / width;
+            for(int px = first; px < width; ++px) {
+                var a = px * per - blank - 0.5;
+                var b = (px + 1) * per - blank - 0.5;
+                if(Float.isNaN(low[px]) || a < 0 || b > visible - 1)
+                    continue;
+                var level = y[(int) Math.floor(a)];
+                var flat = true;
+                for(int i = (int) Math.floor(a); i <= Math.min((int) Math.floor(b), visible - 2); ++i)
+                    flat &= y[i] == level && y[i + 1] == level;
+                if(!flat)
+                    continue;
+                ++seen;
+                worst = Math.max(worst, Math.max(Math.abs(low[px] - level),
+                        Math.abs(high[px] - level)));
+            }
+        }
+        return new Sag(worst, seen);
     }
 
     // -- the staircase itself -------------------------------------------------------------------
@@ -474,12 +514,18 @@ public class TraceReconstructionTest {
     void aSquareWaveIsNeverDrawnPastItsPlateaus() {
         // Plateaus of three samples or more, which is every rate from 8 samples a cycle up. The
         // curve must stay inside +-1 and flat on the plateaus, or a clean square wave grows ears.
+        // Both halves are measured: a drawing that sagged or vanished would never leave +-1.
         for(double samplesPerCycle : new double[]{8, 12.9, 16, 32}) {
             for(int target : new int[]{32, 103, 256}) {
                 var lie = worstSquareLie(RECONSTRUCTION, samplesPerCycle, target, target, WIDTH);
                 Assertions.assertTrue(lie < 1e-4,
                         "A square wave at " + samplesPerCycle + " samples a cycle was drawn "
                                 + lie + " beyond its plateau over " + target + " samples");
+                var sag = worstPlateauSag(RECONSTRUCTION, samplesPerCycle, target, target, WIDTH);
+                Assertions.assertTrue(sag.columns() > 0, "No plateau column was measured");
+                Assertions.assertTrue(sag.worst() < 1e-4,
+                        "A square wave at " + samplesPerCycle + " samples a cycle sagged "
+                                + sag.worst() + " inside a plateau over " + target + " samples");
             }
         }
     }
@@ -719,6 +765,170 @@ public class TraceReconstructionTest {
         }
     }
 
+    // -- scale ----------------------------------------------------------------------------------
+
+    @Test
+    void theCurveDoesNotDependOnTheScaleOfTheSignal() {
+        // A probe reading milliamps and one reading kilovolts are the same sine, so the error as a
+        // fraction of the amplitude must not move. Everything above uses an amplitude of about 1,
+        // which would not notice a threshold written in absolute units: a slope or a stationary
+        // point discarded because it is "small" flattens the curve for a small signal.
+        var unit = worstError(RECONSTRUCTION, 12.9, 103, 103, WIDTH, Zone.INTERIOR, 1);
+        for(double scale : new double[]{1e-13, 1e-4, 1e4}) {
+            var error = worstError(RECONSTRUCTION, 12.9, 103, 103, WIDTH, Zone.INTERIOR, scale);
+            Assertions.assertEquals(unit, error, 2e-5,
+                    "The relative error at an amplitude of " + scale + " was " + error
+                            + " but " + unit + " at 1");
+        }
+    }
+
+    // -- inputs a caller could pass -------------------------------------------------------------
+
+    private static final Samples NEVER_READ = i -> {
+        throw new AssertionError("Sample " + i + " was read");
+    };
+
+    @Test
+    void anEmptyPlotOrAnEmptyTargetReadsNothingAndDrawsNothing() {
+        var low = new float[WIDTH];
+        var high = new float[WIDTH];
+        Assertions.assertEquals(0, RECONSTRUCTION.columns(NEVER_READ, 5, 5, 0, new float[0],
+                new float[0]), "A plot no columns wide has no first column");
+        Assertions.assertEquals(WIDTH, RECONSTRUCTION.columns(NEVER_READ, 5, 0, WIDTH, low, high),
+                "A plot that represents no samples has nothing to draw");
+    }
+
+    @Test
+    void aWindowLongerThanThePlotShowsItsNewestSamples() {
+        // MultimeterScreen never asks for this, since it passes min(filled, target), but the method
+        // is public. Silently drawing the oldest samples and dropping the live one would be the
+        // worst way to answer it.
+        var y = sampled(sine(12.9, 0.4), 50);
+        var newest = java.util.Arrays.copyOfRange(y, 18, 50);
+        var low = new float[WIDTH];
+        var high = new float[WIDTH];
+        var expectedLow = new float[WIDTH];
+        var expectedHigh = new float[WIDTH];
+        var first = RECONSTRUCTION.columns(i -> y[i], 50, 32, WIDTH, low, high);
+        var expectedFirst = RECONSTRUCTION.columns(i -> newest[i], 32, 32, WIDTH, expectedLow,
+                expectedHigh);
+        Assertions.assertEquals(expectedFirst, first);
+        Assertions.assertArrayEquals(expectedLow, low, "Low edge of the newest 32 samples");
+        Assertions.assertArrayEquals(expectedHigh, high, "High edge of the newest 32 samples");
+    }
+
+    @Test
+    void noSamplesIsZeroAndReadsNothing() {
+        Assertions.assertEquals(0f, TraceReconstruction.valueAt(NEVER_READ, 0, 3.0));
+        Assertions.assertEquals(0f, TraceReconstruction.valueAt(NEVER_READ, -1, 0.0));
+    }
+
+    // -- the extremes are found exactly, not probed ---------------------------------------------
+
+    @Test
+    void aPeakBetweenTwoSamplesIsFoundWhereverTheColumnEdgesFall() {
+        // A plateau of two samples between steep edges. The rule gives the two middle samples a
+        // slope of +-1.2 (worked by hand: the chords are 2, 0 and -2, weights 3 and 2), so the
+        // segment between them is 2 + 1.2 t (1 - t) and peaks at 2.3 in the middle, a peak the
+        // samples do not contain. Width 301 puts no column edge on it, so it can only be found by
+        // solving for the stationary point, which is what this pins.
+        var y = new float[]{0f, 2f, 2f, 0f};
+        Assertions.assertEquals(2.3f, TraceReconstruction.valueAt(i -> y[i], 4, 1.5), 1e-6);
+        var low = new float[301];
+        var high = new float[301];
+        RECONSTRUCTION.columns(i -> y[i], 4, 4, 301, low, high);
+        var peak = Float.NEGATIVE_INFINITY;
+        for(var v : high)
+            peak = Math.max(peak, v);
+        Assertions.assertEquals(2.3f, peak, 2e-6f,
+                "The peak between the two samples was drawn as " + peak);
+    }
+
+    @Test
+    void theExtremesOfAColumnAreTheExtremesOfTheCurveInsideIt() {
+        // Jagged samples, so the cubics between them have real interior peaks and troughs of
+        // several sizes and directions. In the sparse regime every column's extremes must match a
+        // brute-force search of the same curve to well under a pixel.
+        var y = new float[]{0f, 3f, -1f, 4f, 4f, 2.5f, 9f, -6f, 2f, 5f, 5.5f, -2f};
+        for(int width : new int[]{304, 301, 150}) {
+            var low = new float[width];
+            var high = new float[width];
+            RECONSTRUCTION.columns(i -> y[i], y.length, y.length, width, low, high);
+            var per = (double) y.length / width;
+            for(int px = 0; px < width; ++px) {
+                var a = Math.max(0, Math.min(y.length - 1, px * per - 0.5));
+                var b = Math.max(0, Math.min(y.length - 1, (px + 1) * per - 0.5));
+                var bruteLow = Double.POSITIVE_INFINITY;
+                var bruteHigh = Double.NEGATIVE_INFINITY;
+                for(int q = 0; q <= 2000; ++q) {
+                    var v = TraceReconstruction.valueAt(i -> y[i], y.length, a + (b - a) * q / 2000);
+                    bruteLow = Math.min(bruteLow, v);
+                    bruteHigh = Math.max(bruteHigh, v);
+                }
+                Assertions.assertEquals(bruteLow, low[px], 1e-4,
+                        "Low edge of column " + px + " of " + width);
+                Assertions.assertEquals(bruteHigh, high[px], 1e-4,
+                        "High edge of column " + px + " of " + width);
+            }
+        }
+    }
+
+    // -- from a value to a row of pixels --------------------------------------------------------
+
+    @Test
+    void aValueMapsToTheRowTheScreenDrawsItAt() {
+        // The screen turns the extremes into rows with this and nothing else, so two columns whose
+        // values touch share a row if it is monotone and gives one value one row. Zero is the
+        // centre line, full scale is `half` rows away, and anything past it sits on the edge.
+        Assertions.assertEquals(100, TraceReconstruction.row(0f, 5f, 100, 70));
+        Assertions.assertEquals(30, TraceReconstruction.row(5f, 5f, 100, 70));
+        Assertions.assertEquals(170, TraceReconstruction.row(-5f, 5f, 100, 70));
+        Assertions.assertEquals(65, TraceReconstruction.row(2.5f, 5f, 100, 70));
+        Assertions.assertEquals(30, TraceReconstruction.row(500f, 5f, 100, 70),
+                "Above full scale should sit on the top edge");
+        Assertions.assertEquals(170, TraceReconstruction.row(-500f, 5f, 100, 70),
+                "Below full scale should sit on the bottom edge");
+        var previous = Integer.MIN_VALUE;
+        for(var v = 7f; v >= -7f; v -= 0.013f) {
+            var row = TraceReconstruction.row(v, 5f, 100, 13);
+            Assertions.assertTrue(row >= previous,
+                    "A smaller value drew on a higher row at " + v + ": " + row + " after " + previous);
+            previous = row;
+        }
+    }
+
+    @Test
+    void columnsThatTouchInValueShareARowInPixels() {
+        // The screen no longer joins a column to its neighbour, relying on the spans touching. That
+        // holds in value space (above); this carries it through the rounding to whole rows, with
+        // ranges that clip the wave, at lane heights the screen uses and one that is odd, where the
+        // distance to full scale is a half row.
+        for(double samplesPerCycle : new double[]{4, 12.9, 51}) {
+            for(int target : new int[]{32, 103, 1024}) {
+                for(float range : new float[]{0.4f, 1.1f, 7f}) {
+                    for(float half : new float[]{12.5f, 13f, 70f}) {
+                        var y = sampled(sine(samplesPerCycle, 0.7), target);
+                        var low = new float[WIDTH];
+                        var high = new float[WIDTH];
+                        var first = RECONSTRUCTION.columns(i -> y[i], target, target, WIDTH, low,
+                                high);
+                        for(int px = first; px + 1 < WIDTH; ++px) {
+                            var top = TraceReconstruction.row(high[px], range, 100, half);
+                            var bottom = TraceReconstruction.row(low[px], range, 100, half);
+                            var nextTop = TraceReconstruction.row(high[px + 1], range, 100, half);
+                            var nextBottom = TraceReconstruction.row(low[px + 1], range, 100, half);
+                            Assertions.assertTrue(nextTop <= bottom && top <= nextBottom,
+                                    "Columns " + px + " and " + (px + 1) + " leave a row gap at "
+                                            + samplesPerCycle + " samples a cycle, range " + range
+                                            + ", half " + half + ": rows " + top + ".." + bottom
+                                            + " then " + nextTop + ".." + nextBottom);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // -- the two regimes ------------------------------------------------------------------------
 
     @Test
@@ -856,8 +1066,13 @@ public class TraceReconstructionTest {
         // does, so accuracy on a sine alone does not decide it.
         var catmull = worstSquareLie(probing(CATMULL_ROM), 12.9, 103, 103, WIDTH);
         var chosen = worstSquareLie(RECONSTRUCTION, 12.9, 103, 103, WIDTH);
-        Assertions.assertTrue(chosen < 1e-4 && catmull > 0.10,
-                "Chosen " + chosen + ", Catmull-Rom " + catmull);
+        // "Does not overshoot" alone is satisfied by drawing nothing, so the chosen curve is also
+        // required to be on the plateau.
+        var sag = worstPlateauSag(RECONSTRUCTION, 12.9, 103, 103, WIDTH);
+        Assertions.assertTrue(chosen < 1e-4 && sag.columns() > 0 && sag.worst() < 1e-4
+                        && catmull > 0.10,
+                "Chosen " + chosen + " (sag " + sag.worst() + " over " + sag.columns()
+                        + " columns), Catmull-Rom " + catmull);
     }
 
     // -- the data path is not the cause ---------------------------------------------------------

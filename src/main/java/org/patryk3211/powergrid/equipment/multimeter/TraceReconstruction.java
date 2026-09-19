@@ -47,17 +47,21 @@ package org.patryk3211.powergrid.equipment.multimeter;
  *       reproduces a straight line exactly.</li>
  * </ul>
  * The comparison behind the choice is in {@code docs/AC.md}, 5.2. In short, at 12.9 samples a
- * cycle the worst error on a sine is 2.95 % for linear, 2.75 % for the two monotone cubics (PCHIP
- * and Steffen), 0.20 % for Catmull-Rom and 0.72 % for this one, and only Catmull-Rom (and windowed
- * sinc and a natural spline, both worse) overshoots a square wave. The monotone cubics cannot
- * overshoot but flatten every peak the way linear does; this curve keeps most of Catmull-Rom's
- * accuracy without its ears.
+ * cycle the worst error on a sine is 2.95 % for linear and for the two monotone cubics (PCHIP and
+ * Steffen, which are flat at a peak that falls between two equal samples, exactly as linear is),
+ * 0.20 % for Catmull-Rom and 0.72 % for this one, and only Catmull-Rom (and windowed sinc and a
+ * natural spline, both worse) overshoots a square wave. The monotone cubics cannot overshoot but
+ * flatten every peak the way linear does; this curve keeps most of Catmull-Rom's accuracy without
+ * its ears.
  * <p>
  * <b>What it cannot do.</b> A plateau of only two samples between steep edges looks, to any
  * local rule, exactly like a sine peak that happens to fall between two samples, and this curve
- * treats it as the sine: it overshoots by 25 % of the amplitude there, as Catmull-Rom does. And a
- * genuine edge sampled sparsely is drawn as a ramp one sample wide, because that is all the
- * samples say about where between them the edge fell.
+ * treats it as the sine: it overshoots by 25 % of the amplitude there, as Catmull-Rom does, and
+ * by 27.6 % against the ends of the window, where the end chord is repeated (measured with this
+ * class at 4 and 5 samples a cycle over 103 samples; a plateau of three or more does not
+ * overshoot). A genuine edge sampled sparsely is drawn as a ramp one sample wide, because that is
+ * all the samples say about where between them the edge fell. And the two ends of the plot are
+ * a hold, see {@link #columns}.
  *
  * <h2>Two regimes, one formula</h2>
  * A column covers an interval of the sample axis, {@code target / plotWidth} samples wide. This
@@ -77,10 +81,10 @@ package org.patryk3211.powergrid.equipment.multimeter;
  *       the amplitude at 12.9 samples a cycle, 0.1 % to 0.2 % at 32).</li>
  * </ul>
  * Either way each column includes the curve's value at both of its edges, and the same value is
- * computed once for the edge two columns share. So neighbouring columns always touch, a steep edge
- * is a continuous run rather than two unrelated marks, and no column is taller than the wave's own
- * travel across it on either side of the change. The one thing that does change is the small step
- * in peak height quantified above.
+ * computed once for the edge two columns share. So neighbouring columns touch (measured, at every
+ * rate and window the tests use), a steep edge is a continuous run rather than two unrelated
+ * marks, and no column is taller than the wave's own travel across it on either side of the
+ * change. The one thing that does change is the small step in peak height quantified above.
  */
 public final class TraceReconstruction {
     private TraceReconstruction() {
@@ -106,10 +110,20 @@ public final class TraceReconstruction {
      * leaves the left blank, and sample {@code i} is centred in its cell. Nothing is stretched, so
      * the trace still grows in from the right as it fills.
      * <p>
-     * The half cell before the first sample and the half cell after the last hold that sample's
-     * value; there is nothing to reconstruct from beyond the ends.
+     * <b>The two ends are a hold.</b> The half cell before the first sample and the half cell
+     * after the last hold that sample's value, because there is nothing to reconstruct from
+     * beyond the ends. That is the drawing this class replaced, in a smaller place: at most
+     * {@code 2 sin(pi / 2N)} of the amplitude for a sine of N samples a cycle, 24.3 % at 12.9 and
+     * 9.8 % at 32 (measured, and pinned by the tests), and {@code 0.5 * plotWidth / target}
+     * columns wide: 4.75 at each end of a 32-sample window and 1.5 at 103. Extrapolating there
+     * would shrink it but was tried as a mutation and draws ears on a square wave. Within three
+     * samples of an end, where the curve has neighbours on one side only, the error is a peak's
+     * {@code 1 - cos(pi / N)} under-reach: 2.95 % at 12.9.
+     * <p>
+     * The right-hand end is the live edge of the scope.
      *
-     * @param visible   samples available, at most {@code target}
+     * @param visible   samples available; if it exceeds {@code target} the newest {@code target}
+     *                  are drawn, so the live sample is never the one dropped
      * @param target    samples the whole plot represents
      * @param plotWidth pixel columns
      * @param low       receives the lowest value of each column; needs {@code plotWidth} entries
@@ -121,7 +135,14 @@ public final class TraceReconstruction {
                               float[] low, float[] high) {
         if(visible <= 0 || target <= 0 || plotWidth <= 0)
             return Math.max(plotWidth, 0);
-        visible = Math.min(visible, target);
+        if(visible > target) {
+            // More samples than the plot has cells. The screen never asks, but the method is
+            // public, and the answer that keeps the live sample is the newest ones.
+            var skip = visible - target;
+            var all = samples;
+            samples = i -> all.get(i + skip);
+            visible = target;
+        }
 
         long blank = target - visible;
         var first = (int) (blank * plotWidth / target);
@@ -140,8 +161,10 @@ public final class TraceReconstruction {
             var next = curve.value(b);
 
             // Both edges go in explicitly, and the right edge of this column is carried over as
-            // the left edge of the next one as the very same number, so neighbouring spans are
-            // guaranteed to touch whatever the rounding does further in.
+            // the left edge of the next one as the very same number. search() folds in the curve
+            // at both ends of a partial segment anyway, so today these two adds are redundant
+            // (removing them changes no test); they keep the shared edge exact if search() ever
+            // stops doing that.
             extent.reset();
             extent.add(edge);
             extent.add(next);
@@ -162,6 +185,21 @@ public final class TraceReconstruction {
         return (float) new Curve(samples, count).value(position);
     }
 
+    /**
+     * The pixel row a value is drawn at.
+     * <p>
+     * {@code zeroY} is the row of zero and {@code half} the rows from zero to full scale, which is
+     * {@code range}, fractional when the plot's height is odd; a value beyond it in either
+     * direction sits on the edge. Rows count
+     * down the screen, so a larger value has a smaller row. The screen draws both ends of every
+     * column with this and nothing else, so it is monotone and gives one value one row, which is
+     * what keeps two columns that touch in value from leaving a gap in pixels.
+     */
+    public static int row(float value, float range, int zeroY, float half) {
+        var scaled = Math.max(-1f, Math.min(1f, value / range));
+        return zeroY - Math.round(scaled * half);
+    }
+
     /** Extremes of the curve over {@code [a, b]}, folded into {@code out}. */
     private static void search(Curve curve, int count, double a, double b, Extent out) {
         if(count == 1) {
@@ -176,7 +214,9 @@ public final class TraceReconstruction {
             if(t0 <= 0 && t1 >= 1) {
                 // A whole segment inside the column, which only happens once a column is a sample
                 // wide or more: the samples are the envelope, and the cubic's small excursion
-                // between them is well under a pixel.
+                // between them is not searched for. That is a saving in cost that gives up at most
+                // 1 - cos(pi / N) of a sine's amplitude; the tests bound it from above only, so
+                // searching here would be more accurate and slower, and no test would notice.
                 out.add(curve.sample(i));
                 out.add(curve.sample(i + 1));
                 continue;
@@ -190,7 +230,8 @@ public final class TraceReconstruction {
      * of one sample.
      * <p>
      * Mutable and reused: consecutive columns in the sparse regime sit in the same segment, and
-     * its slopes cost twelve sample reads to work out, so they are kept until the segment changes.
+     * loading one costs eighteen sample reads (two for its ends and eight for each of its two
+     * slopes, four chords of two reads), so they are kept until the segment changes.
      */
     private static final class Curve {
         private final Samples samples;
@@ -249,8 +290,12 @@ public final class TraceReconstruction {
             // Stationary points: d0 + 2b t + 3c t^2 = 0.
             var qa = 3 * c;
             var qb = 2 * b;
-            if(Math.abs(qa) < 1e-12) {
-                if(Math.abs(qb) > 1e-12)
+            // The cubic term is negligible when it is a factor of 1e-12 below the rest of the
+            // derivative. Relative and not absolute, so a signal of a few nanoamps is the same
+            // shape as one of a few amps: an absolute threshold turns small signals into the
+            // wrong curve.
+            if(Math.abs(qa) <= 1e-12 * (Math.abs(qb) + Math.abs(d0))) {
+                if(qb != 0)
                     consider(-d0 / qb, t0, t1, out);
                 return;
             }
@@ -258,12 +303,10 @@ public final class TraceReconstruction {
             if(discriminant < 0)
                 return;
             // The numerically stable pairing of the two roots; the textbook form loses the small
-            // one to cancellation when qb dominates.
+            // one to cancellation when qb dominates. If q is zero then qb and d0 both are, the
+            // only stationary point is t = 0, an end of the segment and already counted, and the
+            // divisions below give 0 and NaN, which consider() rejects.
             var q = -0.5 * (qb + Math.copySign(Math.sqrt(discriminant), qb));
-            if(q == 0) {
-                consider(0, t0, t1, out);
-                return;
-            }
             consider(q / qa, t0, t1, out);
             consider(d0 / q, t0, t1, out);
         }

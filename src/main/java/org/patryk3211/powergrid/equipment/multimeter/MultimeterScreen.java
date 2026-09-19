@@ -659,8 +659,10 @@ public class MultimeterScreen extends Screen {
                 visible, target, plotWidth, columnLow, columnHigh);
 
         for(int px = firstColumn; px < plotWidth; ++px) {
-            var yHigh = zeroY - Math.round(Mth.clamp(columnHigh[px] / range, -1f, 1f) * half);
-            var yLow = zeroY - Math.round(Mth.clamp(columnLow[px] / range, -1f, 1f) * half);
+            // One function for both ends of the span, so two columns whose values touch cannot end
+            // up a row apart by rounding the two ends differently.
+            var yHigh = TraceReconstruction.row(columnHigh[px], range, zeroY, half);
+            var yLow = TraceReconstruction.row(columnLow[px], range, zeroY, half);
 
             // No join to the previous column is needed: each column already includes the curve's
             // value at both its edges, and the edge it shares with its neighbour is the very same
