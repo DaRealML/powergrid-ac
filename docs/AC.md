@@ -815,8 +815,10 @@ Caveats, each measured:
   0.997 -- but at 4 Hz into 10 Ω the secondary lags by **12.2° at 8 sub-ticks and 3.3° at 32**, about
   1.4 sub-ticks. In a delta-star bank that turns +30° into roughly +18°. The config comment now says
   so. Leave it off on an AC grid.
-- **Transmission lines delay by a sub-tick** (§9). Three conductors of equal length are delayed
-  equally, which keeps the phases 120° apart; conductors of different lengths do not.
+- **Transmission lines delay by a sub-tick** (§9), but only when `splittingTransmissionLines` is on,
+  and it is off by default. Every split line costs one sub-tick however long it is, so the three
+  conductors are never delayed by different times; three of equal length are shifted by the same angle,
+  which keeps the phases 120° apart, and unequal ones are shifted by different angles (measured below).
 - Transformer and variac heating and hum now use the RMS current over the tick. They squared one
   per-tick sample, so a loaded transformer at 20, 40 or 60 Hz could sit on a zero crossing and never
   warm up.
@@ -838,6 +840,181 @@ For that to mean anything between two blocks, their angles need a common referen
 none: each integrated from wherever it was built, and a rebuild started it again from zero. In a
 world both AC sources now take their angle from the game time (§3.8), so sources at one frequency
 differ by exactly their offsets, through rebuilds and reloads.
+
+#### Wye and delta on a real grid
+
+`ThreePhaseAlternatorTest` and `ThreePhaseTransmissionTest` pin the ideal cases on a network the game
+never builds: `ElectricalNetwork(false)`, so no stabilising shunt, and a source holding one node at zero
+volts. The game builds its islands with `G_MIN` on, and a player's star point has no ground at all unless
+a grounding rod is placed. `WyeDeltaSystemTest` rebuilds each case that way, on `Network(true)`, and
+compares every measurement with a complex-number solution written out in the test rather than a recorded
+figure. Every number below comes from it (run it with `--info` to see them printed) unless the text says
+it was read from the code. **Nothing here needed a solver change.**
+
+**A floating star or delta is stable, and the shunt only decides where zero volts is.** A wye machine
+with no neutral wire and no ground, into a 2 Ω wye load: line voltage is √3 times phase voltage to 1 part
+in 10⁴ and leads it by 30°, the three line currents are balanced to 10⁻⁵ and sum to zero to 10⁻⁹ at
+every instant, and the island converges. `ElectricalNetwork` puts its 1000 S shunt on the negative
+terminal of the first voltage source it finds (`ElectricalNetwork.java:603-631`), so *which* node is zero
+depends on which terminals the player tied. Blue terminals tied: the neutral is at 0 V and each line
+swings 24.2 V peak. Red terminals tied: line 1 is at 0 V, the neutral sits 24.2 V peak away and lines 2
+and 3 are 41.9 V (√3 × 24.2). Currents and line voltages are identical either way. A delta anchors its
+first winding's negative corner.
+
+**Delta.** The line current is √3 times the winding current in a delta and equal to it in a wye, all four
+ways round (wye or delta machine into wye or delta load), and the three line currents stay 120° apart to
+10⁻³ degrees. A delta with every winding the right way round circulates nothing (below 10⁻⁹ A); with the
+middle one reversed it circulates 23.6 A RMS, the 2E/3Z of §3.15 above, measured within 2 %.
+
+**Unbalance, neutral and earth.** A 10/100/100 Ω wye load on a floating star, 25.13 V peak EMF:
+
+| Neutral return | Heavy phase | Star point |
+|---|---:|---:|
+| None (floating) | 0.250 E | 0.75 E |
+| One rod on the machine's star | 0.250 E | 0.75 E |
+| Two 5000 Ω rods, one at each star | 0.2505 E | — |
+| Two 50 Ω rods (probe) | 0.307 E | — |
+| Two 1 Ω rods | 0.852 E | — |
+| A 10 mΩ neutral wire | 0.9955 E | ≈ 0 |
+
+The floating case is Millman's theorem: the star goes to 0.75 E towards the heavy phase and the two light
+phases rise to 1.51 E and 1.53 E, matching the paper solution. **One rod changes nothing and carries
+nothing** (below 10⁻¹² A): a single reference is not a return path, and it takes the place of the shunt's
+anchor. **Two rods are a poor neutral at any resistance the game can give them.** The rod is 1 to 5000 Ω
+(`CElectricity.java:48-49`), so a pair returns through 2 to 10000 Ω, and even at the very best the
+heavy phase is still fifteen percent down where a wire holds it within half a percent. A balanced load
+sends nothing down a neutral wire (below 10⁻⁶ of the line current), and the neutral wire changes no
+other number.
+
+A rod that is off, because fewer than `groundingMinimumBlocks` solid blocks surround it, still counts as
+a wire to ground (`ElectricalNetwork.java:423` counts any wire with a null node, whatever its switch
+state), so it stops `G_MIN` anchoring the island. The island is then referenced through the switch's
+5×10⁻⁹ S off-state conductance instead. Measured: every voltage is unchanged and the star point
+drifts by 76 µV on a 25 V machine. With that off-state conductance set to zero the star wandered by
+7.8 V (seen in a mutation run of the test, not kept), so it is that 200 MΩ leak doing the anchoring, and it is enough. A rod is also built off and
+stays off until its first lazy tick, twenty ticks in (`GroundingRodBlockEntity.java:174`, `:94`), which
+is the same case. The rod's damage is `R × lastRmsCurrent / 48 V` (`:130-133`), RMS on both counts, so an
+alternating neutral current is judged correctly; there is no fuse in the rod. The potential the
+source rod reached in a probe run that was not kept is 1.3 V RMS (1 Ω), 6.1 V (50 Ω) and 6.7 V
+(5000 Ω), all far under 48 V, because the machine is 25 V and its star point cannot rise above its EMF.
+
+**Sub-tick rate, frequency, start-up and change.** Phase current against the paper value, 4 Hz, floating
+wye: −0.20 % at 8 sub-ticks, −0.09 % at 16, −0.05 % at 32, −0.02 % at 64, converging on the analytic
+figure as the rate rises. At the rate the game asks for (32 samples a cycle, cap 64): 4.5 Hz at 8
+sub-ticks −0.25 %, 10 Hz at 16 −0.53 %, 20 Hz at 32 −0.67 %, 36 Hz at 64 −0.54 %. 20 Hz and 10 Hz are the
+frequencies that divide the world tick evenly, 4.5 and 36 are not, and all four are balanced. A machine
+brought from rest to 240 rpm over sixty ticks, stepped at whatever rate its windings ask, never puts more
+than 24.16 V across a winding (the EMF is 25.13 V), never moves the star off the neutral by more than
+10⁻¹³ V, and arrives at the same 12.05 A and 0.0° as one that was always at speed. Hanging a 1 Ω load
+across two lines of a running wye gives 36.9 A, 29.9 A and 12.05 A in the three lines: line 3 does not
+change, because its current is E₃ over its own branch impedance whatever hangs between the other two.
+Removing the load restores the currents to 10⁻⁶. Losing one winding leaves the other two in series,
+10.44 A against 10.46 A on paper, with nothing in the third line; putting the winding back restores the
+machine to 10⁻⁶ and in step.
+
+**A whole chain.** Wye alternator, no neutral, no ground; a 10:40 delta-star bank; three 5 Ω conductors
+(6.7 km of copper wire at 0.0015 Ω per item and half an item a metre, so harsh); a 40:10 star-delta bank; a
+10 Ω delta load. Each transformer is stamped as `TransformerBlockEntity.buildCircuit` does. All voltages here are peak. The load's line
+voltage is 0.964 of the generator's, and its phase is shifted by 0.0000°: the +30° of the delta-star and
+the −30° of the star-delta cancel. The middle of the chain is right too: 171.0 V across each star coil
+against four times the generator's 42.9 V line voltage, 165.8 V arriving after the line. The two floating
+star points coincide to 10⁻¹² V and the line currents are balanced and sum to zero. At the generator's
+terminals the chain takes 269.5 W and delivers 256.2 W, **95.1 % efficient**. The same three
+conductors carrying the same load with no banks take 112.9 W and deliver 45.2 W, **40.0 %**, with the
+load seeing 17.3 V line to line instead of 41.3. The magnetising branch of every transformer is a
+resistor (§9), so the figure is this model's, not a real transformer's.
+
+**Conductors that are not the same length.** Wire resistance is `resistancePerItem × items`, so runs of
+100, 120 and 150 blocks are 1 : 1.2 : 1.5 in ohms. Into a 2 Ω wye load, the negative-sequence over
+positive-sequence line-to-line voltage (the unbalance factor) and the NEMA figure (largest deviation from
+the mean, over the mean), against Millman on paper:
+
+| Shortest run | Unbalance, solver | Unbalance, paper | NEMA |
+|---:|---:|---:|---:|
+| 0.05 Ω | 0.340 % | 0.341 % | 0.31 % |
+| 0.25 Ω | 1.529 % | 1.531 % | 1.40 % |
+| 1.00 Ω | 4.42 % | 4.43 % | 3.94 % |
+
+Three identical runs unbalance nothing (0.0000 %). There is no three-phase motor yet (see *Not done*
+below), so what an unbalanced supply *does* to a load is a single-phase question today.
+
+**If line splitting is on.** `solver.splittingTransmissionLines` defaults to **false**
+(`CSolver.java:30`), and `WorldNetworks.canWeakCouple` (`:121-124`) requires it, so the statement in §9
+that splitting is on by default was wrong and is corrected there. Nothing below happens unless a server
+owner switches it on. When it is on, every split line costs exactly one sub-tick however long it is, so
+three conductors are never delayed by different *times*; what differs is the *angle* that sub-tick
+becomes once it has been through the rest of the circuit, and that depends on each conductor's
+resistance. Three equal 1 Ω conductors: each current is shifted +7.3° (leading the unsplit one) and 4.9 %
+high, all three alike, so the sequence stays 120° apart. Unequal 1.0, 1.2 and 1.5 Ω: shifts of +6.4°,
++4.7° and +3.9° (2.4° spread), magnitudes +2.5 %, +5.7 %, +1.1 %, and the load's voltage unbalance
+goes from 4.4 % to 4.9 %. The shorter the line the worse: three 0.25 Ω conductors, just above the
+default 0.2 Ω threshold, are +33.6° out and 60.8 % high. That is where the DC-era threshold puts the
+first split. A split needs *every* connection between two regions to be a weak line: any other wire
+merges the islands (`WorldNetworks.java:159`) and `TransmissionLine.makePortPair` returns early when
+both ends are already one island (`TransmissionLine.java:509`), so a short conductor beside two long ones
+should leave all three unsplit. That last inference is from reading, not from a run. The config comment
+now carries the AC warning.
+
+**What a power gauge reads on three phases.** `WattmeterWire` multiplies one current branch by one
+voltage branch (`WattmeterWire.java:71-74`); the gauge and the energy meter build a series branch from
+terminal 0 to 1 and a voltage shunt from 0 to 2 (`PowerGaugeBlockEntity.java:90-97`,
+`EnergyMeterBlockEntity.java:101-108`). On a three-phase line it therefore reads one phase's current
+times whichever voltage the player wired terminal 2 to. With terminal 2 on the star point that is 0.335
+of a balanced 437 W load, one phase's share. With it on another line it is 0.502 of a resistive
+balanced load, not the total. Two gauges in two lines with both sense terminals on the third line sum to
+the total whatever the load: 11.78 W + 4.79 W = 16.57 W against 16.56 W taken, on a 10/100/100 Ω load.
+Not changed: a gauge that knew about three phases would need a second current branch, and two gauges
+already do it. **The energy meter has the same limit and a player wiring one meter into one line will
+read a third, or a half, of what the load takes.**
+
+**Wiring audit: what a player can and cannot build by hand.** Read from the code; block entities,
+value behaviours and wire placement are not reachable by the headless suite, so none of this ran.
+
+- *Transformer terminals.* Either coil can take any ordered pair of the four terminals, and click order
+  sets the polarity (`TransformerBlock.java:91-133`; the first click is `terminal1`, which `buildCircuit`
+  makes `P1`, `TransformerBlockEntity.java:342-343`). The one rule is that a coil's **first** terminal
+  must be unused (`isTerminalUsed`, `TransformerBlock.java:175`, `TransformerBlockEntity.java:224`). The
+  **second** is never checked, so the second coil can share a terminal with the first, for example
+  primary T0–T1 and secondary T2–T1. The solver handles it: in a throwaway probe (not kept) six such
+  shapes all converged to finite answers, one was an autotransformer boost (a 10 V source gave 19.1 V
+  across the load) and the reversed-in-parallel one was the short circuit it should be. It looks
+  unintended, and it is harmless, so it is left alone and reported. Nothing about the terminals makes a
+  delta or a star bank awkward: coil k across lines k and k+1 for a delta, one end of each coil to a
+  common connector for a star. The block flips its coils when the primary has more turns
+  (`TransformerBlockEntity.java:321-332`), which moves the leakage branch and changes neither ratio nor
+  phase. A core holds `turns + primaryTurns` up to 60 (small) or 240 (medium)
+  (`TransformerSmallBlock.java:70`, `TransformerMediumBlock.java:76`), so the coils share one budget.
+  `connectedTerminalIndex` (`:372-388`) reports only the primary's partner for a shared terminal, which
+  is what the terminal-pair display would show.
+- *Alternator terminals.* Each alternator block is one `AlternatorCoupling` between its two terminals
+  (`CommutatorBlockEntity.java:87-96`), red and blue by decoration only (`CommutatorBlock.java:57-61`);
+  nothing constrains what is wired to what. Placing a wire refuses only a terminal to itself
+  (`IElectric.java:172`), an exact duplicate pair (`:179`) and a wire past its maximum length (`:192`);
+  device terminals take light wires only, that is copper wire, golden wire and insulated copper wire
+  (`IElectric.java:72-75`, `light_wires.json`). I found no limit on wires per terminal and no rule against a
+  closed loop, so three alternators chain end to start into a delta, and three terminals tie to a star point
+  through one `ConnectorBlock`, which is a single terminal. What can go wrong and will not be caught: a
+  delta with one winding reversed circulates 23.6 A RMS (above), and the **pole-pair slider is per block**,
+  so three windings set to different pole pairs run at different frequencies and nothing warns (the
+  goggles show each block's frequency, `CommutatorBlockEntity.java:122`). Winding
+  angles are in 15° steps (`AlternatorWindingAngleBehaviour.STEP_DEGREES`), which lands on 120° and 240°
+  exactly.
+- *Grounding rod* as a neutral: works as a reference and as one half of a return path (above). It is a
+  poor neutral, has no fuse, and its damage figure is RMS-correct.
+- *`splittingTransformers`* is off by default (`CSolver.java:31`, the key is spelled
+  `splittingsTransformers`), applies only to 1:1 transformers (`TransformerBlockEntity.java:347`), and
+  its config comment already says to leave it off on AC. The only ways to have it on are the server
+  config, or the Nether transformer, which builds a `SplitTransformerControllerWire` unconditionally
+  (`NetherTransformerBlockEntity.java:67`) because it links two dimensions. Whether AC should switch it
+  off automatically was considered and not done: `buildCircuit` runs when the coil is wound, before any
+  source is connected, so it cannot know the island will be AC, and rebuilding when the first AC source
+  arrives needs a hook that does not exist. That is not small and it is not clearly right (a DC grid
+  gains from the option), so it is left as a follow-up rather than guessed at.
+
+**What none of this establishes.** The headless suite cannot reach block entities, value behaviours,
+the winding screen, wire placement, rendering, the config screen or networking, and its islands are
+plain `ElectricalNetwork`s rather than the `GraphedElectricalNetwork` the game builds. Every wiring
+statement above is from reading the code. **Nothing here has been checked in game.**
 
 #### Not done
 
@@ -1653,7 +1830,9 @@ reactance anywhere, so every row should read 0.000°:
 | 36.267 Hz | 32 | 0.017857 | 0.018636 | +4.36% | −12.00° |
 | 72.533 Hz | 32 | 0.017857 | 0.021156 | **+18.47%** | **−26.25°** |
 
-This is **on by default** for any line above `solver.transmissionLineThreshold` = 0.2 Ω. The config
+This happens only when `solver.splittingTransmissionLines` is on, and it is **off by default**
+(`CSolver.java:30`; this section used to say the opposite). When it is on it applies to any line above
+`solver.transmissionLineThreshold` = 0.2 Ω. The config
 comment describes "propagation delay of roughly 1 tick", which was written for the direct-current
 era; it is now one *sub-tick*, a shorter time but a far larger fraction of an electrical cycle. The
 port also implements `ISolverHook`, so it forces the full Newton loop — about 20 iterations per
