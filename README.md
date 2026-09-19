@@ -53,7 +53,7 @@ Treat this as a demo, not a release.
 
 - **None of it has been verified in a running game.** The test suite is headless; block entities,
   rendering, networking and anything needing Minecraft loaded cannot be covered by it.
-- 177 automated tests pass, covering the solver, the companion models, the arc, three-phase
+- 251 automated tests pass, covering the solver, the companion models, the arc, three-phase
   machines and transformer banks, and the measurement maths.
 - Several known defects are documented rather than fixed, because fixing them is a balance decision
   rather than a correctness one — most notably that **the transformer has no frequency dependence at

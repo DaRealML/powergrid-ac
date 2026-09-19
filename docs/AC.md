@@ -1076,7 +1076,7 @@ From a player testing the first release: the generator reads about 225 V RMS but
 217 V, and the waveform looks like a slowly rising squarish sine. Both were measured rather than
 guessed at, and the answers are different for the two halves.
 
-#### The waveform is under-sampled, and the ceiling was the cause
+#### The squarish waveform: the sample ceiling was a smaller cause than first written
 
 A machine asks for `acSamplesPerCycle` samples per cycle and is refused above `acMaxSubTicks`. At
 the old ceiling of 32 the request is met up to 18 Hz and cut above it:
@@ -1089,11 +1089,20 @@ the old ceiling of 32 the request is met up to 18 Hz and cut above it:
 | 11 | 49.9 Hz | 12.8 | 25.7 | 51.3 |
 | 16 | 72.5 Hz | 8.8 | 17.6 | 35.3 |
 
-Nine samples a cycle drawn as a trace is a staircase, and because the count is not a whole number
-the steps walk through the waveform from cycle to cycle -- the "slowly rising" part of the report.
-The ceiling now defaults to **64**, which costs nothing on a machine below 18 Hz because a machine
-only asks for what its frequency needs, and doubles the solve rate on the ones that were being
-refused. Mains frequency still wants 128 for a smooth trace, and the config comment says so.
+The first version of these notes blamed the staircase on those sample counts. That was only partly
+right, and section 5.2 ("Why the trace looked square") has the real cause: the multimeter drew each
+sample as a flat step whenever the window held fewer samples than the plot had pixel columns, so
+even 51 samples a cycle at a ceiling of 128 stair-stepped on screen. What the ceiling really sets
+is how finely the SOLVER steps, and that still matters, because the theta-method's accuracy on
+reactive loads improves with the sample count (section 3.14).
+
+The ceiling now defaults to **64**. That costs nothing on a machine below 18 Hz, because a machine
+only asks for what its frequency needs, and it doubles the solve rate on the ones that were being
+refused. It is not free above that, and on an island with a nonlinear part it is far from free: the
+solver iterates at every sub-tick when a diode, tube or arc is present, and a six-diode bridge fed by
+three windings at 50 Hz measured **29.9 ms per tick at a ceiling of 64 and 53.1 ms at 128**, against
+0.04 and 0.07 ms for the same machine on a linear load. A tick is 50 ms for the whole server. Those
+figures are from one probe run on a loaded machine, so read them as an order of magnitude.
 
 #### The RMS window now spans whole cycles
 
@@ -1687,6 +1696,8 @@ block still read 0.
 | `inductionrotor/AlternatorPolePairsBehaviour.java` | Click-and-hold slider for pole pairs, §5.1. |
 | `inductionrotor/AlternatorWindingAngleBehaviour.java` | Click-and-hold slider for the winding angle, §5.4. |
 | `test/.../ThreePhaseAlternatorTest.java`, `ThreePhaseTransmissionTest.java`, `PhasorFit.java` | 13 tests and an independent phasor fit, §7. |
+| `equipment/multimeter/TraceReconstruction.java`, `test/.../TraceReconstructionTest.java` | Draws a curve through the trace's samples instead of holding them; 38 tests, §5.2. |
+| `test/.../WyeDeltaSystemTest.java` | Wye and delta on a G_MIN network with nothing grounded; 24 tests, §3.15. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
 | `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
 | `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java`, `MotorReactanceTest.java`, `ReactivePhaseTest.java` | 54 tests, §7. |
