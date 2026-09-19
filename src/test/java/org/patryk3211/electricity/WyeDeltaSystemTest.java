@@ -1668,8 +1668,7 @@ public class WyeDeltaSystemTest extends TestHelper {
     void anUnbalancedLoadOnSplitLinesIsFarWorseThanABalancedOne() {
         // The 2 ohm balanced load of the tests above puts 5 % on the current. Hang 10/100/100 ohms on
         // the same three 1 ohm split lines and the heavy phase, which is 0.61 A unsplit, carries 2.8 A,
-        // and the two light ones, 0.37 A, carry about 2.6 and 3.0. The sum of the three line currents
-        // is still zero; it is a circulation between the islands that the exchange is not damping.
+        // and the two light ones, 0.37 A, carry about 2.6 and 3.0. Not traced to a line of code.
         var lines = new double[]{ 1, 1, 1 };
         var direct = overLines(lines, false, SUB_TICKS, 10, 100, 100);
         var split = overLines(lines, true, SUB_TICKS, 10, 100, 100);
