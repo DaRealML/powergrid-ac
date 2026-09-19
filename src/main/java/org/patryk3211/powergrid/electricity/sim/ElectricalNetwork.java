@@ -148,6 +148,16 @@ public class ElectricalNetwork implements IStamped {
     }
 
     /**
+     * Counters of the Java solver backend, or {@code null} for any other backend.
+     * <p>
+     * Read-only observation for benchmarks; see {@link JavaMNA.Statistics} for what each counter
+     * means and why reading it cannot change a solve.
+     */
+    public JavaMNA.Statistics solverStatistics() {
+        return mna instanceof JavaMNA java ? java.statistics() : null;
+    }
+
+    /**
      * How many solver sub-ticks this island needs this world tick.
      * <p>
      * The configured value is a floor, so a server that raises {@code multiTicks} globally still
