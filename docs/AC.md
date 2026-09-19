@@ -1158,6 +1158,154 @@ phasor summary is assembled from segments and truncated to the panel. Fixed pixe
 what let a four-digit reading run into the label beside it, and a blindly concatenated summary
 line was what let it draw across the row below.
 
+#### Why the trace looked square
+
+A tester sent a screenshot of a sine drawn as a staircase: 640 Hz (32 sub-ticks a tick, which is
+`multimeterSubTickSamples`' default), a 50 ms window and 49.75 Hz, so 12.9 samples a cycle. The
+cause is in the renderer, not in the data, and it has been there since the min/max drawing was
+written (`435451aa`).
+
+**The mechanism.** "The ring, and how the trace is drawn" above says a pixel column is drawn as the
+minimum and maximum of the samples inside it. That is right when a column holds many samples. The
+plot is 304 columns wide (the 320 px panel less two 8 px paddings), so a window of fewer than 304
+samples gives a column *less than one sample*, its range of samples is empty, and the loop's
+`if(to <= from) to = from + 1` made it take one sample anyway. Every column repeated the nearest
+sample: a zero-order hold, a flat run then a vertical jump. 32 samples over 304 columns is 9.5
+columns a sample, and a test pins that each sample came out 9 or 10 columns wide. The automatic
+window is eight cycles, 8 x 12.86 = 103 samples at that frequency, about 3 columns a sample, so it
+stair-stepped too, only more finely. A window reaches a sample a column only at 304 samples, which
+at 640 Hz is eight cycles of anything below about 17 Hz, or a long manual timebase.
+
+**How wrong it was.** Worst distance between what a column drew and the true sine anywhere inside
+that column, as a percentage of the amplitude, for a clean sine over a 32-sample window. The
+middle column credits the old drawing with a half-sample shift, which nothing on the plot could
+reveal and which is the most flattering way to compare; the right-hand one takes each sample as
+taken at the start of the cell it was held across. Worst of 15 phases of the sample grid against
+the wave.
+
+| samples a cycle | old, shift credited | old, not credited | now |
+|---|---|---|---|
+| 4 | 84.0 % | 146.6 % | 11.6 % |
+| 8 | 43.0 % | 80.3 % | 1.2 % |
+| **12.9** | **26.8 %** | **50.7 %** | **0.72 %** |
+| 16 | 21.7 % | 41.0 % | 0.50 % |
+| 32 | 10.8 % | 20.6 % | 0.13 % |
+| 51 | 6.8 % | 13.0 % | 0.06 % |
+
+`TraceReconstructionTest.theOldMappingWasFarFromASineAtEveryRateAMeterSees` pins the two old columns
+as floors and `aSineIsReconstructedWithinTheMeasuredBound` pins the last as ceilings. In pixels
+this is arithmetic from the layout constants, not something seen in game: a one-channel plot is 142
+px tall, so full scale is 70 px and 26.8 % is about 19 px; four stacked channels get a lane 28 px
+tall, 13 px to full scale, so about 3.5 px.
+
+**Where the data path stands.** Two questions: does the client ever receive a held sample, and
+which situations are the renderer's fault. Measured with a throwaway probe that built an AC island
+at 49.75 Hz and ran it through `ProbeSampler.snapshot`, and pinned in part by
+`theStreamNeverRepeatsASampleOfASine`:
+
+- **Not data-caused: the stream at the tester's settings.** 20 world ticks at 32, 64 and 128
+  sub-ticks against the default limit of 32 gave 640 samples each with no two neighbouring samples
+  equal; 16 sub-ticks gave 320, a limit of 10 (which does not divide 32) gave 200, and an island
+  stepped once a tick gave 20. Decimation picks samples and never repeats one. The packet writes the
+  floats as they are (read, not run). So the tester's picture is the render regime alone: the numbers
+  above reproduce it without any data fault. I have not seen the screenshot, so I cannot say which
+  channel or probe it showed.
+- **Not live: the starved channels.** `2d4239e2` (a voltage lead's island) and `40b5518e` (every
+  current probe) are both in this history, and `attachSampler` now asks both islands and
+  `residentNetwork()`. The wire's RMS smoothing filters only `lastRms`; the sampler reads
+  `wire.current()` raw. Read from source; not tested in game.
+- **Data-caused, left alone: a slow channel beside a fast one.** `acceptSubTickSamples` stretches
+  every channel to the packet's largest count by repeating samples. Probed with two channels, 32
+  samples and 1 sample a tick, over four ticks: the slow channel's ring had 124 equal neighbouring
+  pairs out of 127 and a longest run of 32. That is a real staircase, and the row's own rate readout
+  is what tells the player so.
+- **Data-caused, left alone: a channel the server could not resolve.** The client's own reading is
+  repeated to the common count: the same 124 of 127 and run of 32. Per `2d4239e2` the client's
+  synced node voltages arrive less often than every tick, so the 20 Hz fallback is coarser still; I
+  did not verify that.
+- **Not a fault, but a ceiling: the config limit.** `multimeterSubTickSamples` caps a channel at 32
+  samples a tick however finely the island steps, which is what makes 50 Hz 12.9 samples a cycle.
+  Raising it buys resolution at a bandwidth cost the config comment puts at about 10 kB/s for 32 on
+  four channels. An island stepped once a tick yields 20 samples a second, which cannot show
+  anything above 10 Hz whatever is drawn.
+
+The two data-caused holds are not fixed here. The ring feeds the phasor code, so filling it
+differently would change what frequency, phase and impedance read for the slow channel, and the
+plot alone was the point of this change. They are left for a follow-up.
+
+**The fix.** `TraceReconstruction`, a pure class, decides what each column shows and the screen
+turns that into rectangles. Where a column holds less than a sample it draws the part of a cubic
+curve through the samples that falls inside it. Where a column holds more it draws the same
+envelope as before, plus the curve's value at each of its edges. Each column includes the value at
+both of its edges and a shared edge is one number, so neighbouring columns always touch and a steep
+edge is a continuous run.
+
+The curve was chosen by measurement. Candidates were compared on a sine (worst error as a
+percentage of amplitude, 90 phases), on a square wave with an ideal edge, a step and a rectified
+sine, where an interpolator must not draw a level the signal never reached. Measured with a
+throwaway program, not kept; the figures for the chosen curve, linear and Catmull-Rom are
+re-measured by the kept tests.
+
+| curve | 4 | 8 | 12.9 | 16 | 32 samples a cycle | square wave, plateau of 3+ | plateau of 2 | rectified sine below 0 |
+|---|---|---|---|---|---|---|---|---|
+| zero-order hold (best alignment) | 76.5 | 39.0 | 24.3 | 19.6 | 9.8 | 0 | 0 | 0 |
+| linear | 29.3 | 7.6 | 2.95 | 1.92 | 0.48 | 0 | 0 | 0 |
+| PCHIP, Steffen | 29.0 | 7.6 | 2.75 | 1.89 | 0.48 | 0 | 0 | 0 |
+| Catmull-Rom | 11.6 | 0.92 | 0.20 | 0.10 | 0.01 | **14.8** | **25.0** | 0 |
+| Akima | 11.6 | 2.97 | 0.72 | 0.38 | 0.05 | 0 | **25.0** | **1.67** |
+| **modified Akima (chosen)** | 11.6 | 1.17 | 0.72 | 0.50 | 0.14 | 0 | **25.0** | 0 |
+| Lanczos-3 | 2.2 | 0.70 | 0.62 | 0.59 | 0.36 | **23.5** | **44.6** | 0.11 |
+| natural cubic spline | 2.8 | 0.12 | 0.02 | 0.01 | 0.00 | **22.6** | **40.2** | 0.17 |
+
+The last three columns are how far a curve strays past the level the signal really has, as a
+percentage of the amplitude. The hold row is the ideal hold sampled at points; the old code's
+figures above are larger because a column straddling two samples was drawn as the earlier one.
+
+- **Linear and the monotone cubics** (PCHIP, Steffen) never overshoot but flatten every peak, and
+  are no better than linear at 12.9 samples a cycle: 2.75 to 2.95 %, about 2 px of a 70 px lane.
+- **Catmull-Rom** is the most accurate of the local curves and rings 14.8 % of the amplitude past
+  every square wave, and 7.4 % of the height of a step: a switch closing would draw with an
+  overshoot the circuit does not have.
+- **Lanczos and a natural spline** are more accurate still on a sine, but are wide or global
+  (the spline solves a system over the whole window) and ring 22 to 24 %.
+- **Akima** dips 1.67 % below zero on a rectified sine. **Modified Akima** takes the slope at a sample
+  as a weighted mean of the two chords beside it, each weighted by how much the chords beyond it
+  disagree plus half the magnitude of their sum, so the weights vanish only where every chord is
+  flat, and is the trade taken: 0.72 % at 12.9 samples a cycle, four times better than linear,
+  and no overshoot at all on a plateau of three or more samples, a step or a rectified sine.
+
+Its known failure is a plateau of exactly two samples, drawn 25 % too tall. To any local rule that
+is indistinguishable from a sine peak that fell between two samples (a square wave at 4 samples a
+cycle and a sine at 4 samples a cycle sampled at 45 degrees are the same four numbers), so it is a
+limit of the information rather than of the curve. A genuine edge sampled sparsely is drawn as a
+ramp one sample wide, because that is all the samples say about where between them it fell.
+
+**The seam between the two regimes.** No gap and no cliff: on 256 samples at 12.9 samples a cycle,
+with the plot width swept so that a column holds 0.5 to 2 samples, every column touches its
+neighbours and the tallest column is 0.96 to 1.01 times the steepest the wave gets across one
+column (the old code was 1.98 times at 0.5 samples a column). There is a small step in *peak
+height*. A column that wholly contains a segment does not
+search inside it, because that would cost a slope and a root per sample on a ring of 4096, so a
+peak that fell between two samples is under-reached by up to 1 - cos(pi / N) of the amplitude
+(2.95 % at 12.9 samples a cycle, 0.19 % at 51). Measured across the seam: 0.72 % just on the sparse
+side, 2.78 % just on the dense side at 12.9; 0.13 % and 0.22 % at 32; 0.055 % and 0.17 % at 51.
+The old code drew the same sample envelope on the dense side, with the same under-reach; the step
+is only visible now because the sparse side got better.
+
+**What this cost.** Timed headlessly with array-backed samples and a warm JIT, per channel per
+frame: 5.0 microseconds for 32 samples, 9.2 for 103 and 28.3 for 4096, against 1.0, 0.65 and 3.3
+for the old loop. Four channels on a full ring is about 0.11 ms a frame. That is not a
+measurement of the client, whose reads go through `MultimeterTrace.visible` and which I have not
+run.
+
+**What is not verified in game.** `MultimeterScreen` needs Minecraft and cannot be run by the test
+suite, so everything after the numbers `TraceReconstruction.columns` returns is unverified: that the
+spans are filled where the numbers say, how the result looks at the real GUI scale and at a
+fractional one, and whether rounding to whole pixel rows leaves a visible seam anywhere. The
+arithmetic is covered (26 tests, each seen failing against a deliberate break). The block entity,
+the sampler's attachment to an island, the packet and the item are unchanged and equally out of
+the suite's reach. RMS, phasors, frequency and the protocol were not touched.
+
 ### 5.3 Phasors, impedance and Smith-chart data
 
 Because the meter now captures the waveform, a single-bin transform over it yields phase and
