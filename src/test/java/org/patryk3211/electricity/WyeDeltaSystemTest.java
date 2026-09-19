@@ -443,7 +443,10 @@ public class WyeDeltaSystemTest extends TestHelper {
     @Test
     void aFloatingWyeMachineIntoAWyeLoadHasRootThreeLineVoltage() {
         // The case the older files could not have caught: no neutral wire, no ground, no source
-        // holding a node at zero. The only thing keeping the matrix solvable is G_MIN's shunt.
+        // holding a node at zero. This test does not need G_MIN's shunt: with the shunt taken out a
+        // floating wye still solves, its star point merely wanders. The shunt is what a floating
+        // delta and the 1 ohm unequal-conductor case need, and those tests guard it; where it puts
+        // zero volts is guarded by whichNodeTheSolverAnchors... and the unbalanced-load tests.
         var bench = new Bench(false, RPM, SUB_TICKS);
         var machine = wye(bench, true);
         var feeders = feeders(bench, machine.lines, 0.01);
@@ -566,24 +569,37 @@ public class WyeDeltaSystemTest extends TestHelper {
         // No load, no ground. Wired right the three EMFs round the loop sum to zero at every
         // instant; with the middle winding turned round (300 rather than 120) the loop carries 2E
         // through three armature impedances, the same figure ThreePhaseAlternatorTest derives for a
-        // grounded delta. Repeated here because a floating delta is the shape a player builds first.
+        // grounded delta. Repeated here because a floating delta is the shape a player builds first,
+        // and because it is the circuit that needs G_MIN's shunt: with the shunt taken out the matrix
+        // is singular and the reversed loop reads 0 A instead of 23.6.
+        //
+        // The loop's time constant is L/R = 2 s, so a window opened after the usual two seconds still
+        // holds a decaying DC offset (mean -4.0 A, RMS 1.7 % high at 8 sub-ticks when measured) and
+        // would be measuring that offset, not the model. Ten more seconds, and 32 sub-ticks, where
+        // the theta-method is within 0.02 % of the paper figure (0.2 % at 8, 0.06 % at 16).
         double[] rms = new double[2];
+        double[] dc = new double[2];
         double[] reversedAngle = { 120, 300 };
         for(int variant = 0; variant < 2; ++variant) {
-            var bench = new Bench(false, RPM, SUB_TICKS);
+            var bench = new Bench(false, RPM, DELTA_SUB_TICKS);
             var machine = delta(bench, 0, reversedAngle[variant], 240);
             bench.settle();
+            bench.ticks(bench.ticksFor(40));
             var s = bench.record(CYCLES, machine.windings[0]::getCurrent);
             rms[variant] = PhasorFit.rms(s[0]);
+            dc[variant] = mean(s[0]);
         }
         Assertions.assertEquals(0, rms[0], 1e-9, "A correctly wired delta should circulate nothing, got " + rms[0]);
 
         var omega = 2 * Math.PI * RPM / 60;
         var impedance = Math.hypot(3 * WINDING_RESISTANCE, 3 * omega * ARMATURE_L);
         var expected = 2 * E / impedance / Math.sqrt(2);
-        Assertions.assertEquals(expected, rms[1], expected * 0.02,
-                "A reversed delta winding should drive 2E / 3Z round the loop, " + String.format("%.1f", expected)
-                        + " A RMS, got " + String.format("%.1f", rms[1]));
+        System.out.printf("reversed delta at %d sub-ticks: %.5f A RMS against %.5f on paper (%.4f %%), mean %.4f A%n",
+                DELTA_SUB_TICKS, rms[1], expected, 100 * (rms[1] / expected - 1), dc[1]);
+        Assertions.assertEquals(expected, rms[1], expected * 0.001,
+                "A reversed delta winding should drive 2E / 3Z round the loop, " + String.format("%.2f", expected)
+                        + " A RMS, got " + String.format("%.2f", rms[1]));
+        Assertions.assertEquals(0, dc[1], 0.1, "The DC offset should have died away, or the RMS is not the model's");
     }
 
     // ------------------------------------------------------------------------------------------
@@ -600,15 +616,25 @@ public class WyeDeltaSystemTest extends TestHelper {
         /** A working 50 ohm rod at each star point, no neutral wire. */
         RODS_BOTH_ENDS,
         /** A rod on the star point that is not connected to earth: too few blocks round it. */
-        DEAD_ROD
+        DEAD_ROD,
+        /**
+         * One working rod on the LOAD's star point. With nothing grounded the solver anchors the
+         * machine's star point, so only a rod placed on the other side can be told from no rod.
+         */
+        ROD_AT_LOAD,
+        /** A rod that is not connected to earth, on the load's star point. */
+        DEAD_ROD_AT_LOAD
     }
+
+    private static final int DELTA_SUB_TICKS = 32;
 
     private static final double NEUTRAL_WIRE_OHMS = 0.01;
     private static final double ROD_OHMS = 50;
 
     /** What a wye machine into a 10, 100, 100 ohm wye load does under each way of earthing it. */
     private record Unbalanced(double[] loadVolts, C star, C emf, double rodPeak, double neutralDrift,
-                              C[] expected, C expectedStar, boolean converged) { }
+                              C[] expected, C expectedStar, boolean converged, double starToGround,
+                              double neutralRms) { }
 
     private static Unbalanced unbalanced(Earth earth) {
         return unbalanced(earth, ROD_OHMS);
@@ -634,6 +660,8 @@ public class WyeDeltaSystemTest extends TestHelper {
                 neutralConductance = 1 / (2 * rodOhms);
             }
             case DEAD_ROD -> rod = rod(bench, machine.neutral, 5, false);
+            case ROD_AT_LOAD -> rod = rod(bench, load.star, 5, true);
+            case DEAD_ROD_AT_LOAD -> rod = rod(bench, load.star, 5, false);
             default -> { }
         }
         bench.settle();
@@ -646,7 +674,8 @@ public class WyeDeltaSystemTest extends TestHelper {
                 () -> load.wires[2].current() * ohms[2],
                 across(load.star, machine.neutral),
                 () -> rodCurrent == null ? 0.0 : rodCurrent.current(),
-                volts(machine.neutral));
+                volts(machine.neutral),
+                volts(load.star));
 
         var emf = phasor(fit(s[0], CYCLES));
         var zw = windingImpedance(RPM);
@@ -670,7 +699,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         var loadVolts = new double[]{ fit(s[1], CYCLES).magnitude(), fit(s[2], CYCLES).magnitude(),
                 fit(s[3], CYCLES).magnitude() };
         return new Unbalanced(loadVolts, phasor(fit(s[4], CYCLES)), emf, fit(s[5], CYCLES).magnitude(),
-                maxAbs(s[6]), expected, star, bench.net.network.isConverged());
+                maxAbs(s[6]), expected, star, bench.net.network.isConverged(), maxAbs(s[7]), PhasorFit.rms(s[6]));
     }
 
     private static void assertMatchesPaper(String what, Unbalanced result) {
@@ -721,6 +750,21 @@ public class WyeDeltaSystemTest extends TestHelper {
                     "A single rod should not change phase " + (k + 1));
         Assertions.assertEquals(0, grounded.rodPeak, 1e-9, "and should carry no current, got " + grounded.rodPeak);
         Assertions.assertEquals(0, grounded.neutralDrift, 1e-6, "It holds the star point at earth potential");
+
+        // A rod on the machine's star point cannot be told from no rod, because with nothing
+        // grounded the solver anchors that very node. A rod on the LOAD's star point can: it is
+        // where zero volts goes, and the machine's star point takes the whole offset instead.
+        var atLoad = unbalanced(Earth.ROD_AT_LOAD);
+        assertMatchesPaper("rod at the load", atLoad);
+        for(int k = 0; k < 3; ++k)
+            Assertions.assertEquals(floating.loadVolts[k], atLoad.loadVolts[k], E * 1e-6,
+                    "A rod on the load's star point should not change phase " + (k + 1) + " either");
+        Assertions.assertEquals(0, atLoad.rodPeak, 1e-9, "and should carry no current, got " + atLoad.rodPeak);
+        Assertions.assertEquals(0, atLoad.starToGround, 1e-6, "It holds the load's star point at earth potential");
+        Assertions.assertEquals(floating.star.abs(), atLoad.neutralDrift, E * 1e-3,
+                "so the machine's star point sits the whole star shift off earth, got " + atLoad.neutralDrift);
+        Assertions.assertEquals(floating.star.abs(), floating.starToGround, E * 1e-3,
+                "where with no rod it is the load's star point that sits that far off");
     }
 
     @Test
@@ -733,6 +777,8 @@ public class WyeDeltaSystemTest extends TestHelper {
         var floating = unbalanced(Earth.FLOATING);
         var earthed = unbalanced(Earth.RODS_BOTH_ENDS);
         assertMatchesPaper("rods at both ends", earthed);
+        System.out.printf("two %.0f ohm rods: heavy phase %.4f E, star point %.4f E, rod current %.4f A peak%n", ROD_OHMS,
+                earthed.loadVolts[0] / E, earthed.star.abs() / E, earthed.rodPeak);
         Assertions.assertTrue(earthed.star.abs() < floating.star.abs(),
                 "The earth path should pull the star point back, got " + earthed.star.abs()
                         + " against " + floating.star.abs());
@@ -757,8 +803,13 @@ public class WyeDeltaSystemTest extends TestHelper {
         var wire = unbalanced(Earth.NEUTRAL_WIRE);
         assertMatchesPaper("1 ohm rods", best);
         assertMatchesPaper("5000 ohm rods", worst);
-        System.out.printf("heavy phase over E: floating %.4f, 1 ohm rods %.4f, 5000 ohm rods %.4f, neutral wire %.4f%n",
-                floating.loadVolts[0] / E, best.loadVolts[0] / E, worst.loadVolts[0] / E, wire.loadVolts[0] / E);
+        var middle = unbalanced(Earth.RODS_BOTH_ENDS, 50);
+        System.out.printf("heavy phase over E: floating %.4f, 1 ohm rods %.4f, 50 ohm rods %.4f, 5000 ohm rods %.4f, neutral wire %.4f%n",
+                floating.loadVolts[0] / E, best.loadVolts[0] / E, middle.loadVolts[0] / E, worst.loadVolts[0] / E,
+                wire.loadVolts[0] / E);
+        // The potential the rod at the machine's star point reaches, RMS: what a player would meet.
+        System.out.printf("rod potential RMS: 1 ohm %.2f V, 50 ohm %.2f V, 5000 ohm %.2f V (machine %.2f V peak)%n",
+                best.neutralRms, middle.neutralRms, worst.neutralRms, E);
         Assertions.assertTrue(best.loadVolts[0] < 0.9 * E,
                 "Two 1 ohm rods should still leave the heavy phase well under its voltage, got " + best.loadVolts[0] / E + " E");
         Assertions.assertTrue(best.loadVolts[0] > 2 * floating.loadVolts[0],
@@ -780,7 +831,23 @@ public class WyeDeltaSystemTest extends TestHelper {
         assertMatchesPaper("dead rod", dead);
         for(int k = 0; k < 3; ++k)
             Assertions.assertEquals(floating.loadVolts[k], dead.loadVolts[k], E * 1e-4);
+        System.out.printf("dead rod on the machine's star point: drifts %.3g V%n", dead.neutralDrift);
         Assertions.assertEquals(0, dead.neutralDrift, 1e-3, "The star point should not wander, got " + dead.neutralDrift);
+
+        // That the rod counts as ground, and so switches G_MIN's anchor off, is only visible when it
+        // is NOT on the node the anchor would have chosen. On the load's star point the load star is
+        // the reference (through the leak) and it is the machine's star point that sits off earth;
+        // if the rod did not count, the anchor would engage and it would be the other way round.
+        var atLoad = unbalanced(Earth.DEAD_ROD_AT_LOAD);
+        assertMatchesPaper("dead rod at the load", atLoad);
+        for(int k = 0; k < 3; ++k)
+            Assertions.assertEquals(floating.loadVolts[k], atLoad.loadVolts[k], E * 1e-4);
+        System.out.printf("dead rod on the load's star point: load star drifts %.3g V, machine star %.4f of the shift%n",
+                atLoad.starToGround, atLoad.neutralDrift / floating.star.abs());
+        Assertions.assertEquals(0, atLoad.starToGround, 1e-3,
+                "The dead rod should be the island's reference, got " + atLoad.starToGround + " V on the load star");
+        Assertions.assertEquals(floating.star.abs(), atLoad.neutralDrift, E * 1e-3,
+                "and the machine's star point should sit the whole star shift off it, got " + atLoad.neutralDrift);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -789,17 +856,20 @@ public class WyeDeltaSystemTest extends TestHelper {
 
     /** What a balanced floating wye reports, for comparing runs that differ in one setting. */
     private record Balanced(PhasorFit.Phasor phase, PhasorFit.Phasor line, PhasorFit.Phasor[] current,
-                            double currentSum, double expectedCurrent, boolean converged) { }
+                            double currentSum, double expectedCurrent, boolean converged, int subTicks) { }
 
     /**
      * Floating wye machine into a 2 ohm wye load through 10 milliohm feeders, at a shaft speed, pole
-     * count and sub-tick rate. The rate is the caller's, so a test can ask for the one the game
-     * would choose or for one it would not.
+     * count and sub-tick rate. The rate is the caller's, so a test can ask for one the game would
+     * not choose; with {@code subTicks <= 0} it is what the winding itself asks for, which is what
+     * the game does.
      */
     private static Balanced balancedWye(float rpm, int polePairs, int subTicks) {
-        var bench = new Bench(false, rpm, subTicks);
+        var bench = new Bench(false, rpm, Math.max(subTicks, 1));
         bench.polePairs = polePairs;
         var machine = wye(bench, true);
+        if(subTicks <= 0)
+            bench.subTicks = machine.windings[0].requiredSubTicks();
         var feeders = feeders(bench, machine.lines, 0.01);
         wyeLoad(bench, feeders.far, 2);
         bench.settle();
@@ -813,7 +883,7 @@ public class WyeDeltaSystemTest extends TestHelper {
         var current = new PhasorFit.Phasor[]{ fit(s[2], cycles), fit(s[3], cycles), fit(s[4], cycles) };
         var expected = peak(rpm) / windingImpedance(rpm, polePairs).plus(C.real(2.01)).abs();
         return new Balanced(fit(s[0], cycles), fit(s[1], cycles), current, maxAbs(s[5]), expected,
-                bench.net.network.isConverged());
+                bench.net.network.isConverged(), bench.subTicks);
     }
 
     private static void assertBalancedWye(String what, Balanced r, double currentTolerance) {
@@ -830,11 +900,21 @@ public class WyeDeltaSystemTest extends TestHelper {
     @Test
     void theSameFloatingWyeAtEverySubTickRateTheGameCanChoose() {
         // 4 Hz is 40 samples a cycle at 8 sub-ticks and 320 at 64. The answer should not depend on
-        // which, beyond the integration error of the coarser one.
-        for(var rate : new int[]{ 8, 16, 32, 64 }) {
-            var r = balancedWye(RPM, 1, rate);
-            System.out.printf("rate %d: phase %.4f, current %.5f expected %.5f%n", rate, r.phase.magnitude(), r.current[0].magnitude(), r.expectedCurrent);
-            assertBalancedWye(rate + " sub-ticks", r, 0.01);
+        // which, beyond the integration error of the coarser one, and that error should shrink as
+        // the rate rises. Measured, it is -0.196, -0.095, -0.047 and -0.023 %; each rate is allowed
+        // about twice its own, so a model error of a fifth of a percent no longer hides in the slack.
+        var rates = new int[]{ 8, 16, 32, 64 };
+        var tolerance = new double[]{ 0.004, 0.002, 0.001, 0.0005 };
+        var previous = Double.MAX_VALUE;
+        for(int i = 0; i < rates.length; ++i) {
+            var r = balancedWye(RPM, 1, rates[i]);
+            var error = r.current[0].magnitude() / r.expectedCurrent - 1;
+            System.out.printf("rate %d: phase %.4f, current %.5f expected %.5f (%.4f %%)%n", rates[i], r.phase.magnitude(),
+                    r.current[0].magnitude(), r.expectedCurrent, 100 * error);
+            assertBalancedWye(rates[i] + " sub-ticks", r, tolerance[i]);
+            Assertions.assertTrue(Math.abs(error) < previous,
+                    "Doubling the rate to " + rates[i] + " should shrink the error, got " + error + " after " + previous);
+            previous = Math.abs(error);
         }
     }
 
@@ -842,16 +922,25 @@ public class WyeDeltaSystemTest extends TestHelper {
     void frequenciesThatDivideTwentyHertzAndOnesThatDoNot() {
         // 20 Hz and 10 Hz land on the same point of the waveform every world tick, which is what
         // broke every once-per-tick sampler in this mod. 4.5 Hz and 36 Hz do not. Each is stepped at
-        // the rate the game would ask of it, at the shipped 32 samples a cycle and a cap of 64.
+        // the rate its own winding asks for, at the shipped 32 samples a cycle and a cap of 64.
+        //
+        // That rate is not always what AcSampling.subTicksFor gives for the exact frequency. 20 Hz and
+        // 10 Hz sit exactly on a power-of-two boundary (32 * 20 * 0.05 = 32), the shaft speed reaches
+        // the winding as a float, and the float lands a hair over: the winding asks for 64 and 32
+        // where the exact arithmetic says 32 and 16. It errs upward, so it is only a higher rate.
         var cases = new double[][]{ { 270, 1 }, { 240, 5 }, { 150, 4 }, { 270, 8 } };
         for(var c : cases) {
             var rpm = (float) c[0];
             var pairs = (int) c[1];
             var hertz = rpm * pairs / 60.0;
-            var rate = AcSampling.subTicksFor(hertz, 32, 64);
-            var r = balancedWye(rpm, pairs, rate);
-            System.out.printf("%.1f Hz at %d sub-ticks: current %.5f expected %.5f%n", hertz, rate, r.current[0].magnitude(), r.expectedCurrent);
-            assertBalancedWye(hertz + " Hz", r, 0.02);
+            var exact = AcSampling.subTicksFor(hertz, 32, 64);
+            var r = balancedWye(rpm, pairs, 0);
+            System.out.printf("%.1f Hz: winding asks %d sub-ticks (exact arithmetic %d): current %.5f expected %.5f (%.4f %%)%n",
+                    hertz, r.subTicks, exact, r.current[0].magnitude(), r.expectedCurrent,
+                    100 * (r.current[0].magnitude() / r.expectedCurrent - 1));
+            Assertions.assertTrue(r.subTicks >= exact && r.subTicks <= 2 * exact,
+                    hertz + " Hz: the winding should ask for " + exact + " sub-ticks or the next step up, asked " + r.subTicks);
+            assertBalancedWye(hertz + " Hz", r, 0.01);
         }
     }
 
@@ -893,6 +982,8 @@ public class WyeDeltaSystemTest extends TestHelper {
         for(int t = 0; t < rampTicks + 40; ++t) {
             bench.shaft.rpm = RPM * Math.min(1f, (float) t / rampTicks);
             bench.subTicks = Math.max(1, machine.windings[0].requiredSubTicks());
+            if(t == 0)
+                Assertions.assertEquals(1, bench.subTicks, "A machine at standstill should ask for a single sub-tick");
             bench.net.network.prepare(bench.subTicks);
             for(int sub = 0; sub < bench.subTicks; ++sub) {
                 bench.net.network.singleTick();
@@ -905,6 +996,8 @@ public class WyeDeltaSystemTest extends TestHelper {
             }
             bench.shaft.advance();
         }
+        Assertions.assertEquals(AcSampling.subTicksFor(bench.frequency(), 32, 64), bench.subTicks,
+                "At full speed the winding should ask for the rate the frequency needs");
         System.out.printf("ramp: worst phase %.4f of E %.4f, worst star %.3g%n", worstPhase, E, worstStar);
         Assertions.assertTrue(worstPhase <= E * 1.001,
                 "A winding's terminal voltage cannot exceed the EMF behind it, got " + worstPhase + " V against " + E);
@@ -938,6 +1031,11 @@ public class WyeDeltaSystemTest extends TestHelper {
                 + " before " + before.magnitude + " neutral sum " + during.neutralSum);
         Assertions.assertTrue(Math.abs(during.lineMagnitudes[0] - during.lineMagnitudes[2]) > 0.2 * before.magnitude,
                 "Line 1 should feel the new load, and line 3 should not: " + java.util.Arrays.toString(during.lineMagnitudes));
+        // Line 3's current is set by its own branch: a load between lines 1 and 2 is a dipole that
+        // the symmetric star leaves alone. Hung from line 1 to the star point instead, it would move
+        // the star and change line 3 as well, so this is what tells the two apart.
+        Assertions.assertEquals(before.lineMagnitudes[2], during.lineMagnitudes[2], before.magnitude * 1e-6,
+                "Line 3 should not feel a load hung between lines 1 and 2");
         Assertions.assertTrue(during.neutralSum < 1e-6 * before.magnitude + 1e-9,
                 "Three wires and no neutral still sum to zero with the extra load on, got " + during.neutralSum);
 
