@@ -611,6 +611,10 @@ public class WyeDeltaSystemTest extends TestHelper {
                               C[] expected, C expectedStar, boolean converged) { }
 
     private static Unbalanced unbalanced(Earth earth) {
+        return unbalanced(earth, ROD_OHMS);
+    }
+
+    private static Unbalanced unbalanced(Earth earth, double rodOhms) {
         var bench = new Bench(false, RPM, SUB_TICKS);
         var machine = wye(bench, true);
         var feeders = feeders(bench, machine.lines, 0.01);
@@ -625,9 +629,9 @@ public class WyeDeltaSystemTest extends TestHelper {
             }
             case ROD_AT_SOURCE -> rod = rod(bench, machine.neutral, 5, true);
             case RODS_BOTH_ENDS -> {
-                rod = rod(bench, machine.neutral, ROD_OHMS, true);
-                rod(bench, load.star, ROD_OHMS, true);
-                neutralConductance = 1 / (2 * ROD_OHMS);
+                rod = rod(bench, machine.neutral, rodOhms, true);
+                rod(bench, load.star, rodOhms, true);
+                neutralConductance = 1 / (2 * rodOhms);
             }
             case DEAD_ROD -> rod = rod(bench, machine.neutral, 5, false);
             default -> { }
@@ -737,6 +741,31 @@ public class WyeDeltaSystemTest extends TestHelper {
         // The rod at the source carries the whole return current: star shift over the 100 ohm loop.
         Assertions.assertEquals(earthed.expectedStar.abs() / (2 * ROD_OHMS), earthed.rodPeak,
                 earthed.rodPeak * 0.02, "The neutral current through the rods");
+    }
+
+    @Test
+    void noPairOfRodsTheGameCanBuildIsAsGoodAsANeutralWire() {
+        // groundingLowestResistance and groundingHighestResistance are 1 and 5000 ohm, so the two rods
+        // of a wye grounded at both ends return the neutral current through 2 to 10000 ohm. Even at
+        // the best that is not a neutral: the heavy phase of a 10/100/100 ohm load still sits about
+        // fifteen percent under its voltage, where a neutral wire holds it to within a percent. At the
+        // worst the rods do nothing measurable. Volts are shown over the phase EMF, so 1.0 would be a
+        // neutral that held.
+        var floating = unbalanced(Earth.FLOATING);
+        var best = unbalanced(Earth.RODS_BOTH_ENDS, 1);
+        var worst = unbalanced(Earth.RODS_BOTH_ENDS, 5000);
+        var wire = unbalanced(Earth.NEUTRAL_WIRE);
+        assertMatchesPaper("1 ohm rods", best);
+        assertMatchesPaper("5000 ohm rods", worst);
+        System.out.printf("heavy phase over E: floating %.4f, 1 ohm rods %.4f, 5000 ohm rods %.4f, neutral wire %.4f%n",
+                floating.loadVolts[0] / E, best.loadVolts[0] / E, worst.loadVolts[0] / E, wire.loadVolts[0] / E);
+        Assertions.assertTrue(best.loadVolts[0] < 0.9 * E,
+                "Two 1 ohm rods should still leave the heavy phase well under its voltage, got " + best.loadVolts[0] / E + " E");
+        Assertions.assertTrue(best.loadVolts[0] > 2 * floating.loadVolts[0],
+                "but they should help a great deal, got " + best.loadVolts[0] / E + " E against " + floating.loadVolts[0] / E);
+        Assertions.assertEquals(floating.loadVolts[0], worst.loadVolts[0], 0.01 * floating.loadVolts[0],
+                "Two 5000 ohm rods should be within one percent of no neutral at all");
+        Assertions.assertTrue(wire.loadVolts[0] > 0.98 * E, "A neutral wire holds it");
     }
 
     @Test
