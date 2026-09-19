@@ -104,8 +104,9 @@ public class MultimeterTrace {
      * Shrinking the window only helps when there are samples to spare. On the 20 Hz fallback a
      * 47 Hz signal is aliased beyond recovery anyway, and a window sized to eight of its apparent
      * cycles would hold three samples — three points stretched across three hundred pixels, which
-     * is worse than the long window it replaced. Below this floor the timebase stops shrinking and
-     * the trace shows the envelope instead, which is all that rate can honestly support.
+     * is worse than the long window it replaced. Below this floor the timebase stops shrinking, so
+     * the plot always has at least this many samples to draw a curve through, which is all that
+     * rate can honestly support.
      */
     private static final int MIN_PLOT_SAMPLES = 32;
 
