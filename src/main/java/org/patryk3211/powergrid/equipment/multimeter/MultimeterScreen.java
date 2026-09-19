@@ -161,6 +161,10 @@ public class MultimeterScreen extends Screen {
     /** Cycles the automatic timebase tries to fit across the plot. */
     private static final float AUTO_CYCLES = 8;
 
+    /** Per-column extremes of the channel being drawn, kept between frames rather than reallocated. */
+    private float[] columnLow = new float[0];
+    private float[] columnHigh = new float[0];
+
     public MultimeterScreen() {
         super(Component.empty());
     }
@@ -619,11 +623,17 @@ public class MultimeterScreen extends Screen {
      * offset of a rectified signal immediately visible.
      *
      * <h2>One column at a time</h2>
-     * The window can hold several thousand samples against a plot a few hundred pixels wide, so
-     * the samples falling in each pixel column are reduced to their minimum and maximum and drawn
-     * as a single vertical span. That is how scope software renders — it shows the envelope of a
-     * waveform too fast to draw point by point, instead of an arbitrary one of the samples — and
-     * it also keeps the cost proportional to the plot rather than to the buffer.
+     * {@link TraceReconstruction} decides what each pixel column shows, and this method only turns
+     * that into a vertical span per column. The window can hold several thousand samples against a
+     * plot a few hundred pixels wide, in which case a column shows the envelope of the samples
+     * inside it, which is how scope software renders a waveform too fast to plot point by point.
+     * It can equally hold fewer samples than there are pixels, and then a column shows the part of
+     * a curve through the samples that falls inside it.
+     * <p>
+     * That second case is why this is not a loop over the samples. It used to be, with the rule
+     * that a column takes at least one sample, and a column narrower than a sample therefore
+     * repeated the nearest one: a sine sampled 12.9 times a cycle came out as a staircase, which
+     * reads as a square wave. See {@code docs/AC.md}, 5.2.
      */
     private void drawTrace(GuiGraphics graphics, int channel, float range,
                            int plotLeft, int plotTop, int plotRight, int plotBottom) {
@@ -638,45 +648,25 @@ public class MultimeterScreen extends Screen {
         var colour = MultimeterTrace.colour(channel);
 
         // A window that is not full yet starts part-way across rather than stretching a short
-        // history over the whole plot, so the trace grows in from the right as it fills.
+        // history over the whole plot, so the trace grows in from the right as it fills. The
+        // reconstruction owns that layout too, and returns the column it starts at.
         var target = MultimeterTrace.targetSamples();
-        var firstColumn = (target - visible) * plotWidth / target;
+        if(columnLow.length < plotWidth) {
+            columnLow = new float[plotWidth];
+            columnHigh = new float[plotWidth];
+        }
+        var firstColumn = TraceReconstruction.columns(i -> MultimeterTrace.visible(channel, i),
+                visible, target, plotWidth, columnLow, columnHigh);
 
-        var previousY = Integer.MIN_VALUE;
         for(int px = firstColumn; px < plotWidth; ++px) {
-            // Samples of the visible window that land in this pixel column.
-            var from = (px * target / plotWidth) - (target - visible);
-            var to = (((px + 1) * target) / plotWidth) - (target - visible);
-            if(to <= from)
-                to = from + 1;
-            if(from < 0)
-                from = 0;
-            if(to > visible)
-                to = visible;
-            if(from >= to)
-                continue;
+            var yHigh = zeroY - Math.round(Mth.clamp(columnHigh[px] / range, -1f, 1f) * half);
+            var yLow = zeroY - Math.round(Mth.clamp(columnLow[px] / range, -1f, 1f) * half);
 
-            var min = Float.POSITIVE_INFINITY;
-            var max = Float.NEGATIVE_INFINITY;
-            for(int i = from; i < to; ++i) {
-                var v = MultimeterTrace.visible(channel, i);
-                min = Math.min(min, v);
-                max = Math.max(max, v);
-            }
-
-            var yHigh = zeroY - Math.round(Mth.clamp(max / range, -1f, 1f) * half);
-            var yLow = zeroY - Math.round(Mth.clamp(min / range, -1f, 1f) * half);
-
-            // Join to the previous column so a steep edge is a continuous line rather than two
-            // disconnected marks.
-            if(previousY != Integer.MIN_VALUE) {
-                yHigh = Math.min(yHigh, previousY);
-                yLow = Math.max(yLow, previousY);
-            }
+            // No join to the previous column is needed: each column already includes the curve's
+            // value at both its edges, and the edge it shares with its neighbour is the very same
+            // number, so a steep edge is a continuous run of spans.
             var x = plotLeft + px;
             graphics.fill(x, yHigh, x + 1, yLow + 1, colour);
-            previousY = zeroY - Math.round(Mth.clamp(
-                    MultimeterTrace.visible(channel, to - 1) / range, -1f, 1f) * half);
         }
     }
 
