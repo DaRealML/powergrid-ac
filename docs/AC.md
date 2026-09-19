@@ -1274,8 +1274,9 @@ for the review of this change, with a second and independent program (Python and
 64 samples, the curve evaluated every 1/16 of a sample over the interior (samples 4 to 59), worst
 of 720 phases of the sample grid against the wave, error as a percentage of the amplitude. The
 first throwaway agreed with it on linear, Catmull-Rom and the chosen curve, and differed in places
-on classic Akima, Lanczos-3 and the spline; it printed PCHIP and Steffen as 2.75 % at 12.9 samples
-a cycle, which a 90-phase grid that missed the symmetric alignment had produced (see the bullets).
+on classic Akima, Lanczos-3 and the spline. It printed PCHIP and Steffen as 2.75 % at 12.9 samples
+a cycle. This program does not reproduce that (2.94 % on a 90-phase grid, 2.95 % on 720), the
+bullets below show it cannot be right, and why the first program got 2.75 is not known.
 The kept tests pin ceilings a little above the chosen curve's figures, not the printed values, and
 pin the comparisons that decided it: at least three times better than linear on a sine, and within
 1e-4 of the plateau on a square wave where Catmull-Rom is over 10 % past it. Table 1 above is a
