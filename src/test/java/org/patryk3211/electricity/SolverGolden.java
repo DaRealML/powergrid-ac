@@ -950,7 +950,7 @@ public final class SolverGolden {
 
     // ---- transformers, stamped as ThreePhaseTransmissionTest.transformer does
 
-    private static void transformer(TestHelper.Network net, int primaryTurns, int secondaryTurns,
+    static void transformer(TestHelper.Network net, int primaryTurns, int secondaryTurns,
                                     IElectricNode p1, IElectricNode p2, IElectricNode s1, IElectricNode s2) {
         final double coreAl = 1.5;
         final double coreK = 0.9999f;
