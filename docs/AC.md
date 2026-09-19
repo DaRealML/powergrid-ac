@@ -1181,7 +1181,8 @@ that column, as a percentage of the amplitude, for a clean sine over a 32-sample
 middle column credits the old drawing with a half-sample shift, which nothing on the plot could
 reveal and which is the most flattering way to compare; the right-hand one takes each sample as
 taken at the start of the cell it was held across. Worst of 15 phases of the sample grid against
-the wave.
+the wave. The last column is the interior of the plot, the columns with three or more samples on
+each side; the two ends are worse, and are measured after the table.
 
 | samples a cycle | old, shift credited | old, not credited | now |
 |---|---|---|---|
@@ -1197,6 +1198,32 @@ as floors and `aSineIsReconstructedWithinTheMeasuredBound` pins the last as ceil
 this is arithmetic from the layout constants, not something seen in game: a one-channel plot is 142
 px tall, so full scale is 70 px and 26.8 % is about 19 px; four stacked channels get a lane 28 px
 tall, 13 px to full scale, so about 3.5 px.
+
+**The two ends of the plot.** The figures above leave out the columns near the ends of the window,
+and the ends are where this drawing is weakest. Measured on the real class over 360 phases and
+four windows (32, 103 and 256 samples, and 45 of 103), there are two zones:
+
+- *Within three samples of an end,* the curve has neighbours on one side only and its end slope is
+  the end chord, so a peak that falls across the last two samples is under-reached by
+  1 - cos(pi / N) of the amplitude. Worst error: 29.3 % at 4 samples a cycle, 13.4 at 6, 7.55 at 8,
+  2.95 at 12.9, 1.91 at 16, 0.48 at 32, 0.19 at 51.
+- *Beyond the centre of the first and of the last sample* there is nothing to reconstruct from, so
+  the half cell there **holds** that sample: the drawing this change removed, in a smaller place.
+  Its worst error is 2 sin(pi / 2N) of the amplitude, and the measurement equals it: 24.3 % at 12.9
+  samples a cycle (0.2429), 39.0 % at 8, 9.8 % at 32. It is half a cell wide at each end,
+  0.5 x 304 / N columns: 4.75 columns at each end of a 32-sample window, 1.5 at 103, 0.6 at 256. In
+  pixels that is about 17 px (24.3 % of 70) over 4.75 columns at the tester's settings, and about 3
+  px in a 13 px lane. The right-hand stub is the live edge of the scope.
+
+Extrapolating past the end centres would shrink the stub, and was tried as a mutation: it draws
+ears on a square wave, 36 % of the amplitude past the plateau at 8 samples a cycle over 32 samples
+(`aSquareWaveIsNeverDrawnPastItsPlateaus` fails on it), and the newest sample is the last thing
+known about the signal, so the ends stay a hold. Ending the trace at the first and
+last sample centres instead would leave it 4.75 columns short of the plot's edges at 32 samples,
+which changes a layout the old drawing filled edge to edge; that was not done. The two zones are
+pinned by `theCurveWithinThreeSamplesOfAnEndIsBoundedToo` and by
+`theHalfCellBeyondTheOutermostSamplesIsAHoldOfKnownSize`, which also fails if the stub gets
+*better* than a hold, so that improving it forces this section to be rewritten.
 
 **Where the data path stands.** Two questions: does the client ever receive a held sample, and
 which situations are the renderer's fault. Measured with a throwaway probe that built an AC island
@@ -1238,43 +1265,61 @@ turns that into rectangles. Where a column holds less than a sample it draws the
 curve through the samples that falls inside it. Where a column holds more it draws the same
 envelope as before, plus the curve's value at each of its edges. Each column includes the value at
 both of its edges and a shared edge is one number, so neighbouring columns always touch and a steep
-edge is a continuous run.
+edge is a continuous run. The exception is the two ends of the plot, which are worse (above).
 
 The curve was chosen by measurement. Candidates were compared on a sine (worst error as a
-percentage of amplitude, 90 phases), on a square wave with an ideal edge, a step and a rectified
-sine, where an interpolator must not draw a level the signal never reached. Measured with a
-throwaway program, not kept; the figures for the chosen curve, linear and Catmull-Rom are
-re-measured by the kept tests.
+percentage of amplitude), on a square wave with an ideal edge, a step and a rectified sine, where
+an interpolator must not draw a level the signal never reached. The table below was measured again
+for the review of this change, with a second and independent program (Python and numpy; not kept):
+64 samples, the curve evaluated every 1/16 of a sample over the interior (samples 4 to 59), worst
+of 720 phases of the sample grid against the wave, error as a percentage of the amplitude. The
+first throwaway agreed with it on linear, Catmull-Rom and the chosen curve, and differed in places
+on classic Akima, Lanczos-3 and the spline; it printed PCHIP and Steffen as 2.75 % at 12.9 samples
+a cycle, which a 90-phase grid that missed the symmetric alignment had produced (see the bullets).
+The kept tests pin ceilings a little above the chosen curve's figures, not the printed values, and
+pin the comparisons that decided it: at least three times better than linear on a sine, and within
+1e-4 of the plateau on a square wave where Catmull-Rom is over 10 % past it. Table 1 above is a
+different measurement, over the columns the screen draws (a 32-sample window, worst of 15 phases),
+so its 0.13 % at 32 samples a cycle and this table's 0.14 % are one curve measured two ways.
 
 | curve | 4 | 8 | 12.9 | 16 | 32 samples a cycle | square wave, plateau of 3+ | plateau of 2 | rectified sine below 0 |
 |---|---|---|---|---|---|---|---|---|
 | zero-order hold (best alignment) | 76.5 | 39.0 | 24.3 | 19.6 | 9.8 | 0 | 0 | 0 |
 | linear | 29.3 | 7.6 | 2.95 | 1.92 | 0.48 | 0 | 0 | 0 |
-| PCHIP, Steffen | 29.0 | 7.6 | 2.75 | 1.89 | 0.48 | 0 | 0 | 0 |
+| PCHIP, Steffen | 29.3 | 7.6 | 2.95 | 1.88 | 0.47 | 0 | 0 | 0 |
 | Catmull-Rom | 11.6 | 0.92 | 0.20 | 0.10 | 0.01 | **14.8** | **25.0** | 0 |
-| Akima | 11.6 | 2.97 | 0.72 | 0.38 | 0.05 | 0 | **25.0** | **1.67** |
+| Akima | 21.1 | 2.98 | 0.73 | 0.38 | 0.05 | 0 | **25.0** | **0.75** |
 | **modified Akima (chosen)** | 11.6 | 1.17 | 0.72 | 0.50 | 0.14 | 0 | **25.0** | 0 |
-| Lanczos-3 | 2.2 | 0.70 | 0.62 | 0.59 | 0.36 | **23.5** | **44.6** | 0.11 |
-| natural cubic spline | 2.8 | 0.12 | 0.02 | 0.01 | 0.00 | **22.6** | **40.2** | 0.17 |
+| Lanczos-3 | 1.6 | 0.29 | 0.66 | 0.65 | 0.57 | **22.9** | **43.7** | 0 |
+| natural cubic spline | 2.8 | 0.12 | 0.02 | 0.01 | 0.00 | **21.6** | **37.5** | 0 |
 
 The last three columns are how far a curve strays past the level the signal really has, as a
-percentage of the amplitude. The hold row is the ideal hold sampled at points; the old code's
-figures above are larger because a column straddling two samples was drawn as the earlier one.
+percentage of the amplitude: a square wave at 12.9 samples a cycle, a plateau of exactly two
+samples (a square wave at 4), and a rectified sine at 12.9 dipping below zero. The hold row is
+analytic, 2 sin(pi / 2N), the ideal hold sampled at points; the old code's figures above are
+larger because a column straddling two samples was drawn as the earlier one.
 
 - **Linear and the monotone cubics** (PCHIP, Steffen) never overshoot but flatten every peak, and
-  are no better than linear at 12.9 samples a cycle: 2.75 to 2.95 %, about 2 px of a 70 px lane.
+  are no better than linear at 12.9 samples a cycle: 2.95 % for all three, about 2 px of a 70 px
+  lane. A peak that falls between two equal samples gives a monotone cubic a zero slope at both, so
+  it is flat there exactly as linear is, and 1 - cos(pi / N) is a floor for all of them.
 - **Catmull-Rom** is the most accurate of the local curves and rings 14.8 % of the amplitude past
   every square wave, and 7.4 % of the height of a step: a switch closing would draw with an
   overshoot the circuit does not have.
-- **Lanczos and a natural spline** are more accurate still on a sine, but are wide or global
-  (the spline solves a system over the whole window) and ring 22 to 24 %.
-- **Akima** dips 1.67 % below zero on a rectified sine. **Modified Akima** takes the slope at a sample
+- **Lanczos-3 and a natural spline** are wide or global (the spline solves a system over the whole
+  window) and ring 22 % past a square wave. The spline is the most accurate of all on a sine, 0.02 %
+  at 12.9. Lanczos is slightly better than the chosen curve up to 12.9 samples a cycle and worse from
+  16 up: 0.65 % against 0.50 at 16, and 0.57 against 0.14 at 32.
+- **Akima** dips 0.75 % below zero on a rectified sine. **Modified Akima** takes the slope at a sample
   as a weighted mean of the two chords beside it, each weighted by how much the chords beyond it
   disagree plus half the magnitude of their sum, so the weights vanish only where every chord is
   flat, and is the trade taken: 0.72 % at 12.9 samples a cycle, four times better than linear,
   and no overshoot at all on a plateau of three or more samples, a step or a rectified sine.
 
-Its known failure is a plateau of exactly two samples, drawn 25 % too tall. To any local rule that
+Its known failure is a plateau of exactly two samples, drawn 25 % too tall in the interior and
+27.6 % against the ends of the window, where the end chord is repeated (the real class over 103
+samples at 4 and 5 samples a cycle: 0.2500 in the interior, 0.2756 over the whole window; at 6 and
+above, 0). To any local rule that
 is indistinguishable from a sine peak that fell between two samples (a square wave at 4 samples a
 cycle and a sine at 4 samples a cycle sampled at 45 degrees are the same four numbers), so it is a
 limit of the information rather than of the curve. A genuine edge sampled sparsely is drawn as a
@@ -1300,11 +1345,27 @@ run.
 
 **What is not verified in game.** `MultimeterScreen` needs Minecraft and cannot be run by the test
 suite, so everything after the numbers `TraceReconstruction.columns` returns is unverified: that the
-spans are filled where the numbers say, how the result looks at the real GUI scale and at a
-fractional one, and whether rounding to whole pixel rows leaves a visible seam anywhere. The
-arithmetic is covered (26 tests, each seen failing against a deliberate break). The block entity,
+spans are filled where the numbers say, and how the result looks at the real GUI scale and at a
+fractional one. The rounding to whole pixel rows is `TraceReconstruction.row`, which is tested (its
+values, its monotonicity, and that columns touching in value share a row, for three ranges, two of
+which clip the wave, and three lane heights, one of them odd), but that the screen hands it the
+right column and fills between the rows is not: a wrong column index, the two edges swapped or a
+loop one column short all compile and no test can see them. The arithmetic is covered, by 38 tests
+in `TraceReconstructionTest`, each seen failing against a deliberate break; the commit messages say
+which break failed which. The block entity,
 the sampler's attachment to an island, the packet and the item are unchanged and equally out of
 the suite's reach. RMS, phasors, frequency and the protocol were not touched.
+
+**Text elsewhere in this file that this supersedes.** Only this subsection was edited, so these were
+left as they were written and describe the multimeter as it was before the change: section 3.16
+("Nine samples a cycle drawn as a trace is a staircase", "Mains frequency still wants 128 for a
+smooth trace"); the paragraph "The ring, and how the trace is drawn" above, which says a column is
+always the minimum and maximum of its samples; the row for this feature in the table in section 1
+("five defects since fixed", which does not count this one); the file list in section 6, which
+does not name `TraceReconstruction` or its test; and the "78 new tests" of section 7. The
+multimeter's own cap on samples is `multimeterSubTickSamples`, not `acMaxSubTicks`, so raising the
+latter alone never changed what the multimeter drew. Two code comments that said the same as 3.16
+(`MIN_PLOT_SAMPLES` and the `acMaxSubTicks` config text) are corrected.
 
 ### 5.3 Phasors, impedance and Smith-chart data
 
