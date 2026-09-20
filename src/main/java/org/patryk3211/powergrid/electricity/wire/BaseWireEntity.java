@@ -86,6 +86,15 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
     // from the synced data yet" (a fresh entity, or one just loaded from disk).
     private float exactTemperature = Float.NaN;
 
+    // Ambient temperature at the wire's position, and where and how many ticks ago it was read.
+    // Looking a biome up is a chunk lookup with ChunkStatus.BIOMES, which the four-entry chunk
+    // cache in ServerChunkCache does not share with the FULL lookups everything else makes, so
+    // doing it per wire per tick both costs and evicts. ThermalBehaviour caches its own the same way.
+    private static final int AMBIENT_REFRESH_TICKS = 200;
+    private float ambientTemperature;
+    private BlockPos ambientAt;
+    private int ambientAge;
+
     protected boolean sublevelMove;
 
     public BaseWireEntity(EntityType<?> type, Level world) {
@@ -147,7 +156,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
         energy += I * I * getResistance() / 20f;
         if(!overheated) {
             // If wire is overheated it is considered dead.
-            energy -= dissipationFactor * (temperature - ThermalBehaviour.getAmbientTemperature(level(), blockPosition())) / 20f;
+            energy -= dissipationFactor * (temperature - ambientTemperature()) / 20f;
             temperature += energy / thermalMass;
 
             if(testForOverheat(temperature, energy)) {
@@ -167,6 +176,19 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
         // keeps the per-tick RMS moving). Publish only what a viewer could tell apart.
         if(WireThermal.shouldPublish(temperature, entityData.get(TEMPERATURE), overheatTemperature))
             entityData.set(TEMPERATURE, temperature);
+    }
+
+    private float ambientTemperature() {
+        var pos = blockPosition();
+        // Refreshed when the wire moves (a sub-level carrying it) and every ten seconds otherwise,
+        // which is as much as a biome edit made while the server runs can matter to a heat balance
+        // whose time constant is minutes.
+        if(ambientAt == null || ++ambientAge >= AMBIENT_REFRESH_TICKS || !pos.equals(ambientAt)) {
+            ambientTemperature = ThermalBehaviour.getAmbientTemperature(level(), pos);
+            ambientAt = pos;
+            ambientAge = 0;
+        }
+        return ambientTemperature;
     }
 
     public boolean isOverheated() {
