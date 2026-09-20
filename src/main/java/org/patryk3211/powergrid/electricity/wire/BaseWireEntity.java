@@ -81,6 +81,11 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
 
     protected Float resistanceOverride = null;
 
+    // The temperature the server integrates. The synced data holds the last value published to
+    // clients, which trails this by less than WireThermal.PUBLISH_DEAD_BAND; NaN means "not read
+    // from the synced data yet" (a fresh entity, or one just loaded from disk).
+    private float exactTemperature = Float.NaN;
+
     protected boolean sublevelMove;
 
     public BaseWireEntity(EntityType<?> type, Level world) {
@@ -130,7 +135,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             return;
         }
 
-        float temperature = entityData.get(TEMPERATURE);
+        float temperature = exactTemperature();
         overheated = entityData.get(OVERHEAT_TICKS) >= ThermalBehaviour.OVERHEAT_TICKS;
         if(level().isClientSide && !(level() instanceof PonderLevel))
             return;
@@ -156,15 +161,26 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             }
         }
 
-        entityData.set(TEMPERATURE, temperature);
+        exactTemperature = temperature;
+        // Every change of a synced float is a packet to every viewer, and this one changes in its
+        // low bits for minutes after any load change (and for as long as an alternating current
+        // keeps the per-tick RMS moving). Publish only what a viewer could tell apart.
+        if(WireThermal.shouldPublish(temperature, entityData.get(TEMPERATURE), overheatTemperature))
+            entityData.set(TEMPERATURE, temperature);
     }
 
     public boolean isOverheated() {
         return overheated;
     }
 
+    /** The temperature as clients see it: within {@link WireThermal#PUBLISH_DEAD_BAND} of the exact one. */
     public float getTemperature() {
         return entityData.get(TEMPERATURE);
+    }
+
+    /** The temperature the server integrates, which is what gets saved and copied when a wire splits. */
+    public float exactTemperature() {
+        return Float.isNaN(exactTemperature) ? entityData.get(TEMPERATURE) : exactTemperature;
     }
 
     @Override
@@ -377,6 +393,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
         setEndpoint2(endpoint2);
 
         entityData.set(TEMPERATURE, nbt.getFloat("Temperature"));
+        exactTemperature = Float.NaN;
     }
 
     public void setColor(int color) {
@@ -436,7 +453,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
 
         nbt.put("LastKnownPos", NbtUtils.writeBlockPos(blockPosition()));
 
-        nbt.putFloat("Temperature", entityData.get(TEMPERATURE));
+        nbt.putFloat("Temperature", exactTemperature());
     }
 
     @Override
