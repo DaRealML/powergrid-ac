@@ -117,3 +117,30 @@ git push private ac-implementation
 This mod's value is that its numbers are right. State what was measured, quote the real figure,
 and say plainly when something was reasoned rather than run. "I could not verify this" is a
 finished answer; confident prose over a guess is not.
+
+## Running many agents at once
+
+Worktrees, one per agent, so their gradle builds do not fight over one build directory. Create them
+short and near the repo: `git worktree add -b ws/<name> /g/Claude/power-grid-ac/wt-<name> HEAD`.
+
+| Trap | What happens | Do this |
+|---|---|---|
+| Removing a finished worktree | `git worktree remove --force` fails with "Filename too long" on the deep build directories | PowerShell: `cmd /c "rd /s /q \?\G:\Claude\power-grid-ac\wt-<name>"`, then `git worktree prune` |
+| A workflow script file | The Workflow tool rejects CRLF ("control characters") and any path outside the working directory | Write it LF, under `PowerGrid/logs/`. Python `write_text` on Windows converts to CRLF: write bytes |
+| `
+` inside a JS string written from a python heredoc | Becomes a real newline and the script will not parse | Build the backslash with `chr(92)`, or use the Write tool |
+| A usage limit mid-run | Agents fail with "session limit"; work is lost unless committed | Tell every agent to commit each unit the moment its tests pass, and put what was left behind in a RESUME notice when retrying |
+| Two agents editing `docs/AC.md` | Merge conflicts | Give each a different anchor section, then integrate with `git cherry-pick <base>..<branch>` (a fast-forward merge for the first) |
+| `git status` in any worktree | `lang/cs_CZ.json` is always modified (case collision) | Never stage it; it blocks `git rebase`, so cherry-pick instead |
+| Timing on a busy machine | Other agents are compiling | Trust counters (Newton iterations, refactorisations) and ratios inside one JVM run, not absolute milliseconds |
+
+Review every agent branch with three independent lenses before merging: correctness, mutation
+(break the code, confirm the tests fail) and conformance (commit style, scope, this table). The
+mutation lens found an unguarded newest-sample bug in the multimeter that 26 green tests missed.
+
+## Performance facts already measured
+
+Three windings at 50 Hz into a six-diode bridge cost 1.1 / 6.9 / 29.9 / 53.1 ms per tick at 8 / 32 /
+64 / 128 sub-ticks, against 0.08 / 0.02 / 0.04 / 0.07 ms on a resistor: any nonlinear element
+(`ISolverHook`: diodes, BJT, tubes, `ArcWire`, transmission-line ports) forces the Newton path at every
+sub-tick. Keep `acMaxSubTicks` low on islands with one until that is fixed.
