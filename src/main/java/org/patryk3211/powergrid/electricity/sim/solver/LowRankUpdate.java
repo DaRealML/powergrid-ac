@@ -53,7 +53,7 @@ import java.util.Arrays;
  * included), because that is the matrix whose factors are kept.
  */
 final class LowRankUpdate {
-    /** Rebase when the smallest pivot of {@code I + Z D} is below this fraction of the largest. */
+    /** Rebase when the smallest pivot of {@code I + Z D} is below this fraction of the larger of its largest pivot and 1. */
     static final double SOFT_PIVOT_RATIO = 1e-4;
     /** Treat the small system as singular below this fraction (or on NaN). */
     static final double HARD_PIVOT_RATIO = 1e-13;
@@ -248,7 +248,8 @@ final class LowRankUpdate {
     /**
      * Build {@code I + Z D} and factor it in place with partial pivoting.
      *
-     * @return the smallest pivot over the largest, or 0 (or NaN) if it is singular; 1 for an empty system
+     * @return the smallest pivot over the larger of the largest pivot and 1, or 0 (or NaN) if it is
+     *         singular; 1 for an empty system
      */
     private double factorSmallSystem() {
         int m = touched;
@@ -302,7 +303,9 @@ final class LowRankUpdate {
                     k[row * m + j] -= factor * k[col * m + j];
             }
         }
-        var ratio = smallest / largest;
+        // Measured against the identity this matrix is a correction to, not only against its own
+        // largest pivot: a single pivot has ratio 1 to itself, however close to zero it is.
+        var ratio = smallest / Math.max(largest, 1.0);
         return Double.isNaN(ratio) ? 0 : ratio;
     }
 
