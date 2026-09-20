@@ -508,19 +508,24 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
             }
             for(var entry : syncStates.entrySet()) {
                 boolean useDoubles = NegotiateSyncC2SPacket.useDoubles(entry.getKey());
-                var packet = new StateS2CPacket(useDoubles);
-                var wrapper = packet.wrapper();
+                // Built when the first entry falls due. A player whose nearest elements sync every
+                // fifth tick used to be sent an empty packet, and a pooled buffer allocated for it,
+                // on the other four.
+                StateS2CPacket packet = null;
                 var behaviours = entry.getValue();
                 for(var pair : behaviours.entrySet()) {
                     if(syncTicks % pair.getValue().lod() != 0)
                         continue;
                     if(pair.getKey() == null || !pair.getKey().shouldSync())
                         continue;
+                    if(packet == null)
+                        packet = new StateS2CPacket(useDoubles);
                     packet.begin(pair.getKey());
-                    pair.getKey().writeToSync(wrapper, useDoubles, this::findLineMiddle);
+                    pair.getKey().writeToSync(packet.wrapper(), useDoubles, this::findLineMiddle);
                     packet.end();
                 }
-                ModdedPackets.sendToClient(packet, entry.getKey());
+                if(packet != null)
+                    ModdedPackets.sendToClient(packet, entry.getKey());
             }
             final int syncInterval = ModdedConfigs.common().stateSynchronization.get();
             // Every electric block entity is fully resent once per interval, a share of them per tick
