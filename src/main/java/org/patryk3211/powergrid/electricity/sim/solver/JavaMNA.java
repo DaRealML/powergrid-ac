@@ -110,6 +110,12 @@ public class JavaMNA implements IMNA {
         public long jacobianRebuilds;
         /** Recomputations of the row/column equilibration scales. */
         public long scaleRecomputes;
+        /** Newton systems solved as a low-rank update of an existing factorisation ({@link LowRankUpdate}). */
+        public long compensatedSolves;
+        /** Refactorisations the low-rank update asked for (a subset of {@link #refactorizations}). */
+        public long compensationRebases;
+        /** Newton systems the low-rank update declined, which were then solved by refactoring. */
+        public long compensationFallbacks;
 
         public Statistics copy() {
             var c = new Statistics();
@@ -128,6 +134,9 @@ public class JavaMNA implements IMNA {
             c.jacobianAdds = jacobianAdds;
             c.jacobianRebuilds = jacobianRebuilds;
             c.scaleRecomputes = scaleRecomputes;
+            c.compensatedSolves = compensatedSolves;
+            c.compensationRebases = compensationRebases;
+            c.compensationFallbacks = compensationFallbacks;
             return c;
         }
 
@@ -149,6 +158,9 @@ public class JavaMNA implements IMNA {
             d.jacobianAdds = jacobianAdds - earlier.jacobianAdds;
             d.jacobianRebuilds = jacobianRebuilds - earlier.jacobianRebuilds;
             d.scaleRecomputes = scaleRecomputes - earlier.scaleRecomputes;
+            d.compensatedSolves = compensatedSolves - earlier.compensatedSolves;
+            d.compensationRebases = compensationRebases - earlier.compensationRebases;
+            d.compensationFallbacks = compensationFallbacks - earlier.compensationFallbacks;
             return d;
         }
 
@@ -169,10 +181,45 @@ public class JavaMNA implements IMNA {
             jacobianAdds += other.jacobianAdds;
             jacobianRebuilds += other.jacobianRebuilds;
             scaleRecomputes += other.scaleRecomputes;
+            compensatedSolves += other.compensatedSolves;
+            compensationRebases += other.compensationRebases;
+            compensationFallbacks += other.compensationFallbacks;
         }
     }
 
     private final Statistics stats = new Statistics();
+
+    /**
+     * Switches for the Newton path. All on is what ships; each one, turned off, gives back what the
+     * solver did before the change it names, so a test can run old and new on the same circuit and a
+     * benchmark can say what each change bought. Plain statics, read once per solve.
+     */
+    public static final class Tuning {
+        /** Solve Newton systems as a low-rank update of one factorisation instead of refactoring after every change. */
+        public static boolean compensation = true;
+        /** Take the residual and error norm of the accepted line-search probe as the next iteration's, instead of rebuilding them. */
+        public static boolean reuseResidual = true;
+        /** Most nodes the low-rank update may touch before an island is solved by refactoring. */
+        public static int maxTouchedNodes = 64;
+
+        /** Everything back to what the solver did at the commit these switches were added on. */
+        public static void legacy() {
+            compensation = false;
+            reuseResidual = false;
+        }
+
+        public static void shipped() {
+            compensation = true;
+            reuseResidual = true;
+            maxTouchedNodes = 64;
+        }
+    }
+
+    private final LowRankUpdate lowRank = new LowRankUpdate();
+    // True while the nonlinear elements are being swept, which is when a stamp is theirs to record.
+    private boolean sweeping;
+    // The low-rank update holds differences the scaled matrix has but its factors do not.
+    private boolean deltaPending;
 
     // Factorisations of matrices this solver has since replaced (allocate() builds new ones).
     private long retiredFactorizations;
@@ -190,6 +237,7 @@ public class JavaMNA implements IMNA {
         if(A0 != null)
             live += A0.factorizations;
         stats.refactorizations = retiredFactorizations + live;
+        stats.compensationRebases = lowRank.rebases;
         return stats;
     }
 
@@ -261,7 +309,13 @@ public class JavaMNA implements IMNA {
                 }
             }
             ScaledJ.add(row, column, scaledValue);
-            ScaledJ.markRefactorize();
+            if(sweeping && Tuning.compensation) {
+                // A nonlinear element's stamp: the factors stay, the difference is remembered.
+                lowRank.record(row, column, scaledValue);
+                deltaPending = true;
+            } else {
+                ScaledJ.markRefactorize();
+            }
         } else {
             if(ROW_EXCHANGE) {
                 if (enableRowExchange) {
@@ -343,6 +397,8 @@ public class JavaMNA implements IMNA {
             columnScales = new double[size];
             rowScales = new double[size];
         }
+        lowRank.reset(size);
+        deltaPending = false;
 
         // Invalidate scales
         scalesAge = MAX_SCALE_REUSE_COUNT + 1;
@@ -351,10 +407,15 @@ public class JavaMNA implements IMNA {
     private void iterHooks(int i, int max) {
         ++stats.hookSweeps;
         network.countUpdates = false;
-        for(var hook : network.innerHooks) {
-            hook.startIteration(i);
+        sweeping = true;
+        try {
+            for(var hook : network.innerHooks) {
+                hook.startIteration(i);
+            }
+        } finally {
+            sweeping = false;
+            network.countUpdates = true;
         }
-        network.countUpdates = true;
     }
 
     private void residualAdd(int row, double value) {
@@ -435,6 +496,12 @@ public class JavaMNA implements IMNA {
      * is the work that was only ever used to detect convergence.
      */
     private void singleTickLinear() {
+        if(deltaPending) {
+            // Hooks came and went since the last Newton solve: the factors describe an older matrix.
+            ScaledJ.markRefactorize();
+            lowRank.invalidateBase();
+            deltaPending = false;
+        }
         computeResidual();
 
         var workMatrix = Jacobian;
@@ -484,15 +551,34 @@ public class JavaMNA implements IMNA {
         int maxIterations = network.maxIterations.apply(network.hasHooks());
         int i;
         double norm = 0;
+        final boolean lowRankSolve = SCALING && Tuning.compensation;
+        final boolean reuseResidual = Tuning.reuseResidual;
+        if(lowRankSolve)
+            lowRank.setMaxTouched(Tuning.maxTouchedNodes);
+        if(!lowRankSolve && deltaPending) {
+            ScaledJ.markRefactorize();
+            lowRank.invalidateBase();
+            deltaPending = false;
+        }
+        // The line search that accepts a step has just built the residual and error of the state it
+        // accepted, hooks and all. The next iteration would build the same numbers again, bit for bit.
+        boolean residualFresh = false;
+        double freshNorm = 0;
         for (i = 0; i < maxIterations; ++i) {
             if(i == 0)
                 iterHooks(i, maxIterations);
             var workMatrix = Jacobian;
-            computeResidual();
+            double nextNorm;
+            if(residualFresh) {
+                nextNorm = freshNorm;
+                residualFresh = false;
+            } else {
+                computeResidual();
 
-            workMatrix.mult(StateVector, ErrorVector);
-            CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
-            var nextNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
+                workMatrix.mult(StateVector, ErrorVector);
+                CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
+                nextNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
+            }
             var dNorm = Math.abs(nextNorm - norm);
             norm = nextNorm;
             if (norm < absoluteStoppingCriterion || dNorm < relativeStoppingCriterion)
@@ -538,7 +624,17 @@ public class JavaMNA implements IMNA {
 
             StateDelta.setTo(StateVector);
             ++stats.linearSystemSolves;
-            workMatrix.solve(ResidualVector, StateVector);
+            if(lowRankSolve && workMatrix == ScaledJ && lowRank.solve(ScaledJ, ResidualVector, StateVector)) {
+                ++stats.compensatedSolves;
+            } else {
+                if(lowRankSolve) {
+                    // The factors lag the matrix by the recorded differences; make the ordinary solve refactor.
+                    ++stats.compensationFallbacks;
+                    ScaledJ.markRefactorize();
+                    lowRank.invalidateBase();
+                }
+                workMatrix.solve(ResidualVector, StateVector);
+            }
             var valid = !MatrixFeatures_DDRM.hasUncountable(StateVector);
             if(!valid)
                 ++stats.singularSolves;
@@ -556,8 +652,11 @@ public class JavaMNA implements IMNA {
                     workMatrix.mult(StateVector, ErrorVector);
                     CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
                     double testNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
-                    if(testNorm < norm)
+                    if(testNorm < norm) {
+                        residualFresh = reuseResidual;
+                        freshNorm = testNorm;
                         break;
+                    }
                     double deltaAlpha = (1 - alpha) * 0.5;
                     alpha += deltaAlpha;
                     CommonOps_DDRM.add(StateVector, -deltaAlpha, StateDelta, StateVector);
@@ -590,6 +689,9 @@ public class JavaMNA implements IMNA {
     @Override
     public void jacobianPrepareForWrite() {
         ++stats.jacobianRebuilds;
+        // The matrix is about to be rewritten from nothing: whatever the factors describe is gone.
+        lowRank.invalidateBase();
+        deltaPending = false;
         enableRowExchange = false;
         Jacobian.denseZero();
     }
