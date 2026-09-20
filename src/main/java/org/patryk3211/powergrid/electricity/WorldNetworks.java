@@ -17,6 +17,7 @@ package org.patryk3211.powergrid.electricity;
 
 import com.google.common.collect.Sets;
 import io.netty.util.collection.IntObjectHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -47,6 +48,7 @@ import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePort;
 import org.patryk3211.powergrid.electricity.wire.*;
 import org.patryk3211.powergrid.network.packets.NegotiateSyncC2SPacket;
 import org.patryk3211.powergrid.network.packets.StateS2CPacket;
+import org.patryk3211.powergrid.utility.SpreadOverTicks;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -71,6 +73,7 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
     protected final Set<ElectricalNetwork> islandDiscoveryQueue = new HashSet<>();
     private boolean runningDiscovery = false;
     private int syncTicks = 0;
+    private final SpreadOverTicks<BlockWireEndpoint> fullSync = new SpreadOverTicks<>();
 
     private CompoundTag nbt;
 
@@ -520,26 +523,46 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
                 ModdedPackets.sendToClient(packet, entry.getKey());
             }
             final int syncInterval = ModdedConfigs.common().stateSynchronization.get();
-            if(syncInterval > 0) {
-                if (syncTicks >= syncInterval) {
-                    // TODO: Perhaps we should avoid sending ALL subnetworks at once and instead
-                    //  split the sync up to avoid generating a lot of intermittent network traffic.
-                    for (var network : subnetworks) {
-                        for (var node : network.getNodes()) {
-                            if (!(node instanceof OwnedFloatingNode owned))
-                                continue;
-                            if (!(owned.endpoint instanceof BlockWireEndpoint bwe))
-                                continue;
-                            var behaviour = bwe.getElectricBehaviour(world);
-                            if (behaviour != null)
-                                behaviour.blockEntity.sendData();
-                        }
-                    }
-                    syncTicks = 0;
-                }
-            }
+            // Every electric block entity is fully resent once per interval, a share of them per tick
+            // instead of all of them on one (a tick that long is a lag spike every few seconds, and
+            // the burst of block entity packets that goes with it).
+            fullSync.tick(syncInterval, this::fullSyncTargets, this::sendFullState);
+            // syncTicks still counts from each interval boundary, because the sync levels of detail
+            // above are phased on it.
+            if(syncInterval > 0 && syncTicks >= syncInterval)
+                syncTicks = 0;
             ++syncTicks;
         }
+    }
+
+    /**
+     * One endpoint per block that has a terminal in any network.
+     * <p>
+     * A block with three terminals used to be sent three times in the one tick, which Create
+     * coalesces into a single block update. Spread over several ticks they would be three packets,
+     * so they are collapsed here.
+     */
+    private List<BlockWireEndpoint> fullSyncTargets() {
+        var seen = new LongOpenHashSet();
+        var targets = new ArrayList<BlockWireEndpoint>();
+        for(var network : subnetworks) {
+            for(var node : network.getNodes()) {
+                if(!(node instanceof OwnedFloatingNode owned))
+                    continue;
+                if(!(owned.endpoint instanceof BlockWireEndpoint bwe))
+                    continue;
+                if(seen.add(bwe.getPos().asLong()))
+                    targets.add(bwe);
+            }
+        }
+        return targets;
+    }
+
+    private void sendFullState(BlockWireEndpoint endpoint) {
+        // Resolved now rather than when the round began: the block may have gone or been replaced.
+        var behaviour = endpoint.getElectricBehaviour(world);
+        if(behaviour != null && !behaviour.blockEntity.isRemoved())
+            behaviour.blockEntity.sendData();
     }
 
     public ElectricalNetwork newNetwork() {
