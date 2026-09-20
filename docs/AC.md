@@ -949,6 +949,8 @@ collapses to the zero state rather than propagating NaN.
 **This is an operation count, not a measurement.** Nothing here was profiled. The real saving
 depends on network size and on how much time is spent inside the solve versus around it.
 
+The nonlinear (Newton) path is written up, with measurements, in [perf/newton.md](perf/newton.md).
+
 ---
 
 ## 5. Player-facing controls
