@@ -290,10 +290,14 @@ public final class SolverBench {
      * whose sparse LU (natural ordering, partial pivoting) refactorises every iteration.
      */
     static World bigMesh(int rate, int diodes, boolean hub) {
+        return mesh(rate, 15, 20, diodes, hub);
+    }
+
+    /** {@link #bigMesh} with the mesh size chosen, for scaling curves: {@code rows * cols} nodes plus a handful. */
+    public static World mesh(int rate, int rows, int cols, int diodes, boolean hub) {
         var world = new World();
         var net = world.island(false, rate);
         var gnd = SolverGolden.ground(net);
-        final int rows = 15, cols = 20;
         var grid = new FloatingNode[rows * cols];
         for(int i = 0; i < grid.length; ++i)
             grid[i] = net.N();
