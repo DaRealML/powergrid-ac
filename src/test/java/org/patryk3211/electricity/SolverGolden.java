@@ -140,7 +140,11 @@ public final class SolverGolden {
         public static double inductor = 1;
         /** Multiplies every alternator armature inductance. */
         public static double armature = 1;
-        /** When positive, replaces the Newton absolute stopping criterion (shipped: 1e-7). */
+        /**
+         * When positive, replaces the Newton absolute stopping criterion (shipped: 1e-7) and drops the
+         * step test, so that the solver stops on the residual alone, as it once did: that is what a
+         * "sloppy" rewrite looks like. With the step test on, a loose residual criterion is not sloppy.
+         */
         public static double newtonAbsolute = 0;
 
         /** Kinds of parameter the circuit being built has drawn from this class, e.g. {@code "diodeRs"}. */
@@ -153,6 +157,8 @@ public final class SolverGolden {
             inductor = 1;
             armature = 1;
             newtonAbsolute = 0;
+            org.patryk3211.powergrid.electricity.sim.solver.JavaMNA.Tuning.stepTolerance =
+                    org.patryk3211.powergrid.electricity.sim.solver.JavaMNA.Tuning.SHIPPED_STEP_TOLERANCE;
         }
     }
 
@@ -175,8 +181,10 @@ public final class SolverGolden {
             var wrapper = new TestHelper.Network(addGMin);
             var network = networkFactory.apply(addGMin);
             network.warmUp(-1);
-            if(Mutation.newtonAbsolute > 0)
+            if(Mutation.newtonAbsolute > 0) {
                 network.setPrecision(Mutation.newtonAbsolute, 1e-14, 1e-6, 0.99);
+                org.patryk3211.powergrid.electricity.sim.solver.JavaMNA.Tuning.stepTolerance = 0;
+            }
             wrapper.network = network;
             networks.add(network);
             return wrapper;
@@ -509,9 +517,22 @@ public final class SolverGolden {
 
     /** Reads the golden data for a circuit from the classpath. */
     public static Golden read(String circuit) throws IOException {
-        try(InputStream raw = SolverGolden.class.getResourceAsStream(resourceName(circuit))) {
+        return read(resourceName(circuit), circuit);
+    }
+
+    /**
+     * Reads what the original solver recorded for a circuit whose shipped data was regenerated,
+     * kept under {@code golden/legacy}. Only the circuits the original solver failed to converge on
+     * have one; see {@code NewtonSolverTest}.
+     */
+    public static Golden readOriginal(String circuit) throws IOException {
+        return read("/golden/legacy/" + circuit + ".txt.gz", circuit);
+    }
+
+    private static Golden read(String resource, String circuit) throws IOException {
+        try(InputStream raw = SolverGolden.class.getResourceAsStream(resource)) {
             if(raw == null)
-                throw new IOException("No golden data for '" + circuit + "' (" + resourceName(circuit)
+                throw new IOException("No golden data for '" + circuit + "' (" + resource
                         + "). Regenerate with GOLDEN_REGENERATE=1, see SolverGolden.");
             try(var reader = new BufferedReader(new InputStreamReader(new GZIPInputStream(raw), StandardCharsets.UTF_8))) {
                 var golden = new Golden();
@@ -1500,7 +1521,10 @@ public final class SolverGolden {
             // Ill-conditioned on purpose
             new Circuit("ill_diode_reverse_breakdown", "diode driven into reverse breakdown every cycle", 10, 64, 4, true, Tolerance.nonlinear(2e-4), SolverGolden::diodeReverseBreakdown),
             new Circuit("ill_rectifier_capacitive_only", "bridge into a purely capacitive load", 20, 64, 8, true, Tolerance.nonlinear(1e-4), SolverGolden::rectifierCapacitiveOnly),
-            new Circuit("ill_rect_3ph_alternator", "alternator-fed bridge, DC grounded: one solve in six hits the cap", 20, 64, 8, false, Tolerance.nonlinear(5e-2), SolverGolden::rectifierThreePhaseAlternator),
-            new Circuit("ill_rect_3ph_floating_1e6", "the 200-iteration case: DC side floating behind 1e6 ohm", 20, 64, 8, false, Tolerance.nonlinear(5e-2), SolverGolden::rectifierThreePhaseFloating)
+            // The two below were compared on derived statistics at 5% because the original solver hit
+            // the 200 iteration cap on one solve in six and one in three. The Newton path converges
+            // on every solve now, so they are held pointwise like the other rectifiers.
+            new Circuit("ill_rect_3ph_alternator", "alternator-fed bridge, DC grounded (the original solver hit the cap on one solve in six)", 20, 64, 8, true, Tolerance.nonlinear(1e-6), SolverGolden::rectifierThreePhaseAlternator),
+            new Circuit("ill_rect_3ph_floating_1e6", "the 200-iteration case: DC side floating behind 1e6 ohm", 20, 64, 8, true, Tolerance.nonlinear(1e-6), SolverGolden::rectifierThreePhaseFloating)
     );
 }

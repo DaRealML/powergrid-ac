@@ -47,9 +47,12 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
      * volts while the junction sits near a volt, and limiting that terminal voltage compresses every
      * step to a fraction of a volt: a rectifier bridge needed 80 to 150 Newton iterations per
      * sub-tick to climb from cut-off to conduction. The converged answer does not depend on the
-     * limiter, only the path to it does. Kept so a test can run both against the same circuit.
+     * limiter, only the path to it does, but that is only so where it converges: with this limiter
+     * one solve in six (a grounded alternator bridge) and one in three (the same bridge floating)
+     * ran to the 200 iteration cap and returned a state that satisfies no circuit equation. Kept so
+     * a test can run both against the same circuit, and reproduce the original answers.
      */
-    public static boolean legacyLimiter = true;
+    public static boolean legacyLimiter = false;
 
     // Terms that depend only on the temperature, the ideality factor and the constants of the
     // device, which change rarely and used to be rebuilt (with a pow and an exp) on every Newton

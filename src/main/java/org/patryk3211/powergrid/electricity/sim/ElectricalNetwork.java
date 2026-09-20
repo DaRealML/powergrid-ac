@@ -74,6 +74,9 @@ public class ElectricalNetwork implements IStamped {
     private double conductanceDelta = 0;
     private int conductanceUpdates = 0;
     public boolean countUpdates = true;
+    // Apply conductance changes below the usual noise threshold as well. Set by the solver while it
+    // sweeps the nonlinear elements: see JavaMNA.Tuning.exactHookUpdates.
+    public boolean exactUpdates = false;
     protected int stamp;
     private int currentMultiTick = 1;
 
@@ -460,7 +463,7 @@ public class ElectricalNetwork implements IStamped {
     }
 
     public void updateConductance(AbstractElectricWire wire, double change) {
-        if(dirty || Math.abs(change) < G_MIN * 0.1)
+        if(dirty || (Math.abs(change) < G_MIN * 0.1 && !exactUpdates))
             return;
         if(leafNodes.containsKey(wire.node1) || leafNodes.containsKey(wire.node2))
             return;

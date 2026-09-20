@@ -201,17 +201,42 @@ public class JavaMNA implements IMNA {
         public static boolean reuseResidual = true;
         /** Most nodes the low-rank update may touch before an island is solved by refactoring. */
         public static int maxTouchedNodes = 64;
+        /**
+         * A solve whose residual is below the stopping criterion is only accepted once the last
+         * Newton step also moved no state by more than this fraction of the largest state (or of
+         * 1 V/A, if that is larger); 0 turns the test off and leaves the residual as the only test.
+         * <p>
+         * The residual alone cannot tell a converged solution from one that is merely quiet: a node
+         * held by 1e-8 siemens is 10 volts off with a residual of 1e-7 amps, and that is the case
+         * for the floating side of a rectifier. The old limiter converged so slowly that the
+         * residual was far below the criterion by the time it was met, which hid this.
+         */
+        public static double stepTolerance = 1e-9;
+        /** What {@link #stepTolerance} ships as, for a test that turns it off and must put it back. */
+        public static final double SHIPPED_STEP_TOLERANCE = 1e-9;
+        /** Most extra iterations {@link #stepTolerance} may ask for after the residual is met. */
+        public static int stepExtraIterations = 2;
+        /**
+         * Apply the conductance changes the nonlinear elements make even when they are below the
+         * noise threshold {@code updateConductance} uses.
+         */
+        public static boolean exactHookUpdates = true;
 
         /** Everything back to what the solver did at the commit these switches were added on. */
         public static void legacy() {
             compensation = false;
             reuseResidual = false;
+            exactHookUpdates = false;
+            stepTolerance = 0;
         }
 
         public static void shipped() {
             compensation = true;
             reuseResidual = true;
             maxTouchedNodes = 64;
+            exactHookUpdates = true;
+            stepTolerance = 1e-9;
+            stepExtraIterations = 2;
         }
     }
 
@@ -407,6 +432,7 @@ public class JavaMNA implements IMNA {
     private void iterHooks(int i, int max) {
         ++stats.hookSweeps;
         network.countUpdates = false;
+        network.exactUpdates = Tuning.exactHookUpdates;
         sweeping = true;
         try {
             for(var hook : network.innerHooks) {
@@ -414,6 +440,7 @@ public class JavaMNA implements IMNA {
             }
         } finally {
             sweeping = false;
+            network.exactUpdates = false;
             network.countUpdates = true;
         }
     }
@@ -564,6 +591,11 @@ public class JavaMNA implements IMNA {
         // accepted, hooks and all. The next iteration would build the same numbers again, bit for bit.
         boolean residualFresh = false;
         double freshNorm = 0;
+        // Largest change the previous iteration made to any state, and how many iterations have
+        // run with the residual already below the criterion. Zero: nothing has moved yet.
+        double lastStep = 0;
+        int extra = 0;
+        final double stepTolerance = Tuning.stepTolerance;
         for (i = 0; i < maxIterations; ++i) {
             if(i == 0)
                 iterHooks(i, maxIterations);
@@ -581,8 +613,14 @@ public class JavaMNA implements IMNA {
             }
             var dNorm = Math.abs(nextNorm - norm);
             norm = nextNorm;
-            if (norm < absoluteStoppingCriterion || dNorm < relativeStoppingCriterion)
+            if (norm < absoluteStoppingCriterion) {
+                if(stepTolerance <= 0 || extra >= Tuning.stepExtraIterations || lastStep <= 0
+                        || lastStep <= stepTolerance * Math.max(1.0, CommonOps_DDRM.elementMaxAbs(StateVector)))
+                    break;
+                ++extra;
+            } else if (dNorm < relativeStoppingCriterion) {
                 break;
+            }
 
             if(SCALING) {
                 prepareScaled(workMatrix);
@@ -642,6 +680,7 @@ public class JavaMNA implements IMNA {
                 if(SCALING)
                     CommonOps_DDRM.multRows(columnScales, StateVector);
                 CommonOps_DDRM.subtract(StateVector, StateDelta, StateDelta);
+                final double fullStep = stepTolerance > 0 ? CommonOps_DDRM.elementMaxAbs(StateDelta) : 0;
                 // Perform solution fitting
                 double alpha = 0;
                 workMatrix = Jacobian;
@@ -661,9 +700,11 @@ public class JavaMNA implements IMNA {
                     alpha += deltaAlpha;
                     CommonOps_DDRM.add(StateVector, -deltaAlpha, StateDelta, StateVector);
                 }
+                lastStep = (1 - alpha) * fullStep;
             } else {
                 StateVector.zero();
                 StateDelta.zero();
+                lastStep = Double.MAX_VALUE;
             }
         }
         stats.newtonIterations += i;

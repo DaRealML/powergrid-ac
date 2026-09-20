@@ -31,12 +31,15 @@ public class SolverBenchTest {
     }
 
     @Test
-    void nonlinearIslandsRunNewtonAndRefactorise() {
+    void nonlinearIslandsRunNewtonAndAbsorbConductanceChanges() {
         var result = SolverBench.measure(SolverBench.scenario("c_halfwave"), 8, SolverBench.Config.QUICK);
         Assertions.assertEquals(8, result.solvesPerTick(), 1e-9);
         Assertions.assertEquals(8, result.newtonSolvesPerTick(), 1e-9);
         Assertions.assertTrue(result.newtonIterationsPerNewtonSolve() >= 1, "a diode needs at least one Newton step");
-        Assertions.assertTrue(result.refactorizationsPerTick() > 0, "a diode changes its conductance, so the matrix is refactorised");
+        // A diode changes its conductance on every iteration; the low-rank update absorbs that, so the
+        // factors are rebuilt far less often than Newton iterates (they were once rebuilt on each one).
+        Assertions.assertTrue(result.refactorizationsPerTick() < result.newtonIterationsPerNewtonSolve() * result.newtonSolvesPerTick() / 2,
+                "a diode's conductance changes must not each cost a factorisation");
     }
 
     @Test
