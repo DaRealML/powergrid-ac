@@ -199,8 +199,18 @@ public class JavaMNA implements IMNA {
         public static boolean compensation = true;
         /** Take the residual and error norm of the accepted line-search probe as the next iteration's, instead of rebuilding them. */
         public static boolean reuseResidual = true;
-        /** Most nodes the low-rank update may touch before an island is solved by refactoring. */
+        /**
+         * Most nodes the low-rank update may touch before an island is solved by refactoring. Measured
+         * on meshes of 100 to 1000 nodes with 3 to 64 diodes: the update won by 1.3 to 22 times up
+         * to 32 diodes (64 nodes), and lost at 100 nodes with 64 diodes (0.6 times).
+         */
         public static int maxTouchedNodes = 64;
+        /**
+         * Fewest nodes an island needs for the low-rank update. Below the sparse threshold the matrix
+         * is dense and factoring it costs less than the update's bookkeeping: a 3 node half-wave
+         * rectifier ran 8 percent slower with it.
+         */
+        public static int minNodes = 8;
         /**
          * A solve whose residual is below the stopping criterion is only accepted once the last
          * Newton step also moved no state by more than this fraction of the largest state (or of
@@ -234,6 +244,7 @@ public class JavaMNA implements IMNA {
             compensation = true;
             reuseResidual = true;
             maxTouchedNodes = 64;
+            minNodes = 8;
             exactHookUpdates = true;
             stepTolerance = 1e-9;
             stepExtraIterations = 2;
@@ -241,8 +252,9 @@ public class JavaMNA implements IMNA {
     }
 
     private final LowRankUpdate lowRank = new LowRankUpdate();
-    // True while the nonlinear elements are being swept, which is when a stamp is theirs to record.
-    private boolean sweeping;
+    // True while the nonlinear elements are being swept with the low-rank update on, which is when a
+    // stamp is theirs to record.
+    private boolean recording;
     // The low-rank update holds differences the scaled matrix has but its factors do not.
     private boolean deltaPending;
 
@@ -334,7 +346,7 @@ public class JavaMNA implements IMNA {
                 }
             }
             ScaledJ.add(row, column, scaledValue);
-            if(sweeping && Tuning.compensation) {
+            if(recording) {
                 // A nonlinear element's stamp: the factors stay, the difference is remembered.
                 lowRank.record(row, column, scaledValue);
                 deltaPending = true;
@@ -433,13 +445,13 @@ public class JavaMNA implements IMNA {
         ++stats.hookSweeps;
         network.countUpdates = false;
         network.exactUpdates = Tuning.exactHookUpdates;
-        sweeping = true;
+        recording = SCALING && Tuning.compensation && ScaledJ.getNumRows() >= Tuning.minNodes;
         try {
             for(var hook : network.innerHooks) {
                 hook.startIteration(i);
             }
         } finally {
-            sweeping = false;
+            recording = false;
             network.exactUpdates = false;
             network.countUpdates = true;
         }
@@ -578,7 +590,7 @@ public class JavaMNA implements IMNA {
         int maxIterations = network.maxIterations.apply(network.hasHooks());
         int i;
         double norm = 0;
-        final boolean lowRankSolve = SCALING && Tuning.compensation;
+        final boolean lowRankSolve = SCALING && Tuning.compensation && ScaledJ.getNumRows() >= Tuning.minNodes;
         final boolean reuseResidual = Tuning.reuseResidual;
         if(lowRankSolve)
             lowRank.setMaxTouched(Tuning.maxTouchedNodes);

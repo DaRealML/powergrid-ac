@@ -54,6 +54,17 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
      */
     public static boolean legacyLimiter = false;
 
+    /**
+     * Newton iteration from which the terminal-voltage limiter takes over from the junction one.
+     * <p>
+     * The junction limiter is much faster (4 iterations a solve where the other needs 80) but it
+     * can settle into a cycle of three residuals on a chain of diodes, which the other does not
+     * (random circuits: 16 of 200 hit the 200 iteration cap with it alone, most of them draws the
+     * original converged). A solve that has not converged in this many iterations is not converging,
+     * so it is finished by the limiter that always did.
+     */
+    public static int legacyLimiterAfter = 40;
+
     // Terms that depend only on the temperature, the ideality factor and the constants of the
     // device, which change rarely and used to be rebuilt (with a pow and an exp) on every Newton
     // evaluation.
@@ -145,11 +156,13 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
         double I_s2 = satCurrent;
         double V = potentialDifference();
         double WTerm, I;
-        if(legacyLimiter) {
+        if(legacyLimiter || iteration >= legacyLimiterAfter) {
             prevV = V = pnLim(V, prevV, vCrit, V_T);
             // Banwell and Jayakumar (2000)
             WTerm = WrightOmega4(omegaLog + (isRs + V) / nVt);
             I = vtN * WTerm / R_s - I_s2;
+            // Keep the reference of the other limiter where it would be, for the next solve.
+            prevJunctionV = V - R_s * I;
         } else {
             WTerm = WrightOmega4(omegaLog + (isRs + V) / nVt);
             I = vtN * WTerm / R_s - I_s2;
@@ -168,6 +181,7 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
                 }
             }
             prevJunctionV = junction;
+            prevV = V;
         }
         double G = Math.max(WTerm / (R_s * (1 + WTerm)), ElectricalNetwork.G_MIN);
 
