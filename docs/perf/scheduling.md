@@ -98,6 +98,17 @@ nothing can silently get the new behaviour without opting in
 This changes nothing about any island's own physics — every island still gets exactly the `dt` its
 own rate implies — only which unrelated islands get needlessly sped up.
 
+Quantified on the exact world `SubTickSchedulerTest.onlyTheIslandsOnALineAreDraggedToTheFastRateAndOnlyTheOnesItReaches`
+builds — a 50 Hz machine plus six DC islands, two pairs joined to each other by a line and one
+joined straight to the machine, one on its own: the old rule pulls six of the seven islands (every
+one carrying a transmission-line port) up to the machine's 128 sub-ticks; the new rule pulls up
+only the two actually reachable from the machine by a line (the machine itself and the one joined
+to it) and leaves the other four DC islands, wrongly swept up before, at 1. That is a genuinely
+larger island count than the reported bug's own rig, and it is exactly the shape docs/AC.md §3.7
+described as unmeasured cost in worlds "that actually run transmission lines alongside an
+alternator" — a base-loaded factory with several unrelated DC circuits on the same grid as one AC
+generator, say.
+
 `conservativeLockstep` (package-private field) restores the exact old whole-world-pull rule, for
 a differential test: `withEverythingOffTheSchedulerStepsExactlyLikeTheOriginalLoop` runs 8
 scenarios for 12 ticks each with it set, next to a reference island stepped by (a copy of) the
