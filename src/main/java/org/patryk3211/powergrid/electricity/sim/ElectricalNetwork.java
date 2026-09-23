@@ -188,6 +188,38 @@ public class ElectricalNetwork implements IStamped {
     }
 
     /**
+     * Like {@link #computeSubTicks(int)} but without the power-of-two rounding: what the elements
+     * would like, for a scheduler that quantises to its own set of rates. Never less than
+     * {@code configured} and never less than 1.
+     */
+    public int computePreferredSubTicks(int configured) {
+        var rate = Math.max(configured, 1);
+        for(var provider : subTickRates)
+            rate = Math.max(rate, provider.preferredSubTicks());
+        return rate;
+    }
+
+    /**
+     * Adds to {@code out} every network this one has to step in lockstep with.
+     *
+     * @return false when some element needs lockstep but cannot name the network it exchanges with,
+     *         in which case the caller must fall back to pulling this island to the fastest rate
+     */
+    public boolean collectLockstepPartners(Collection<ElectricalNetwork> out) {
+        var known = true;
+        for(var provider : subTickRates) {
+            if(!provider.requiresLockstep())
+                continue;
+            var partner = provider.lockstepPartner();
+            if(partner == null)
+                known = false;
+            else
+                out.add(partner);
+        }
+        return known;
+    }
+
+    /**
      * Register a per-sub-tick observer for this tick only. Must be called before
      * {@link #prepare(int)}, which is what dispatches {@link IMultiHooks#prepare(int)}.
      */

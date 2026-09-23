@@ -388,8 +388,8 @@ public class SolveGovernorTest {
     @Test
     void statusReportsWhatTheCommandPrints() {
         var sim = new Sim(budget(10), 128);
-        sim.unit("alt", 128, 20, linear(0.4));
         sim.unit("dc", 1, 1, linear(0.1));
+        sim.unit("alt", 128, 20, linear(0.4));
         sim.run(40);
         var status = sim.governor.status();
         Assertions.assertTrue(status.enabled());
