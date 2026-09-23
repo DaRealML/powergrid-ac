@@ -29,6 +29,7 @@ import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import org.patryk3211.powergrid.electricity.GlobalElectricNetworks;
 import org.patryk3211.powergrid.electricity.sim.PerformanceCounter;
 import org.patryk3211.powergrid.utility.NumberFormats;
 
@@ -130,6 +131,41 @@ public class PerformanceCommand {
                                             source.sendSystemMessage(Component.literal("Performance counter '" + counter.getName() + "' measurement period set to " + period + "ms").withStyle(ChatFormatting.GRAY));
                                             counter.setMeasurementTime(period);
                                             return Command.SINGLE_SUCCESS;
-                                        }))));
+                                        }))))
+                .then(literal("scheduler")
+                        .executes(ctx -> {
+                            CommandSourceStack source = ctx.getSource();
+                            var networks = GlobalElectricNetworks.getWorldNetworks(source.getLevel());
+                            var status = networks.scheduler.governor().status();
+                            source.sendSystemMessage(Component.literal("Solve-budget governor: ")
+                                    .append(Component.literal(status.enabled() ? "enabled" : "disabled")
+                                            .withStyle(status.enabled() ? ChatFormatting.GREEN : ChatFormatting.GRAY)));
+                            if(!status.enabled())
+                                return Command.SINGLE_SUCCESS;
+                            source.sendSystemMessage(Component.literal("  Budget: ")
+                                    .append(Component.literal(NumberFormats.formatConstant(status.budgetMs()) + "ms")
+                                            .withStyle(ChatFormatting.AQUA)));
+                            source.sendSystemMessage(Component.literal("  Last / average solve: ")
+                                    .append(Component.literal(NumberFormats.formatConstant(status.lastMs()) + "ms")
+                                            .withStyle(ChatFormatting.AQUA))
+                                    .append(" / ")
+                                    .append(Component.literal(NumberFormats.formatConstant(status.averageMs()) + "ms")
+                                            .withStyle(ChatFormatting.AQUA)));
+                            source.sendSystemMessage(Component.literal("  Capped islands: ")
+                                    .append(Component.literal(String.valueOf(status.cappedUnits()))
+                                            .withStyle(status.cappedUnits() > 0 ? ChatFormatting.YELLOW : ChatFormatting.GRAY))
+                                    .append(status.stuck()
+                                            ? Component.literal(" (stuck at the floor on at least one)").withStyle(ChatFormatting.RED)
+                                            : Component.empty()));
+                            for(var unit : status.units()) {
+                                source.sendSystemMessage(Component.literal("    ")
+                                        .append(Component.literal(unit.nodes() + " nodes: ").withStyle(ChatFormatting.GRAY))
+                                        .append(Component.literal(unit.rate() + "/" + unit.wanted() + " sub-ticks")
+                                                .withStyle(unit.capped() ? ChatFormatting.YELLOW : ChatFormatting.AQUA))
+                                        .append(Component.literal(String.format(" (%.1fms)", unit.costMs()))
+                                                .withStyle(ChatFormatting.DARK_GRAY)));
+                            }
+                            return Command.SINGLE_SUCCESS;
+                        }));
     }
 }
