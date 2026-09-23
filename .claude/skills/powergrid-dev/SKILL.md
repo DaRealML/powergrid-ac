@@ -133,6 +133,7 @@ short and near the repo: `git worktree add -b ws/<name> /g/Claude/power-grid-ac/
 | Two agents editing `docs/AC.md` | Merge conflicts | Give each a different anchor section, then integrate with `git cherry-pick <base>..<branch>` (a fast-forward merge for the first) |
 | `git status` in any worktree | `lang/cs_CZ.json` is always modified (case collision) | Never stage it; it blocks `git rebase`, so cherry-pick instead |
 | Timing on a busy machine | Other agents are compiling | Trust counters (Newton iterations, refactorisations) and ratios inside one JVM run, not absolute milliseconds |
+| A Workflow agent's starting shell directory | It can inherit the coordinator's last-used cwd (e.g. still sitting in a sibling worktree), and an agent may mistake that for an assigned identity and refuse to work, believing another agent already owns the directory it woke up in | Tell it explicitly: the starting directory is an artifact of how it was launched, not a signal; its FIRST command should `cd` into its actual assigned worktree and verify the branch, then proceed — nothing else is using that worktree unless the brief says so |
 
 Review every agent branch with three independent lenses before merging: correctness, mutation
 (break the code, confirm the tests fail) and conformance (commit style, scope, this table). The
