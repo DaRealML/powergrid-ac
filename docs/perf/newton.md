@@ -148,6 +148,13 @@ Counters are per world tick or per solve as in the header of `SolverBench`. Timi
 is noisy because other agents compile at the same time; the last column gives the spread between
 repeat blocks (before / after). **Trust the counters and the ratios inside one row.**
 
+A re-measurement on a busier machine can land 25 to 45 percent below the headline multiplier
+below while the counters (iterations per solve, factorisations per tick) stay almost exact: a
+same-JVM re-check of `b_seed_floating` found 43.65x and 39.41x against the 69.1x and 62.0x
+below at 64 and 128 sub-ticks, with iterations per solve at 86.2/5.5 and 67.2/4.8, matching this
+table to three figures. The multiplier is a best case on a quiet machine, not a floor; the
+counters are what reproduce.
+
 | scenario | nodes | sub-ticks | before ms | after ms | speedup | Newton it/solve | factorisations/tick | unconverged solves | cap hits/tick | noise % (b/a) |
 |---|---:|---:|---:|---:|---:|---|---|---|---|---|
 | b_alt_grounded | 10 | 8 | 1.322 | 0.155 | 8.5x | 47.4 -> 10.6 | 371.7 -> 1.7 | 16.0% -> 0.0% | 1.3 -> 0.0 | 6 / 2 |
