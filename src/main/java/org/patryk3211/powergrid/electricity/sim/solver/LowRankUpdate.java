@@ -103,6 +103,11 @@ final class LowRankUpdate {
         position = new int[size];
         Arrays.fill(position, -1);
         columnsReady = 0;
+        // The cached w[] columns are sized for the OLD matrix. ensureColumns only allocates a
+        // column when its slot is null, so a stale, too-small array left here would be copied
+        // into at the new (possibly bigger) size and throw. columnsReady = 0 already means every
+        // column is rebuilt from scratch on the next solve, so nulling them out is enough.
+        Arrays.fill(w, null);
         baseValid = false;
         unit = new DMatrixRMaj(size, 1);
         column = new DMatrixRMaj(size, 1);

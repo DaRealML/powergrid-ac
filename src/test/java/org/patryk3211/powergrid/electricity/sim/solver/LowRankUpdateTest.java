@@ -132,4 +132,63 @@ public class LowRankUpdateTest {
         update.reset(N);
         Assertions.assertFalse(update.solve(matrix, vector(new Random(1)), new DMatrixRMaj(N, 1)));
     }
+
+    private static DMatrixRMaj vector(Random random, int n) {
+        var b = new DMatrixRMaj(n, 1);
+        for(int i = 0; i < n; ++i)
+            b.data[i] = random.nextGaussian();
+        return b;
+    }
+
+    /**
+     * {@code JavaMNA.allocate} calls {@code lowRank.reset(size)} with a bigger size whenever an
+     * island grows (a new wire lands on an existing node, {@code ElectricalNetwork.addNode} calls
+     * {@code setDirty}). {@link LowRankUpdate#reset} must forget the cached {@code w} columns from
+     * the old, smaller matrix, not just the touched-node bookkeeping.
+     */
+    @Test
+    void growingAfterUseDoesNotReuseAStaleCachedColumn() {
+        var random = new Random(21);
+        var update = new LowRankUpdate();
+
+        var small = new DynamicallyTypedMatrix(5, 5, DynamicallyTypedMatrix.Solver.LU);
+        for(int i = 0; i < 5; ++i)
+            small.add(i, i, 1 + random.nextDouble());
+        small.optimize();
+        update.reset(5);
+        update.record(0, 0, 0.2);
+        // This solve caches a w[0] column of length 5.
+        Assertions.assertTrue(update.solve(small, vector(random, 5), new DMatrixRMaj(5, 1)));
+
+        var bigDense = new DMatrixRMaj(10, 10);
+        var big = new DynamicallyTypedMatrix(10, 10, DynamicallyTypedMatrix.Solver.LU);
+        for(int i = 0; i < 10; ++i) {
+            double v = 1 + random.nextDouble();
+            big.add(i, i, v);
+            bigDense.add(i, i, v);
+        }
+        big.optimize();
+        // The matrix was reallocated bigger, as JavaMNA.allocate does on a grown island.
+        // Nothing is recorded yet, so this solve only establishes the new base.
+        update.reset(10);
+        Assertions.assertTrue(update.solve(big, vector(random, 10), new DMatrixRMaj(10, 1)));
+
+        // A diode-like change on the grown matrix touches node 0 for the first time since the
+        // reset. Used to throw ArrayIndexOutOfBoundsException inside ensureColumns: it copies a
+        // column of 10 into the w[0] left over from the 5x5 matrix, only 5 doubles long.
+        double delta = 0.3;
+        big.add(0, 0, delta);
+        bigDense.add(0, 0, delta);
+        update.record(0, 0, delta);
+        var b = vector(random, 10);
+        var x = new DMatrixRMaj(10, 1);
+        Assertions.assertTrue(update.solve(big, b, x));
+
+        var expected = new DMatrixRMaj(10, 1);
+        Assertions.assertTrue(CommonOps_DDRM.solve(bigDense.copy(), b, expected));
+        double worst = 0;
+        for(int i = 0; i < 10; ++i)
+            worst = Math.max(worst, Math.abs(x.data[i] - expected.data[i]));
+        Assertions.assertEquals(0, worst, 1e-9 * (1 + CommonOps_DDRM.elementMaxAbs(expected)));
+    }
 }
