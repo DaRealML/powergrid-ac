@@ -219,6 +219,11 @@ final class LowRankUpdate {
             if(ratio >= SOFT_PIVOT_RATIO || (ratio >= HARD_PIVOT_RATIO && rebased))
                 break;
             if(rebased)
+                // Not reachable while rebase() clears every difference: the next
+                // factorSmallSystem() then sees an identity k, a ratio of exactly 1, and the
+                // check above always breaks before returning here. Kept as a bound on the loop
+                // (return false rather than spin) if that invariant is ever broken by a future
+                // change to rebase() or ensureColumns().
                 return false;
             // The base has drifted too far from the matrix. Refactor: differences are zero again,
             // the small system is the identity and cannot fail.
