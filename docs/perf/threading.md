@@ -236,6 +236,26 @@ Two very different pictures:
   across a base that has several such machines, not the single-island case itself — one expensive
   island cannot be split across islands at all (see §5).
 
+### 4.3 Independent confirmation, controlled for measurement-order bias
+
+§4.2's numbers were re-measured independently in a later session of this same stream, because a
+first attempt at reproducing them (sequential phase timed fully, then a fresh parallel-mode world
+timed fully, in one JVM run) gave the **opposite** sign for the linear case — an apparent 1.3-1.4x
+*speedup* at 50 islands, not the regression above. Reversing which phase ran first flipped the
+result again (0.47-0.53x), which proves it was measurement order, not the code: whichever phase
+runs **second** inherits JIT warmth (C2 compilation of the shared `singleTick()`/`JavaMNA` code
+paths) from the phase that ran first, and at the sub-100-microsecond scale a linear island's solve
+costs, that warm-up gap is larger than any real thread-pool overhead.
+
+The fix was to warm up a sequential and a parallel world *together*, alternating ticks, then time
+them in alternating single-tick slices and take the median of each side, so neither phase is ever
+"the second one" for the whole measurement. Re-run this way: linear islands regress at every count
+from 1 to 300 (0.29x-0.86x, i.e. slower), and nonlinear islands still gain (1.07x at 1, 3.34x at 4,
+5.33x at 50) — both consistent with §4.2's original figures. This is offered as a second,
+methodologically stricter run that reaches the same conclusion, not a replacement for §4.2; the
+practical lesson for phase 2 is that any further micro-benchmarking of the cheap-island case must
+control for this ordering effect or its sign is not trustworthy.
+
 ## 5. What this stream does and does not fix
 
 **This does not speed up the exact reported bug** (three alternators on one generator, 53 ms/tick
