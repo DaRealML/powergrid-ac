@@ -318,3 +318,39 @@ the config screen (no config entry was added this phase — the switches are sys
 Thread pool behaviour under a real server's lifecycle (startup/shutdown, world unload while a round
 is mid-flight) was not exercised; the pool's threads are daemon threads so they cannot keep the JVM
 alive, but a clean shutdown path was not built or tested.
+
+## 8. Phase 2 verification
+
+Phase 2 reviewed phase 1's implementation line by line (barrier model, the `TransmissionLinePort`
+exclusion, the `PerformanceCounter` fix) rather than trusting the commits, found it correct, and
+ran the verification the recommendation above still owed:
+
+- **Full suite, final commit.** `./gradlew test --rerun` at this stream's HEAD, default state
+  (`ENABLED=false`, the shipping default): **297 tests, 1 skipped, 0 failures, 0 errors**, 42 test
+  classes, `BUILD SUCCESSFUL` in 35s (timing noisy, per the shared-machine caveat in §4).
+- **`SolverGoldenTest`, both flag states.** Default (`ENABLED=false`): 40 tests, 1 skipped, 0
+  failures. Re-run with `-Dpowergrid.solver.parallelIslands=true
+  -Dpowergrid.solver.minParallelIslands=1` forced onto the test JVM (a temporary `test { jvmArgs
+  ... }` edit in `build.gradle`, reverted immediately after and never committed): identical result,
+  40 tests, 1 skipped, 0 failures. **Caveat stated plainly**: this is a real but structurally weak
+  check. `SolverGoldenTest` steps islands directly through `TestHelper.Network` /
+  `ElectricalNetwork.calculate()` and never calls `WorldNetworks.preTick()`, so
+  `ParallelIslandStepping.stepRound` is never reached from it regardless of the flag — the flag
+  cannot possibly change golden's output. The check that actually exercises the flag is
+  `ParallelIslandSteppingTest`, which drives `SolverBench.World.tick()` /`tickParallel()` (the
+  latter calls `stepRound` directly) side by side, including `b_seed_floating`, one of
+  `SolverGolden`'s own circuits.
+- **Repeated-run evidence, extended.** `ParallelIslandSteppingTest`, `SolverConcurrencyStressTest`
+  and `PerformanceCounterConcurrencyTest` were run together across 3 separate `./gradlew test
+  --rerun` invocations this session (the first as part of the full-suite run above): **120/120**
+  `ParallelIslandSteppingTest` repetitions passed, **9/9** `SolverConcurrencyStressTest`
+  repetitions passed (1620 concurrent island solves this session, on top of phase 1's own 900), and
+  **63/63** `PerformanceCounterConcurrencyTest` repetitions passed. Zero failures in any invocation.
+- **Not obtained this session: a full-suite baseline at the branch base commit (25339680).**
+  Getting one needs checking out that commit in this worktree; the session's sandbox denied
+  `git checkout 25339680` outright as an "Irreversible Local Destruction" action, even though it is
+  a plain ancestor of this branch with nothing uncommitted to lose. Rather than route around a
+  denied permission, this is flagged as unmeasured instead of guessed. The reported bug's own
+  before-numbers (`b_seed_floating`: 1.1 / 3.2 / 6.9 / 29.9 / 53.1 ms/tick at 8 / 16 / 32 / 64 / 128
+  sub-ticks) already predate this stream's changes and stand as the measured baseline for the actual
+  performance problem; only a whole-suite baseline test *count* at the exact branch base is missing.
