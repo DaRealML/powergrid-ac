@@ -49,4 +49,25 @@ public interface ISubTickRate {
     default boolean requiresLockstep() {
         return false;
     }
+
+    /**
+     * The sub-tick count this element would like, before any rounding to a set of allowed rates.
+     * <p>
+     * {@link #requiredSubTicks()} is the answer under the original rule, rounded up to a power of
+     * two, and must keep meaning that. The scheduler that chooses among finer rates asks this
+     * instead and does its own quantising, with hysteresis, at the level of the island. The default
+     * is {@link #requiredSubTicks()}, which is right for an element that has no opinion.
+     */
+    default int preferredSubTicks() {
+        return requiredSubTicks();
+    }
+
+    /**
+     * The network at the other end of the exchange {@link #requiresLockstep()} refers to, or
+     * {@code null} when this element does not know it. Only that network has to step in lockstep
+     * with this one; an element that cannot say is treated as needing the fastest rate in the world.
+     */
+    default org.patryk3211.powergrid.electricity.sim.ElectricalNetwork lockstepPartner() {
+        return null;
+    }
 }

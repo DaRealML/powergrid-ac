@@ -379,6 +379,14 @@ public class AlternatorCoupling extends GeneratorCoupling implements ISubTickRat
     }
 
     @Override
+    public int preferredSubTicks() {
+        var frequency = Math.abs(acRotor.getAngularVelocityRadians()) * polePairs / TWO_PI;
+        return AcSampling.exactSubTicksFor(frequency,
+                samplesPerCycle > 0 ? samplesPerCycle : AcSampling.configuredSamplesPerCycle(),
+                maxSubTicks > 0 ? maxSubTicks : AcSampling.configuredMaxSubTicks());
+    }
+
+    @Override
     public void preSolve() {
         var dt = deltaTime();
         if(acFieldStrength != null)

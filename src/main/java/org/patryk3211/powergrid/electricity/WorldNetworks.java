@@ -41,6 +41,7 @@ import org.patryk3211.powergrid.electricity.base.IMultipartSync;
 import org.patryk3211.powergrid.electricity.base.ISynchronizedElement;
 import org.patryk3211.powergrid.electricity.sim.*;
 import org.patryk3211.powergrid.electricity.sim.node.*;
+import org.patryk3211.powergrid.electricity.sim.schedule.SubTickScheduler;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLine;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePort;
@@ -55,6 +56,10 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
     public final Level world;
     public final NetworkGraph globalGraph = new NetworkGraph();
     protected final PerformanceCounter perf;
+    // Chooses each island's sub-tick rate and runs the stepping loop; see its class comment. One
+    // per world so the governor's cost history and hysteresis follow this world's own islands.
+    public final SubTickScheduler scheduler = new SubTickScheduler();
+    private final SubTickScheduler.Settings schedulerSettings = new SubTickScheduler.Settings();
 
     public final List<ElectricalNetwork> subnetworks = new ArrayList<>();
     public final Map<Integer, TransmissionLine> transmissionLines = new IntObjectHashMap<>();
@@ -81,6 +86,23 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         this.world = world;
         this.globalGraph.hooks = this;
         this.perf = new PerformanceCounter(world.dimension().location().toString());
+        // A server owner needs to find the cause without attaching a profiler: name the island's
+        // size and what it cost whenever the governor changes what it is doing to it.
+        scheduler.governor().setListener(event -> {
+            switch(event.kind()) {
+                case ENGAGED -> PowerGrid.LOGGER.warn(String.format(
+                        "Solve-budget governor: cutting a %d-node AC island from %d to %d sub-ticks " +
+                                "(it cost %.1fms/tick); the electrical solve was %.1fms against a %.1fms budget",
+                        event.nodes(), event.fromRate(), event.toRate(), event.unitMs(), event.totalMs(), event.budgetMs()));
+                case RELEASED -> PowerGrid.LOGGER.info(String.format(
+                        "Solve-budget governor: releasing, the electrical solve is %.1fms against a %.1fms budget",
+                        event.totalMs(), event.budgetMs()));
+                case STUCK -> PowerGrid.LOGGER.warn(String.format(
+                        "Solve-budget governor: a %d-node AC island is stuck at its floor of %d sub-ticks " +
+                                "(%.1fms/tick) and cannot be cut further; the electrical solve is %.1fms against a %.1fms budget",
+                        event.nodes(), event.toRate(), event.unitMs(), event.totalMs(), event.budgetMs()));
+            }
+        });
     }
 
     public WorldNetworks(Level world, CompoundTag nbt) {
@@ -270,69 +292,47 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         removed.forEach(TransmissionLine::remove);
 
         perf.start();
-        int multiTick = ModdedConfigs.server().electricity.solver.multiTicks.get();
+        var cSolver = ModdedConfigs.server().electricity.solver;
 
-        // Each island decides its own sub-tick rate; the configured value is the floor. Islands
-        // holding only DC keep the configured rate and cost exactly what they always did, while
-        // an island with an alternator asks for enough steps to resolve its waveform.
-        int maxSubTicks = multiTick;
+        // Empty islands never reach the scheduler; it has nothing to plan for one.
         var iter = subnetworks.iterator();
         while (iter.hasNext()) {
             var network = iter.next();
             if (network.isEmpty()) {
                 iter.remove();
                 network.cleanup();
-                continue;
             }
-            network.setSubTicks(network.computeSubTicks(multiTick));
-            maxSubTicks = Math.max(maxSubTicks, network.getSubTicks());
         }
 
-        if(maxSubTicks > multiTick) {
-            // Transmission lines hand state between two islands once both ends have solved, so
-            // the ends must advance together. Rather than computing the connected components of
-            // the line graph, every island carrying a port is simply pulled up to the fastest
-            // rate in the world. That over-steps islands linked to a fast one but never
-            // under-steps, and it only costs anything in worlds that actually run lines to an
-            // alternator. Refining this to a union-find over the lines is a later optimisation.
-            for(var network : subnetworks) {
-                if(network.requiresLockstep())
-                    network.setSubTicks(maxSubTicks);
-            }
-        }
+        // Each island decides its own sub-tick rate; the configured value is the floor. Islands
+        // holding only DC keep the configured rate and cost exactly what they always did, while
+        // an island with an alternator asks for enough steps to resolve its waveform. Islands
+        // joined by a transmission line are grouped and run at one rate, and the tick-budget
+        // governor may cut that rate further when the whole solve is over its wall-time budget.
+        // See SubTickScheduler's class comment for what each step does and why.
+        schedulerSettings.multiTicks = cSolver.multiTicks.get();
+        schedulerSettings.ceiling = cSolver.acMaxSubTicks.get();
+        schedulerSettings.fineRates = cSolver.acFineRates.get();
+        schedulerSettings.samplesPerCycle = cSolver.acSamplesPerCycle.get();
+        schedulerSettings.minSamplesPerCycle = cSolver.acMinSamplesPerCycle.get();
+        schedulerSettings.budgetMs = cSolver.solveBudgetGovernor.get() ? cSolver.solveBudgetMs.get() : 0;
+        scheduler.plan(subnetworks, schedulerSettings);
 
         attachProbeSamplers();
 
         // Read once, so every island in this solve is anchored to the same instant whatever the
-        // level's clock does while it runs.
-        var worldTick = world.getGameTime();
-        for(var network : subnetworks) {
-            network.setWorldTick(worldTick);
-            network.prepare(network.getSubTicks());
-        }
-
-        // Islands are electrically independent except through a TransmissionLinePort pair
-        // (see ParallelIslandStepping's own doc comment for the full argument and the correctness
-        // constraint that keeps a linked pair off the thread pool), so ParallelIslandStepping can
-        // spread them over several threads within one sub-tick round. It is opt-in and off by
-        // default (docs/perf/threading.md has the measurement behind that): with it disabled this
-        // is exactly the loop it replaces, run on this thread, in this order.
-        if(ParallelIslandStepping.ENABLED) {
-            for(int i = 0; i < maxSubTicks; ++i)
-                ParallelIslandStepping.stepRound(subnetworks, i, maxSubTicks);
-        } else {
-            for(int i = 0; i < maxSubTicks; ++i) {
-                for(var network : subnetworks) {
-                    // Step this island only on the sub-iterations it participates in. The integer
-                    // division crosses a boundary exactly `subTicks` times over `maxSubTicks`
-                    // iterations, so an island running at the full rate steps every time and one
-                    // running at 1 steps once, at the end of the world tick.
-                    var subTicks = network.getSubTicks();
-                    if((i + 1) * subTicks / maxSubTicks > i * subTicks / maxSubTicks)
-                        network.singleTick();
-                }
-            }
-        }
+        // level's clock does while it runs. SubTickScheduler.step() now owns the per-round
+        // stepping loop ParallelIslandStepping was built against (see its own class comment: the
+        // same "I guess this could go on a thread-pool" line lives there now) but the two were
+        // never tested together, so ParallelIslandStepping is not wired in here yet. Doing that
+        // for real needs the governor's per-island wall-clock timing (SubTickScheduler.step's
+        // stepNanos[k], which its cost model and hysteresis depend on) to survive a switch to
+        // threads, which ParallelIslandStepping.stepRound does not currently return. Until then
+        // ParallelIslandStepping stays reachable and tested (see docs/perf/threading.md) but only
+        // through SolverBench and its own tests, not through a real world tick; ENABLED's default
+        // is off regardless.
+        scheduler.prepare(subnetworks, world.getGameTime());
+        scheduler.step(subnetworks);
         perf.end();
     }
 

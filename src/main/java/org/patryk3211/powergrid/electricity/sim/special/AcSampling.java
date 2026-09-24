@@ -104,6 +104,23 @@ public final class AcSampling {
     }
 
     /**
+     * Sub-ticks per world tick needed to resolve a waveform at the given frequency, not rounded to
+     * a power of two: the smallest whole number of samples that reaches {@code samplesPerCycle}.
+     * <p>
+     * What a scheduler with finer rates asks for. It is clamped to {@code maxSubTicks} as given, which
+     * need not be a power of two here because the rate no longer has to divide anything.
+     */
+    public static int exactSubTicksFor(double frequency, int samplesPerCycle, int maxSubTicks) {
+        if(!(frequency > 0))
+            return 1;
+        var needed = samplesPerCycle * frequency * TICK_SECONDS;
+        // A frequency derived from a shaft speed can overshoot a whole number by an ulp (115 Hz comes
+        // back as 115.00000000000001 and asks for 184.00000000000003); that must not cost a rung.
+        var rate = (int) Math.min(Math.ceil(needed - 1e-6), Integer.MAX_VALUE);
+        return Math.max(1, Math.min(rate, Math.max(maxSubTicks, 1)));
+    }
+
+    /**
      * Phase of a sine at {@code frequency} referenced to the world's game time, in {@code [0, 2*pi)}.
      * <p>
      * The fractional cycle count is taken in two parts. Game time grows without bound -- a year of

@@ -146,6 +146,13 @@ public class ACCurrentSourceNode extends CurrentSourceNode implements IOuterHook
     }
 
     @Override
+    public int preferredSubTicks() {
+        return AcSampling.exactSubTicksFor(frequency,
+                samplesPerCycle > 0 ? samplesPerCycle : AcSampling.configuredSamplesPerCycle(),
+                maxSubTicks > 0 ? maxSubTicks : AcSampling.configuredMaxSubTicks());
+    }
+
+    @Override
     public void preSolve() {
         var network = getNetwork();
         var dt = network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();

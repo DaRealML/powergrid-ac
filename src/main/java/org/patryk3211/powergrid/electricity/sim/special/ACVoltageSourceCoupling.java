@@ -169,6 +169,13 @@ public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IO
     }
 
     @Override
+    public int preferredSubTicks() {
+        return AcSampling.exactSubTicksFor(frequency,
+                samplesPerCycle > 0 ? samplesPerCycle : AcSampling.configuredSamplesPerCycle(),
+                maxSubTicks > 0 ? maxSubTicks : AcSampling.configuredMaxSubTicks());
+    }
+
+    @Override
     public void preSolve() {
         var dt = network == null ? AcSampling.TICK_SECONDS : network.getDeltaTime();
         var worldTick = network == null ? -1 : network.getWorldTick();

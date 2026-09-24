@@ -55,6 +55,12 @@ public class CSolver extends ConfigBase {
     public final ConfigInt acMaxSubTicks = i(64, 1, "acMaxSubTicks", Comments.acMaxSubTicks);
     public final ConfigFloat acArmatureInductance = f(0.02f, 0, "acArmatureInductance", Comments.acArmatureInductance);
 
+    public final ConfigBool acFineRates = b(false, "acFineRates", Comments.acFineRates);
+    public final ConfigInt acMinSamplesPerCycle = i(8, 1, "acMinSamplesPerCycle", Comments.acMinSamplesPerCycle);
+
+    public final ConfigBool solveBudgetGovernor = b(true, "solveBudgetGovernor", Comments.solveBudgetGovernor);
+    public final ConfigFloat solveBudgetMs = f(20f, 0, "solveBudgetMs", Comments.solveBudgetMs);
+
     public final ConfigEnum<SolverBackend> solverBackend = e(SolverBackend.NATIVE, "solverBackend", Comments.solverBackend);
 
     @Override
@@ -101,6 +107,12 @@ public class CSolver extends ConfigBase {
         public static final String acSamplesPerCycle = "Solver samples taken per electrical cycle of an alternating source. Higher values track the waveform more accurately at a proportional cost. Only networks containing an AC source are affected; DC networks ignore this entirely.";
         public static final String acMaxSubTicks = "Upper bound on sub-ticks per world tick that an alternating source may request. This is the real cost ceiling for AC: a network containing an alternator is solved at most this many times per tick. A machine only asks for what its frequency needs, so raising this costs nothing until one runs fast enough to want it: at the default 64 a machine up to 36 Hz (8 pole pairs at full speed) gets the full 32 samples per cycle, while 50 Hz gets 26 and 72 Hz gets 18 - enough to measure, and the multimeter draws a curve through the samples it is sent. Raise to 128 for a finer solve at mains frequency, at twice the solver cost on those networks; the multimeter itself is capped by multimeterSubTickSamples (32 by default), so beyond that a higher value does not sharpen its picture. Rounded DOWN to a power of two in use, because a rate that does not divide the world tick evenly would space its sub-ticks unequally - so 100 behaves as 64. Prefer powers of two: 16, 32, 64, 128.";
         public static final String acArmatureInductance = "Armature (synchronous) inductance of an alternator winding, in henries. This is what limits circulating current when two alternators are paralleled out of phase; setting it to zero makes them ideal voltage sources that fight each other. Raising it softens the machine's response to load and increases the phase angle between voltage and current.";
+
+        public static final String acFineRates = "Choose an island's AC sub-tick rate from a finer ladder (up to four rungs per octave) instead of only powers of two. The old rule rounds every demand up to the next power of two: at the default acSamplesPerCycle a 50Hz source wants 80 sub-ticks and is rounded up to 128, paying for waveform resolution nothing asked for. The finer ladder rounds up by at most 25% instead of up to 100%. The only visible cost is to a multimeter probe with one node on this island and one on a different island running a rate that does not divide this one - the two readings can be up to one sub-tick's worth of a world tick out of step, which a power-of-two rate never has.";
+        public static final String acMinSamplesPerCycle = "The coarsest resolution the tick-budget governor (solveBudgetGovernor) may cut an over-budget island down to, in samples per electrical cycle. The governor never goes below this even under a budget it cannot meet, so a waveform never degrades past being recognisably one. Only takes effect above multiTicks and below acSamplesPerCycle.";
+
+        public static final String solveBudgetGovernor = "Reduce the sub-tick cap of the most expensive AC islands when solving every island together is taking too much of a world tick, so one runaway network cannot alone destroy the server's TPS. Only ever lowers a rate below what acSamplesPerCycle/acMaxSubTicks would otherwise grant, never raises one above it, and never goes below acMinSamplesPerCycle or multiTicks. Disable to restore the uncapped original behaviour.";
+        public static final String solveBudgetMs = "Wall-clock time per world tick that solving every AC island together may take before solveBudgetGovernor starts cutting rates. A world tick is 50ms for the whole server, shared with vanilla and every other mod, so this should leave that mostly free; see docs/perf/scheduling.md for the measurements the default was chosen from. Zero disables the governor regardless of solveBudgetGovernor.";
 
         public static final String bjtLimAlpha = "BJT inter-iteration voltage change smoothing multiplier";
         public static final String diodeLimAlpha = "Diode inter-iteration voltage change smoothing multiplier";

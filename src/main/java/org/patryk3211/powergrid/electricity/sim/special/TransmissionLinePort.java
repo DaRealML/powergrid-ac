@@ -15,6 +15,7 @@
  */
 package org.patryk3211.powergrid.electricity.sim.special;
 
+import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
 import org.patryk3211.powergrid.electricity.sim.solver.IOuterHook;
@@ -81,6 +82,11 @@ public class TransmissionLinePort extends VoltageSourceCoupling implements IOute
     @Override
     public boolean requiresLockstep() {
         return true;
+    }
+
+    @Override
+    public ElectricalNetwork lockstepPartner() {
+        return other == null ? null : other.getNetwork();
     }
 
     public TransmissionLinePort getOther() {
