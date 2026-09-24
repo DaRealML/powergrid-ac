@@ -481,7 +481,7 @@ public class DynamicallyTypedMatrix {
 
     /** Whether the last factorisation succeeded, so that {@link #solve} answers with a solution and not with zeros. */
     boolean factorizationValid() {
-        return solver != null && solverValid;
+        return hasFactorisation() && solverValid;
     }
 
     public enum State {
