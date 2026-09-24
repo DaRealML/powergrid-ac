@@ -147,6 +147,17 @@ public class WireThermalTest {
     }
 
     @Test
+    void aTemperatureExactlyOnAThresholdCountsAsCrossed() {
+        // sides() is written `(a >= threshold) != (b >= threshold)` specifically so landing exactly
+        // ON a threshold counts as being past it; `>` instead of `>=` here would silently swallow
+        // that crossing whenever the dead-band diff (0.1 below) hides it.
+        Assertions.assertTrue(WireThermal.shouldPublish(125.0f, 124.9f, OVERHEAT), "at the smoke threshold");
+        Assertions.assertTrue(WireThermal.shouldPublish(124.9f, 125.0f, OVERHEAT), "at the smoke threshold, reversed");
+        Assertions.assertTrue(WireThermal.shouldPublish(175.0f, 174.9f, OVERHEAT), "at the overheat threshold");
+        Assertions.assertTrue(WireThermal.shouldPublish(174.9f, 175.0f, OVERHEAT), "at the overheat threshold, reversed");
+    }
+
+    @Test
     void aNonFiniteTemperatureIsAlwaysPublished() {
         Assertions.assertTrue(WireThermal.shouldPublish(Float.NaN, 40f, OVERHEAT));
         Assertions.assertTrue(WireThermal.shouldPublish(40f, Float.NaN, OVERHEAT));

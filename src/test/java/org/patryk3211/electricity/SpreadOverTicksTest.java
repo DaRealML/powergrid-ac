@@ -56,6 +56,22 @@ public class SpreadOverTicksTest {
     }
 
     @Test
+    void theFirstTickOfARoundTakesTheCeilingShareNotTheFloor() {
+        // noTickHandlesMoreThanItsShare only pins an upper bound over the WHOLE round, which a
+        // ceil-to-floor mutation on line 53 still satisfies (a later tick makes up the remainder).
+        // This pins the first tick specifically, where ceil and floor actually differ.
+        for(var pair : new int[][]{ { 2000, 7 }, { 101, 3 }, { 5, 2 }, { 1, 3 }, { 6, 3 } }) {
+            int size = pair[0], interval = pair[1];
+            var schedule = new SpreadOverTicks<Integer>();
+            var handled = new ArrayList<Integer>();
+            schedule.tick(interval, () -> range(size), handled::add);
+            var ceil = (size + interval - 1) / interval;
+            Assertions.assertEquals(ceil, handled.size(),
+                    "first tick of size " + size + " interval " + interval);
+        }
+    }
+
+    @Test
     void theBurstItReplacesWasAllOnOneTick() {
         // 2000 elements every 100 ticks: one tick of 2000 became a hundred ticks of at most 20.
         var perTick = handledPerTick(2000, 100, 1, new HashMap<>());
