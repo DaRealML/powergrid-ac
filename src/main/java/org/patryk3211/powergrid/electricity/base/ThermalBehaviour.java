@@ -59,9 +59,13 @@ public class ThermalBehaviour extends BlockEntityBehaviour implements ISynchroni
     public static final int OVERHEAT_EXPLOSION = 2;
     public static final int IGNORE_EXTRA_COOLING = 4;
 
+    // How often a cooling/warming block's chunk is marked dirty for the autosave; see tick().
+    private static final int DIRTY_MARK_INTERVAL = 20;
+
     private float temperature;
     private float prevTemperature;
     private int overheatTicks;
+    private int dirtyMarkTicks;
 
     private float cachedAmbientTemperature;
 
@@ -274,8 +278,16 @@ public class ThermalBehaviour extends BlockEntityBehaviour implements ISynchroni
                 temperature -= dissipatedPower / 20f / thermalMass;
                 if (dissipatedPower > 0 && temperature < cachedAmbientTemperature)
                     temperature = cachedAmbientTemperature;
-                if (dissipatedPower != 0)
+                // temperature decays toward ambient exponentially, so it is essentially never
+                // bit-identical to it and this branch used to mark the chunk dirty on every tick
+                // of every electric block entity that had ever been warmed -- the same call
+                // CommutatorBlockEntity and EnergyMeterBlockEntity were found to make unconditionally,
+                // hasChunkAt + getChunkAt + setUnsaved(true). A save only needs a value close to
+                // current, not the one from this exact tick, so it is throttled the same way.
+                if (dissipatedPower != 0 && ++dirtyMarkTicks >= DIRTY_MARK_INTERVAL) {
+                    dirtyMarkTicks = 0;
                     world.blockEntityChanged(getPos());
+                }
             }
             if (!Float.isFinite(temperature)) {
                 // Reset if something went wrong.
