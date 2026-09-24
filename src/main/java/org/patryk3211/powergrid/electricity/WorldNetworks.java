@@ -17,7 +17,6 @@ package org.patryk3211.powergrid.electricity;
 
 import com.google.common.collect.Sets;
 import io.netty.util.collection.IntObjectHashMap;
-import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -49,6 +48,7 @@ import org.patryk3211.powergrid.electricity.wire.*;
 import org.patryk3211.powergrid.network.packets.NegotiateSyncC2SPacket;
 import org.patryk3211.powergrid.network.packets.StateS2CPacket;
 import org.patryk3211.powergrid.utility.SpreadOverTicks;
+import org.patryk3211.powergrid.utility.SyncBatching;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -511,21 +511,22 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
                 // Built when the first entry falls due. A player whose nearest elements sync every
                 // fifth tick used to be sent an empty packet, and a pooled buffer allocated for it,
                 // on the other four.
-                StateS2CPacket packet = null;
+                // Lazy so getOrCreate() keeps returning the SAME packet across this batch;
+                // SyncBatchingTest pins that against a mutation that rebuilds it on every write.
+                var packetHolder = new SyncBatching.Lazy<StateS2CPacket>();
                 var behaviours = entry.getValue();
                 for(var pair : behaviours.entrySet()) {
                     if(syncTicks % pair.getValue().lod() != 0)
                         continue;
                     if(pair.getKey() == null || !pair.getKey().shouldSync())
                         continue;
-                    if(packet == null)
-                        packet = new StateS2CPacket(useDoubles);
+                    var packet = packetHolder.getOrCreate(() -> new StateS2CPacket(useDoubles));
                     packet.begin(pair.getKey());
                     pair.getKey().writeToSync(packet.wrapper(), useDoubles, this::findLineMiddle);
                     packet.end();
                 }
-                if(packet != null)
-                    ModdedPackets.sendToClient(packet, entry.getKey());
+                if(packetHolder.current() != null)
+                    ModdedPackets.sendToClient(packetHolder.current(), entry.getKey());
             }
             final int syncInterval = ModdedConfigs.common().stateSynchronization.get();
             // Every electric block entity is fully resent once per interval, a share of them per tick
@@ -548,19 +549,19 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
      * so they are collapsed here.
      */
     private List<BlockWireEndpoint> fullSyncTargets() {
-        var seen = new LongOpenHashSet();
-        var targets = new ArrayList<BlockWireEndpoint>();
+        var candidates = new ArrayList<BlockWireEndpoint>();
         for(var network : subnetworks) {
             for(var node : network.getNodes()) {
                 if(!(node instanceof OwnedFloatingNode owned))
                     continue;
                 if(!(owned.endpoint instanceof BlockWireEndpoint bwe))
                     continue;
-                if(seen.add(bwe.getPos().asLong()))
-                    targets.add(bwe);
+                candidates.add(bwe);
             }
         }
-        return targets;
+        // The dedup itself is SyncBatching.firstOccurrencePerKey(), tested without a Level; this
+        // method's own live-network-graph walk above is what a headless test still cannot reach.
+        return SyncBatching.firstOccurrencePerKey(candidates, bwe -> bwe.getPos().asLong());
     }
 
     private void sendFullState(BlockWireEndpoint endpoint) {
