@@ -20,6 +20,8 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -35,6 +37,9 @@ public class AlarmBellBlockEntity extends ElectricBlockEntity {
 
     private boolean hasSoundInstance = false;
     private float prevPitch, prevVolume;
+
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
 
     public AlarmBellBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -79,8 +84,25 @@ public class AlarmBellBlockEntity extends ElectricBlockEntity {
     }
 
     @Override
+    protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.read(tag, registries, clientPacket);
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(wire != null)
+            wire.setCurrent(coilCurrent);
+    }
+
+    @Override
+    protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(tag, registries, clientPacket);
+        if(wire != null)
+            tag.putFloat("CoilCurrent", (float) wire.current());
+    }
+
+    @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
         wire = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        wire.setCurrent(coilCurrent);
+        coilCurrent = 0;
     }
 }

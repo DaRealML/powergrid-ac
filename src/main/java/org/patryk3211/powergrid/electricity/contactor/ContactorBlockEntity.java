@@ -49,6 +49,9 @@ public class ContactorBlockEntity extends ElectricBlockEntity {
     private boolean state;
     private final Set<ContactorBlockEntity> external = new HashSet<>();
 
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
+
     public ContactorBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
     }
@@ -202,18 +205,25 @@ public class ContactorBlockEntity extends ElectricBlockEntity {
         } else {
             setState(tag.getBoolean("State"));
         }
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(coil != null)
+            coil.setCurrent(coilCurrent);
     }
 
     @Override
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
         tag.putBoolean("State", state);
+        if(coil != null)
+            tag.putFloat("CoilCurrent", (float) coil.current());
     }
 
     @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(6);
         coil = builder.connectCoil(resistance("coil"), builder.terminalNode(0), builder.terminalNode(1));
+        coil.setCurrent(coilCurrent);
+        coilCurrent = 0;
 
         if(state || (external != null && !external.isEmpty())) {
             splitCooldown = 0;

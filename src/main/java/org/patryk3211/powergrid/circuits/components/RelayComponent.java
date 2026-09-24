@@ -38,6 +38,7 @@ public class RelayComponent extends MirrorableComponent {
             c -> 1.2f / c.get(THRESHOLD_VOLTAGE),
             v -> Unit.CURRENT.formatWithPrefixes(v).string());
     public static final BooleanProperty POLARIZED = new BooleanProperty(PowerGrid.MOD_ID, "relay_polarized");
+    public static final FloatProperty COIL_CURRENT = new CoilCurrentProperty(PowerGrid.MOD_ID, "coil_current");
 
     public RelayComponent(ComponentFootprint footprint) {
         super(footprint);
@@ -46,7 +47,7 @@ public class RelayComponent extends MirrorableComponent {
     @Override
     protected void addProperties(ImmutableCollection.Builder<ComponentProperty<?>> properties) {
         super.addProperties(properties);
-        properties.add(THRESHOLD_VOLTAGE, STATE, THRESHOLD_CURRENT, POLARIZED, current(32));
+        properties.add(THRESHOLD_VOLTAGE, STATE, THRESHOLD_CURRENT, POLARIZED, current(32), COIL_CURRENT);
     }
 
     @Override
@@ -61,6 +62,7 @@ public class RelayComponent extends MirrorableComponent {
         // at 99.3% of its final current by the time that logic next reads it -- the thresholds
         // see what they always saw, and the part gains the inrush and reactance it should have had.
         var coilWire = builder.connectCoil(resistance, builder.terminalNode(0), builder.terminalNode(1));
+        coilWire.setCurrent(placed.get(COIL_CURRENT));
 
         final var switchResistance = 0.05f;
         var common = builder.terminalNode(3);
@@ -74,6 +76,8 @@ public class RelayComponent extends MirrorableComponent {
 
         placed.add(normallyClosed);
         placed.add(normallyOpen);
+        // Not part of the switching logic; kept accessible so tick() can save its current back.
+        placed.add(coilWire);
 
         thermals.builder()
                 .setMaxCurrent(onCurrent * 2, resistance, 125f)
@@ -103,7 +107,36 @@ public class RelayComponent extends MirrorableComponent {
             ));
             placed.set(STATE, state);
         }
+        // Make the coil's current persistent, the same way CapacitorComponent/InductorComponent do.
+        placed.set(COIL_CURRENT, (float) placed.wires.get(2).current());
 
         return true;
+    }
+
+    private static class CoilCurrentProperty extends FloatProperty {
+        public CoilCurrentProperty(String namespace, String name) {
+            super(namespace, name, 0, 0, 0);
+        }
+
+        @Override
+        public Float parse(String str) throws NumberFormatException {
+            // Not allowed
+            return 0.0f;
+        }
+
+        @Override
+        public boolean isHidden() {
+            return true;
+        }
+
+        @Override
+        public boolean isUnsafe() {
+            return true;
+        }
+
+        @Override
+        protected float limit(float value) {
+            return value;
+        }
     }
 }

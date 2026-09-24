@@ -50,6 +50,9 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
     private LRSeriesWire motor;
     private int prevSpeed;
 
+    /** The motor coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
+
     public ElectricFanBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
         airCurrent = new AirCurrent(this);
@@ -67,11 +70,16 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
         super.read(tag, registries, clientPacket);
         if (clientPacket)
             airCurrent.rebuild();
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(motor != null)
+            motor.setCurrent(coilCurrent);
     }
 
     @Override
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
+        if(motor != null)
+            tag.putFloat("CoilCurrent", (float) motor.current());
     }
 
     @Override
@@ -206,5 +214,7 @@ public class ElectricFanBlockEntity extends ElectricBlockEntity implements IAirC
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
         motor = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        motor.setCurrent(coilCurrent);
+        coilCurrent = 0;
     }
 }

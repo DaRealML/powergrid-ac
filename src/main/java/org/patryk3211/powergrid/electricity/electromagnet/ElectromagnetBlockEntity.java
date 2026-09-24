@@ -22,6 +22,8 @@ import com.simibubi.create.foundation.recipe.RecipeApplier;
 import dev.architectury.injectables.annotations.ExpectPlatform;
 import net.createmod.catnip.math.VecHelper;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.RecipeHolder;
@@ -43,6 +45,9 @@ import java.util.Optional;
 public class ElectromagnetBlockEntity extends ElectricBlockEntity implements MagnetizingBehaviour.MagnetizingBehaviourSpecifics {
     private LRSeriesWire wire;
     private MagnetizingBehaviour magnetizingBehaviour;
+
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
 
     public ElectromagnetBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
@@ -77,12 +82,29 @@ public class ElectromagnetBlockEntity extends ElectricBlockEntity implements Mag
     }
 
     @Override
+    protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.read(tag, registries, clientPacket);
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(wire != null)
+            wire.setCurrent(coilCurrent);
+    }
+
+    @Override
+    protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(tag, registries, clientPacket);
+        if(wire != null)
+            tag.putFloat("CoilCurrent", (float) wire.current());
+    }
+
+    @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
         // An electromagnet is a coil, and a coil is not a resistor. connectCoil gives it the
         // inductance its own resistance implies, so it has inrush and reactance rather than
         // presenting the same impedance at every frequency.
         wire = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        wire.setCurrent(coilCurrent);
+        coilCurrent = 0;
     }
 
     @ExpectPlatform

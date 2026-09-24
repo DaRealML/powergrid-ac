@@ -57,6 +57,15 @@ public class ConstantSpeedMotorBlockEntity extends GeneratingKineticBlockEntity 
 
     private LRSeriesWire coil;
 
+    /**
+     * The coil's current and theta-method history term, loaded in {@link #read} and applied once
+     * in {@link #buildCircuit}, then zeroed so a later rebuild with no fresh read cannot clobber
+     * live coil state with a stale save. Without this the coil's stored magnetic energy silently
+     * reset to zero on every chunk reload.
+     */
+    private float coilCurrent;
+    private float coilVprev;
+
     private float generatedSU = 0;
 
     private float avgSpeed;
@@ -165,6 +174,10 @@ public class ConstantSpeedMotorBlockEntity extends GeneratingKineticBlockEntity 
         generatedSU = compound.getFloat("GeneratedStress");
         direction = compound.contains("Direction") ? compound.getInt("Direction") : 1;
         updateGeneratedRotation();
+        coilCurrent = compound.getFloat("CoilCurrent");
+        coilVprev = compound.getFloat("CoilVprev");
+        if(coil != null)
+            coil.setCurrent(coilCurrent, coilVprev);
     }
 
     @Override
@@ -172,6 +185,10 @@ public class ConstantSpeedMotorBlockEntity extends GeneratingKineticBlockEntity 
         super.write(compound, registries, clientPacket);
         compound.putFloat("GeneratedStress", generatedSU);
         compound.putInt("Direction", direction);
+        if(coil != null) {
+            compound.putFloat("CoilCurrent", (float) coil.current());
+            compound.putFloat("CoilVprev", (float) coil.getVprev());
+        }
     }
 
     @Override
@@ -278,6 +295,9 @@ public class ConstantSpeedMotorBlockEntity extends GeneratingKineticBlockEntity 
         var R = resistance();
         var L = R * ModdedConfigs.server().electricity.motorTimeConstant.getF();
         coil = new LRSeriesWire(L, R, builder.terminalNode(0), builder.terminalNode(1));
+        coil.setCurrent(coilCurrent, coilVprev);
+        coilCurrent = 0;
+        coilVprev = 0;
         builder.add(coil);
     }
 

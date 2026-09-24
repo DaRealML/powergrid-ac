@@ -49,6 +49,15 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
 
     private LRSeriesWire coil;
 
+    /**
+     * The coil's current and theta-method history term, loaded in {@link #read} and applied once
+     * in {@link #buildCircuit}, then zeroed so a later rebuild with no fresh read cannot clobber
+     * live coil state with a stale save. Without this the coil's stored magnetic energy silently
+     * reset to zero on every chunk reload.
+     */
+    private float coilCurrent;
+    private float coilVprev;
+
     private float generatedSpeed = 0;
 
     private float avgSpeed;
@@ -155,6 +164,10 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
         generatedSpeed = compound.getFloat("GeneratedSpeed");
         direction = compound.contains("Direction") ? compound.getInt("Direction") : 1;
         updateGeneratedRotation();
+        coilCurrent = compound.getFloat("CoilCurrent");
+        coilVprev = compound.getFloat("CoilVprev");
+        if(coil != null)
+            coil.setCurrent(coilCurrent, coilVprev);
     }
 
     @Override
@@ -162,6 +175,10 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
         super.write(compound, registries, clientPacket);
         compound.putFloat("GeneratedSpeed", generatedSpeed);
         compound.putInt("Direction", direction);
+        if(coil != null) {
+            compound.putFloat("CoilCurrent", (float) coil.current());
+            compound.putFloat("CoilVprev", (float) coil.getVprev());
+        }
     }
 
     @Override
@@ -257,6 +274,9 @@ public class ElectricMotorBlockEntity extends GeneratingKineticBlockEntity imple
         var R = resistance();
         var L = R * ModdedConfigs.server().electricity.motorTimeConstant.getF();
         coil = new LRSeriesWire(L, R, builder.terminalNode(0), builder.terminalNode(1));
+        coil.setCurrent(coilCurrent, coilVprev);
+        coilCurrent = 0;
+        coilVprev = 0;
         builder.add(coil);
     }
 }

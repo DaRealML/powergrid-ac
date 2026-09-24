@@ -35,6 +35,7 @@ import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.modulardisplay.modules.*;
 import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.SwitchedWire;
+import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
 import org.patryk3211.powergrid.network.packets.DisplayBurnoutS2CPacket;
 import org.patryk3211.powergrid.utility.Lang;
 
@@ -49,6 +50,9 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
     public final IDisplayModule[] modules = new IDisplayModule[SLOT_COUNT];
     private DisplaySlotThermal[] slotThermals;
     private boolean[] removeBlankingPage = new boolean[SLOT_COUNT];
+
+    /** Each slot's stepper coil current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private final float[] coilCurrents = new float[SLOT_COUNT];
 
     @Override
     public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
@@ -215,6 +219,10 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
         }
         tag.put("slots", slotList);
         tag.putIntArray("rbp", rbp);
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            if (wires != null && wires[i * 3] instanceof LRSeriesWire coil)
+                tag.putFloat("CoilCurrent" + i, (float) coil.current());
+        }
     }
 
     @Override
@@ -250,6 +258,11 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
             for (int i = 0; i < Math.min(rbp.length, SLOT_COUNT); i++) {
                 removeBlankingPage[i] = rbp[i] == 1;
             }
+        }
+        for (int i = 0; i < SLOT_COUNT; i++) {
+            coilCurrents[i] = tag.getFloat("CoilCurrent" + i);
+            if (wires != null && wires[i * 3] instanceof LRSeriesWire coil)
+                coil.setCurrent(coilCurrents[i]);
         }
     }
 
@@ -371,7 +384,10 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
         for (int s = 0; s < SLOT_COUNT; s++) {
             var coilNode = builder.addInternalNode();
 
-            wires[w1] = builder.connectCoil(25, builder.terminalNode(p), coilNode);
+            var coil = builder.connectCoil(25, builder.terminalNode(p), coilNode);
+            coil.setCurrent(coilCurrents[s]);
+            coilCurrents[s] = 0;
+            wires[w1] = coil;
             wires[w2] = builder.connectSwitch(0.1f, negative, coilNode, false);
             wires[w3] = builder.connectSwitch(0.1f, builder.terminalNode(r), coilNode, false);
             p += 2; r += 2; w1 += 3; w2 += 3; w3 += 3;
