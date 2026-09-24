@@ -292,6 +292,9 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
     @Override
     public void tick() {
         super.tick();
+        // What write() saves: compared at the end of the tick to decide whether the chunk is dirty.
+        var savedVelocity = angularVelocity;
+        var savedShaftAngle = shaftAngle;
         if(isController()) {
             /* Get the old and current Angular Velocity */
             var oldAV = getOldAngVel();
@@ -377,12 +380,40 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
             shaftAngle = getShaftAngle();
             shaftTick = getShaftTick();
         }
-        getWorld().blockEntityChanged(getPos());
+        // Only when something that gets saved moved. A rotor at rest with nothing driving it used to
+        // mark its chunk unsaved on every tick, which costs two chunk lookups a tick per segment and
+        // leaves the chunk permanently dirty for the autosave to serialise. NaN compares unequal, so
+        // it still counts as a change.
+        if(shouldMarkDirty(angularVelocity, savedVelocity, shaftAngle, savedShaftAngle))
+            getWorld().blockEntityChanged(getPos());
         damageCalc();
+    }
+
+    /**
+     * Whether tick()'s save-worthy state moved since the last mark.
+     * <p>
+     * Pulled out, public and static, so a plain JUnit test can drive it directly: tick() itself
+     * needs a Level and is outside what any headless test in this repo can reach.
+     */
+    public static boolean shouldMarkDirty(float angularVelocity, float savedVelocity, double shaftAngle, double savedShaftAngle) {
+        return angularVelocity != savedVelocity || shaftAngle != savedShaftAngle;
+    }
+
+    /**
+     * Whether damageCalc()'s entity query is worth running at this angular velocity.
+     * <p>
+     * Pulled out for the same reason as {@link #shouldMarkDirty}.
+     */
+    public static boolean shouldRunDamageQuery(float angularVelocityRadians) {
+        return angularVelocityRadians != 0;
     }
 
     private void damageCalc() {
         if(damageRadius == 0 || !ModdedConfigs.server().kinetics.generatorControls.dangerousGenerators.get())
+            return;
+        // A rotor that is not turning pushes and hurts nothing (both scale with the speed), so it
+        // has no use for an entity query, which it made on every tick on both sides.
+        if(!shouldRunDamageQuery(getAngularVelocityRadians()))
             return;
         var state = blockEntity.getBlockState();
         if(bbState != blockEntity.getBlockState()) {

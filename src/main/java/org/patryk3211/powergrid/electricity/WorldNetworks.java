@@ -48,6 +48,8 @@ import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePort;
 import org.patryk3211.powergrid.electricity.wire.*;
 import org.patryk3211.powergrid.network.packets.NegotiateSyncC2SPacket;
 import org.patryk3211.powergrid.network.packets.StateS2CPacket;
+import org.patryk3211.powergrid.utility.SpreadOverTicks;
+import org.patryk3211.powergrid.utility.SyncBatching;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -76,6 +78,7 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
     protected final Set<ElectricalNetwork> islandDiscoveryQueue = new HashSet<>();
     private boolean runningDiscovery = false;
     private int syncTicks = 0;
+    private final SpreadOverTicks<BlockWireEndpoint> fullSync = new SpreadOverTicks<>();
 
     private CompoundTag nbt;
 
@@ -515,41 +518,67 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
             }
             for(var entry : syncStates.entrySet()) {
                 boolean useDoubles = NegotiateSyncC2SPacket.useDoubles(entry.getKey());
-                var packet = new StateS2CPacket(useDoubles);
-                var wrapper = packet.wrapper();
+                // Built when the first entry falls due. A player whose nearest elements sync every
+                // fifth tick used to be sent an empty packet, and a pooled buffer allocated for it,
+                // on the other four.
+                // Lazy so getOrCreate() keeps returning the SAME packet across this batch;
+                // SyncBatchingTest pins that against a mutation that rebuilds it on every write.
+                var packetHolder = new SyncBatching.Lazy<StateS2CPacket>();
                 var behaviours = entry.getValue();
                 for(var pair : behaviours.entrySet()) {
                     if(syncTicks % pair.getValue().lod() != 0)
                         continue;
                     if(pair.getKey() == null || !pair.getKey().shouldSync())
                         continue;
+                    var packet = packetHolder.getOrCreate(() -> new StateS2CPacket(useDoubles));
                     packet.begin(pair.getKey());
-                    pair.getKey().writeToSync(wrapper, useDoubles, this::findLineMiddle);
+                    pair.getKey().writeToSync(packet.wrapper(), useDoubles, this::findLineMiddle);
                     packet.end();
                 }
-                ModdedPackets.sendToClient(packet, entry.getKey());
+                if(packetHolder.current() != null)
+                    ModdedPackets.sendToClient(packetHolder.current(), entry.getKey());
             }
             final int syncInterval = ModdedConfigs.common().stateSynchronization.get();
-            if(syncInterval > 0) {
-                if (syncTicks >= syncInterval) {
-                    // TODO: Perhaps we should avoid sending ALL subnetworks at once and instead
-                    //  split the sync up to avoid generating a lot of intermittent network traffic.
-                    for (var network : subnetworks) {
-                        for (var node : network.getNodes()) {
-                            if (!(node instanceof OwnedFloatingNode owned))
-                                continue;
-                            if (!(owned.endpoint instanceof BlockWireEndpoint bwe))
-                                continue;
-                            var behaviour = bwe.getElectricBehaviour(world);
-                            if (behaviour != null)
-                                behaviour.blockEntity.sendData();
-                        }
-                    }
-                    syncTicks = 0;
-                }
-            }
+            // Every electric block entity is fully resent once per interval, a share of them per tick
+            // instead of all of them on one (a tick that long is a lag spike every few seconds, and
+            // the burst of block entity packets that goes with it).
+            fullSync.tick(syncInterval, this::fullSyncTargets, this::sendFullState);
+            // syncTicks still counts from each interval boundary, because the sync levels of detail
+            // above are phased on it.
+            if(syncInterval > 0 && syncTicks >= syncInterval)
+                syncTicks = 0;
             ++syncTicks;
         }
+    }
+
+    /**
+     * One endpoint per block that has a terminal in any network.
+     * <p>
+     * A block with three terminals used to be sent three times in the one tick, which Create
+     * coalesces into a single block update. Spread over several ticks they would be three packets,
+     * so they are collapsed here.
+     */
+    private List<BlockWireEndpoint> fullSyncTargets() {
+        var candidates = new ArrayList<BlockWireEndpoint>();
+        for(var network : subnetworks) {
+            for(var node : network.getNodes()) {
+                if(!(node instanceof OwnedFloatingNode owned))
+                    continue;
+                if(!(owned.endpoint instanceof BlockWireEndpoint bwe))
+                    continue;
+                candidates.add(bwe);
+            }
+        }
+        // The dedup itself is SyncBatching.firstOccurrencePerKey(), tested without a Level; this
+        // method's own live-network-graph walk above is what a headless test still cannot reach.
+        return SyncBatching.firstOccurrencePerKey(candidates, bwe -> bwe.getPos().asLong());
+    }
+
+    private void sendFullState(BlockWireEndpoint endpoint) {
+        // Resolved now rather than when the round began: the block may have gone or been replaced.
+        var behaviour = endpoint.getElectricBehaviour(world);
+        if(behaviour != null && !behaviour.blockEntity.isRemoved())
+            behaviour.blockEntity.sendData();
     }
 
     public ElectricalNetwork newNetwork() {
