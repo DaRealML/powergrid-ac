@@ -39,6 +39,7 @@ import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.kinetics.generator.rotor.RotorBlockEntity;
+import org.patryk3211.powergrid.utility.DirtyMarkThrottle;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
@@ -46,11 +47,6 @@ import java.util.HashSet;
 import java.util.List;
 
 public class CommutatorBlockEntity extends RotorBlockEntity implements IElectricEntity, IElectric, IHaveGoggleInformation {
-    // How often an active source's chunk is marked dirty for the autosave; see tick(). One second
-    // of drift in a value that is recomputed from the live solve every tick anyway is not a loss
-    // anyone can observe, and it is well inside the game's own autosave interval.
-    private static final long DIRTY_MARK_INTERVAL = 20;
-
     protected ElectricBehaviour electricBehaviour;
     protected ThermalBehaviour thermalBehaviour;
     protected GeneratorCoupling source;
@@ -392,7 +388,9 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
             // ticks it changed on, so this is throttled to once per DIRTY_MARK_INTERVAL ticks
             // instead of comparing the value. Uses the shaft's own tick count, not the world's, so
             // machines built at different times don't all mark dirty on the same tick.
-            if(source != null && rotorBehaviour.getShaftTick() % DIRTY_MARK_INTERVAL == 0) {
+            // DirtyMarkThrottle.isDueOnTick() holds no Minecraft types and is unit tested directly;
+            // this call site and the EmfState staleness it accepts are not (see class comment there).
+            if(source != null && DirtyMarkThrottle.isDueOnTick(rotorBehaviour.getShaftTick())) {
                 level.blockEntityChanged(worldPosition);
             }
         } else {

@@ -44,6 +44,7 @@ import org.patryk3211.powergrid.electricity.sim.AbstractElectricWire;
 import org.patryk3211.powergrid.electricity.sim.node.OwnedFloatingNode;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLine;
 import org.patryk3211.powergrid.network.packets.StateS2CPacket;
+import org.patryk3211.powergrid.utility.DirtyMarkThrottle;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -58,9 +59,6 @@ public class ThermalBehaviour extends BlockEntityBehaviour implements ISynchroni
     public static final int OVERHEAT_PARTICLES = 1;
     public static final int OVERHEAT_EXPLOSION = 2;
     public static final int IGNORE_EXTRA_COOLING = 4;
-
-    // How often a cooling/warming block's chunk is marked dirty for the autosave; see tick().
-    private static final int DIRTY_MARK_INTERVAL = 20;
 
     private float temperature;
     private float prevTemperature;
@@ -284,7 +282,7 @@ public class ThermalBehaviour extends BlockEntityBehaviour implements ISynchroni
                 // CommutatorBlockEntity and EnergyMeterBlockEntity were found to make unconditionally,
                 // hasChunkAt + getChunkAt + setUnsaved(true). A save only needs a value close to
                 // current, not the one from this exact tick, so it is throttled the same way.
-                if (dissipatedPower != 0 && ++dirtyMarkTicks >= DIRTY_MARK_INTERVAL) {
+                if (dissipatedPower != 0 && DirtyMarkThrottle.isDueAfter(++dirtyMarkTicks)) {
                     dirtyMarkTicks = 0;
                     world.blockEntityChanged(getPos());
                 }

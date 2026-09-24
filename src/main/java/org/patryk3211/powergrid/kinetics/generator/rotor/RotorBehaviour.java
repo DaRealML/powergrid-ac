@@ -384,9 +384,28 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
         // mark its chunk unsaved on every tick, which costs two chunk lookups a tick per segment and
         // leaves the chunk permanently dirty for the autosave to serialise. NaN compares unequal, so
         // it still counts as a change.
-        if(angularVelocity != savedVelocity || shaftAngle != savedShaftAngle)
+        if(shouldMarkDirty(angularVelocity, savedVelocity, shaftAngle, savedShaftAngle))
             getWorld().blockEntityChanged(getPos());
         damageCalc();
+    }
+
+    /**
+     * Whether tick()'s save-worthy state moved since the last mark.
+     * <p>
+     * Pulled out, public and static, so a plain JUnit test can drive it directly: tick() itself
+     * needs a Level and is outside what any headless test in this repo can reach.
+     */
+    public static boolean shouldMarkDirty(float angularVelocity, float savedVelocity, double shaftAngle, double savedShaftAngle) {
+        return angularVelocity != savedVelocity || shaftAngle != savedShaftAngle;
+    }
+
+    /**
+     * Whether damageCalc()'s entity query is worth running at this angular velocity.
+     * <p>
+     * Pulled out for the same reason as {@link #shouldMarkDirty}.
+     */
+    public static boolean shouldRunDamageQuery(float angularVelocityRadians) {
+        return angularVelocityRadians != 0;
     }
 
     private void damageCalc() {
@@ -394,7 +413,7 @@ public class RotorBehaviour extends SegmentedBehaviour<RotorBehaviour> implement
             return;
         // A rotor that is not turning pushes and hurts nothing (both scale with the speed), so it
         // has no use for an entity query, which it made on every tick on both sides.
-        if(getAngularVelocityRadians() == 0)
+        if(!shouldRunDamageQuery(getAngularVelocityRadians()))
             return;
         var state = blockEntity.getBlockState();
         if(bbState != blockEntity.getBlockState()) {

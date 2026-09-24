@@ -18,6 +18,7 @@ import org.patryk3211.powergrid.electricity.base.ElectricBlockEntity;
 import org.patryk3211.powergrid.electricity.base.ThermalBehaviour;
 import org.patryk3211.powergrid.electricity.sim.ElectricWire;
 import org.patryk3211.powergrid.electricity.sim.special.WattmeterWire;
+import org.patryk3211.powergrid.utility.DirtyMarkThrottle;
 
 import java.util.List;
 
@@ -25,8 +26,6 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
     // How often the meter's chunk is marked dirty for the autosave while energy is accumulating;
     // see electricalTick(). Worst case this leaves under a second of reading unflushed on an
     // unclean shutdown, well inside the game's own autosave interval.
-    private static final int DIRTY_MARK_INTERVAL = 20;
-
     private WattmeterWire series;
     private ElectricWire shunt;
 
@@ -74,7 +73,7 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
         // the last saved value by a nonzero amount. The chunk only needs to be marked dirty often
         // enough that a save picks up a value close to current, not on the very tick it changed,
         // so this is throttled the same way as CommutatorBlockEntity's EmfState.
-        if(++dirtyMarkTicks >= DIRTY_MARK_INTERVAL) {
+        if(DirtyMarkThrottle.isDueAfter(++dirtyMarkTicks)) {
             dirtyMarkTicks = 0;
             setUnsaved();
         }
