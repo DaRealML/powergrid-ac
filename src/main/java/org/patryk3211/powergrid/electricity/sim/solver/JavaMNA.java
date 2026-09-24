@@ -48,8 +48,9 @@ public class JavaMNA implements IMNA {
     protected DMatrixRMaj ErrorVector;
     protected DMatrixRMaj StateDelta;
 
-    private double[] columnScales;
-    private double[] rowScales;
+    // Row and column equilibration are provably identical by construction (computeScales()
+    // only ever sets them together, to the same value), so one array serves both roles.
+    private double[] scales;
 
     private final StateAccess stateAccess = new StateAccess();
     private final ResidualAccess residualAccess = new ResidualAccess();
@@ -250,7 +251,7 @@ public class JavaMNA implements IMNA {
         if(row >= nodes.size() || column >= nodes.size())
             throw new IllegalArgumentException("Provided entry lays outside of the allocated matrices.");
         if(SCALING) {
-            var scaledValue = value * columnScales[column] * rowScales[row];
+            var scaledValue = value * scales[column] * scales[row];
             if(ROW_EXCHANGE) {
                 if (enableRowExchange) {
                     var e = getOrCreateRow(row);
@@ -293,7 +294,7 @@ public class JavaMNA implements IMNA {
         int n = workMatrix.getNumRows();
         for(int i = 0; i < n; ++i) {
             if(nodes.get(i) instanceof ICouplingNode) {
-                columnScales[i] = rowScales[i] = 1;
+                scales[i] = 1;
                 continue;
             }
             double max = 0;
@@ -302,10 +303,10 @@ public class JavaMNA implements IMNA {
                 max += v * v;
             }
             if(max == 0) {
-                columnScales[i] = rowScales[i] = 1;
+                scales[i] = 1;
                 continue;
             }
-            columnScales[i] = rowScales[i] = Math.sqrt(Math.min(1.0 / Math.sqrt(max), 2000));
+            scales[i] = Math.sqrt(Math.min(1.0 / Math.sqrt(max), 2000));
         }
         scalesAge = 0;
     }
@@ -340,8 +341,7 @@ public class JavaMNA implements IMNA {
         StateVector = NewState;
 
         if(SCALING) {
-            columnScales = new double[size];
-            rowScales = new double[size];
+            scales = new double[size];
         }
 
         // Invalidate scales
@@ -408,8 +408,8 @@ public class JavaMNA implements IMNA {
             recalculateScales = true;
         }
         if(recalculateScales) {
-            workMatrix.multColumns(columnScales, ScaledJ);
-            ScaledJ.multRows(rowScales, null);
+            workMatrix.multColumns(scales, ScaledJ);
+            ScaledJ.multRows(scales, null);
             ScaledJ.markRefactorize();
             // Make sure to drop all exchanged rows
             enableRowExchange = false;
@@ -440,7 +440,7 @@ public class JavaMNA implements IMNA {
         var workMatrix = Jacobian;
         if(SCALING) {
             prepareScaled(workMatrix);
-            CommonOps_DDRM.multRows(rowScales, ResidualVector);
+            CommonOps_DDRM.multRows(scales, ResidualVector);
             workMatrix = ScaledJ;
         }
 
@@ -457,7 +457,7 @@ public class JavaMNA implements IMNA {
             return;
         }
         if(SCALING)
-            CommonOps_DDRM.multRows(columnScales, StateVector);
+            CommonOps_DDRM.multRows(scales, StateVector);
 
         // Equivalent of the converged branch of verifyConvergence(). The residual of a linear
         // solve is zero by construction, so there is no norm to test — but warm-up must still
@@ -488,7 +488,7 @@ public class JavaMNA implements IMNA {
 
         var residual = ResidualVector.data;
         var rhs = RHSVector.data;
-        var rows = rowScales;
+        var rows = scales;
         int n = ResidualVector.getNumRows();
         for(int i = 0; i < n; ++i)
             residual[i] = -(0.0 - rhs[i]) * rows[i];
@@ -497,7 +497,7 @@ public class JavaMNA implements IMNA {
         ScaledJ.solve(ResidualVector, StateVector);
 
         var state = StateVector.data;
-        var columns = columnScales;
+        var columns = scales;
         boolean uncountable = false;
         for(int i = 0; i < n; ++i) {
             var value = state[i];
@@ -557,7 +557,7 @@ public class JavaMNA implements IMNA {
 
             if(SCALING) {
                 prepareScaled(workMatrix);
-                CommonOps_DDRM.multRows(rowScales, ResidualVector);
+                CommonOps_DDRM.multRows(scales, ResidualVector);
                 workMatrix = ScaledJ;
             }
 
@@ -601,7 +601,7 @@ public class JavaMNA implements IMNA {
                 ++stats.singularSolves;
             if (valid) {
                 if(SCALING)
-                    CommonOps_DDRM.multRows(columnScales, StateVector);
+                    CommonOps_DDRM.multRows(scales, StateVector);
                 CommonOps_DDRM.subtract(StateVector, StateDelta, StateDelta);
                 // Perform solution fitting
                 double alpha = 0;
