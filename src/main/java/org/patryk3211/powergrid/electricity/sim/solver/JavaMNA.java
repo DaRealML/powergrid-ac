@@ -469,6 +469,60 @@ public class JavaMNA implements IMNA {
         }
     }
 
+    /**
+     * {@link #singleTickLinear()} with the passes over the vectors fused.
+     * <p>
+     * The residual of a network without hooks is the right-hand side, reached by subtracting it
+     * from zero and negating (computeResidual() does exactly that), and then its rows are scaled:
+     * three passes over the vector become one expression per entry. Likewise the check for NaN and
+     * the scaling of the solution's columns share one loop. Each entry sees exactly the same
+     * operations in the same order as before, signed zeros included, so the residual is
+     * bit-identical, and the solution is checked before it is scaled, as it was.
+     * <p>
+     * The scales are prepared before the residual is built rather than after. They do not depend
+     * on it, so the order only mattered while the two were separate steps.
+     */
+    private void singleTickLinearFused() {
+        ++stats.residualBuilds;
+        prepareScaled(Jacobian);
+
+        var residual = ResidualVector.data;
+        var rhs = RHSVector.data;
+        var rows = rowScales;
+        int n = ResidualVector.getNumRows();
+        for(int i = 0; i < n; ++i)
+            residual[i] = -(0.0 - rhs[i]) * rows[i];
+
+        ++stats.linearSystemSolves;
+        ScaledJ.solve(ResidualVector, StateVector);
+
+        var state = StateVector.data;
+        var columns = columnScales;
+        boolean uncountable = false;
+        for(int i = 0; i < n; ++i) {
+            var value = state[i];
+            if(Double.isNaN(value) || Double.isInfinite(value)) {
+                uncountable = true;
+                break;
+            }
+            state[i] = value * columns[i];
+        }
+        if(uncountable) {
+            // As singleTickLinear(): collapse to the zero state rather than propagate NaN.
+            ++stats.singularSolves;
+            StateVector.zero();
+            StateDelta.zero();
+            converged = false;
+            return;
+        }
+
+        converged = true;
+        if(warmUpTicks > 0) {
+            --warmUpTicks;
+            converged = false;
+        }
+    }
+
     @Override
     public void singleTick() {
         PERF.start();
@@ -476,7 +530,10 @@ public class JavaMNA implements IMNA {
         // Networks with no solver hooks are linear and take the single-solve path above.
         if(network.innerHooks.isEmpty()) {
             ++stats.linearSolves;
-            singleTickLinear();
+            if(SolverSwitches.legacyLinearPath || !SCALING)
+                singleTickLinear();
+            else
+                singleTickLinearFused();
             PERF.end();
             return;
         }
@@ -719,9 +776,14 @@ public class JavaMNA implements IMNA {
 
         @Override
         public double safe_get(int row, int column) {
-            if(StateVector == null)
+            var state = StateVector;
+            if(state == null)
                 return 0;
-            return IMatrixAccess.super.safe_get(row, column);
+            // Same bounds test as IMatrixAccess.safe_get, on the fields rather than through two
+            // interface calls: every voltage read of every sub-tick lands here.
+            if(row >= state.numRows || column >= state.numCols)
+                return 0;
+            return state.data[row];
         }
 
         @Override
