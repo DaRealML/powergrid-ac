@@ -720,6 +720,12 @@ public class ElectricalNetwork implements IStamped {
         // an ordinary node of an island with no leaf nodes. It computes what tryGetValue() does for
         // that case without a hash lookup and without boxing the result. A subclass that overrides
         // tryGetValue() only changes the answer for a node that has no index, which this skips.
+        //
+        // No test today can tell this guard apart from its own negation: makeLeaf() always calls
+        // node.assignIndex(-1), so a leaf node's own index bounds check below (index >= 0) already
+        // rejects it regardless of leafNodes.isEmpty(), and every other node is never in leafNodes.
+        // Keep the check anyway: it is the one thing standing between a future node kind that reuses
+        // a stale in-range index while leafed and a wrong answer read straight off the state vector.
         if(!SolverSwitches.legacyValueAccess && mna != null && leafNodes.isEmpty()) {
             var index = node.getIndex();
             if(index >= 0 && index < nodes.size()) {
