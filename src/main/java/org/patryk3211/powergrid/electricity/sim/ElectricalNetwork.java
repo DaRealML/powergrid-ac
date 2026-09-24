@@ -48,11 +48,13 @@ public class ElectricalNetwork implements IStamped {
     protected final Set<ICouplingNode> couplings = new ReferenceOpenHashSet<>();
     protected final List<INode> nodes = new ReferenceArrayList<>();
 
-    protected final Set<IOuterHook> outerHooks = new ReferenceOpenHashSet<>();
-    protected final Set<IMultiHooks> multiHooks = new ReferenceOpenHashSet<>();
+    // Membership-tracked sets: the per-sub-tick loops scan an array snapshot of these rather than
+    // walking a hash table. See SnapshotSet.
+    protected final SnapshotSet<IOuterHook> outerHooks = new SnapshotSet<>();
+    protected final SnapshotSet<IMultiHooks> multiHooks = new SnapshotSet<>();
     public final Set<ISolverHook> innerHooks = new ReferenceOpenHashSet<>();
     protected final Set<ISolverHook> leafInnerHooks = new ReferenceOpenHashSet<>();
-    protected final Set<IStaticResidual> residuals = new ReferenceOpenHashSet<>();
+    protected final SnapshotSet<IStaticResidual> residuals = new SnapshotSet<>();
     protected final Set<ISubTickRate> subTickRates = new ReferenceOpenHashSet<>();
 
     /**
@@ -64,7 +66,7 @@ public class ElectricalNetwork implements IStamped {
      * rebuilt between ticks and the observer simply re-resolves the network it belongs to,
      * instead of the network having to guess which of several new islands an observer followed.
      */
-    protected final Set<IMultiHooks> observers = new ReferenceOpenHashSet<>();
+    protected final SnapshotSet<IMultiHooks> observers = new SnapshotSet<>();
     protected final Map<IElectricNode, IElectricNode> leafNodes = new Reference2ReferenceOpenHashMap<>();
 
     private int sourceCount;
@@ -714,6 +716,17 @@ public class ElectricalNetwork implements IStamped {
     }
 
     public double getValue(INode node) {
+        // Fast path for the overwhelmingly common case, taken by every voltage read in a sub-tick:
+        // an ordinary node of an island with no leaf nodes. It computes what tryGetValue() does for
+        // that case without a hash lookup and without boxing the result. A subclass that overrides
+        // tryGetValue() only changes the answer for a node that has no index, which this skips.
+        if(!SolverSwitches.legacyValueAccess && mna != null && leafNodes.isEmpty()) {
+            var index = node.getIndex();
+            if(index >= 0 && index < nodes.size()) {
+                var value = mna.stateVector().safe_get(index, 0);
+                return Double.isFinite(value) ? value : 0.0;
+            }
+        }
         var val = tryGetValue(node);
         return val == null ? 0 : val;
     }
@@ -849,9 +862,20 @@ public class ElectricalNetwork implements IStamped {
         }
     }
 
+    // Created once: a bound method reference is a new object every time it is evaluated.
+    private final IResidualAdder rhsAdder = (row, value) -> mna.rhsAdd(row, value);
+
     private void computeRHS() {
         mna.zeroRHS();
-        for(var residual : residuals) {
+        var stamps = residuals.array(IStaticResidual[]::new);
+        if(!SolverSwitches.legacyValueAccess && leafNodes.isEmpty()) {
+            // Nothing can be a leaf, so there is nothing to skip: no need to ask each residual
+            // (which builds a list) which nodes it touches.
+            for(var residual : stamps)
+                residual.addStaticResidual(rhsAdder);
+            return;
+        }
+        for(var residual : stamps) {
             var skip = false;
             for(var node : residual.affectedNodes()) {
                 if(leafNodes.containsKey(node)) {
@@ -860,7 +884,7 @@ public class ElectricalNetwork implements IStamped {
                 }
             }
             if(!skip)
-                residual.addStaticResidual(mna::rhsAdd);
+                residual.addStaticResidual(SolverSwitches.legacyValueAccess ? mna::rhsAdd : rhsAdder);
         }
     }
 
@@ -889,7 +913,7 @@ public class ElectricalNetwork implements IStamped {
             return;
         // Prepare is called if multi-tick is or was enabled
         if(multiTicks > 1 || currentMultiTick > 1) {
-            for (var hook : multiHooks)
+            for (var hook : multiHooks.array(IMultiHooks[]::new))
                 hook.prepare(multiTicks);
         }
         // Observers are NOT gated on the multi-tick rate, unlike multiHooks. A component only
@@ -900,15 +924,15 @@ public class ElectricalNetwork implements IStamped {
         // channel with no samples in a packet that was sent anyway -- which it filled by
         // holding the last value, i.e. a permanently flat zero trace. One sample per tick is
         // the honest answer for a slow island; no samples at all is not.
-        for (var observer : observers)
+        for (var observer : observers.array(IMultiHooks[]::new))
             observer.prepare(multiTicks);
         if(sourceCount == 0) {
-            for(var hook : outerHooks)
+            for(var hook : outerHooks.array(IOuterHook[]::new))
                 hook.preSolve();
             for(var hook : innerHooks)
                 hook.startIteration(0);
             mna.zeroState();
-            for(var hook : outerHooks)
+            for(var hook : outerHooks.array(IOuterHook[]::new))
                 hook.postUpperSolve();
             return;
         }
@@ -931,24 +955,24 @@ public class ElectricalNetwork implements IStamped {
             // A sourceless island still owes its probes a sample. prepare() has already zeroed
             // the state, so this records the zero that is genuinely there rather than leaving a
             // gap that would desynchronise this channel from every other one on the time axis.
-            for (var observer : observers)
+            for (var observer : observers.array(IMultiHooks[]::new))
                 observer.postMicroTick();
             return;
         }
         PERF.start();
-        for (var hook : outerHooks)
+        for (var hook : outerHooks.array(IOuterHook[]::new))
             hook.preSolve();
         computeRHS();
 
         mna.singleTick();
 
-        for (var hook : outerHooks)
+        for (var hook : outerHooks.array(IOuterHook[]::new))
             hook.postUpperSolve();
         if(currentMultiTick > 1) {
-            for (var hook : multiHooks)
+            for (var hook : multiHooks.array(IMultiHooks[]::new))
                 hook.postMicroTick();
         }
-        for (var observer : observers)
+        for (var observer : observers.array(IMultiHooks[]::new))
             observer.postMicroTick();
         PERF.end();
     }
