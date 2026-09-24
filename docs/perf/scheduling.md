@@ -146,23 +146,39 @@ statement of that gap, not only of the interleaving jitter in §4.4.
 scripted clock; this section is the same shape of event against the real wall clock, on the same
 `b_src_bridge` rig (three 0.5 Ω AC sources into a six-diode bridge, nine nodes, genuinely
 nonlinear — Newton needed over a hundred iterations on the first, cold sub-tick), run as a
-throwaway probe and not kept as a test (real wall-clock timing is not something to pin in CI; the
-numbers below are one real run, quoted plainly as that):
+throwaway probe and not kept as a test (real wall-clock timing is not something to pin in CI).
+
+**The exact numbers here move with how busy the machine is; the mechanism does not.** Two
+independent real runs of the identical probe (same settings, same rig):
 
 ```
 settings: ceiling=128, budgetMs=20 (the shipped default)
-t=0    rate=128  tick=87.5ms   (cold; JIT/warm-up, not representative)
-t=2    ENGAGED: wanted=128, cut 128->64, unit cost was 27.0ms, total 27.1ms over the 20ms budget
-t=10.. rate=64   tick≈9.2ms   (median over t=150..220), stable, no further events
+
+Run A -- one other process on the machine:
+t=0    rate=128  tick=105.3ms  (cold; JIT/warm-up, not representative)
+t=2    ENGAGED: wanted=128, cut 128->64, unit cost was 25.9ms, total 26.0ms over the 20ms budget
+t=10.. rate=64   tick≈9.03ms  (mean over t=150..220, max 10.0ms in that window), stable, 0 further events
+
+Run B -- eight other javac/test processes competing for the CPU (a third reviewer's own machine):
+t=0    rate=128  tick=31.8ms
+t=2    rate=128  tick=51.3ms
+t=2    ENGAGED: cut 128->64
+t=4    rate=64   tick=27.7ms  (still over budget)
+t=4    a second cut: 64->32
+t=150.. rate=32  tick, mean 13.7ms over t=150..220 (range ~7-21ms), stable at rate 32 for the
+        rest of the run, but several ticks even after "settling" spike back to 15-21ms
 ```
 
-One cut, from a real 27 ms/tick to a real ~9.2 ms/tick, inside two ticks, and it holds there for
-the remaining 200+ ticks measured — no flapping, and critically no release attempt even though
-9.2 ms is comfortably under the 15 ms release threshold (75% of 20 ms): the governor's own memory
-of what 128 sub-ticks cost this island (27 ms, over budget) stops it offering a rate it already
-knows will break the budget again, exactly as designed (§2.2). This is the mechanism, on a real
-solve, that keeps the reported three-alternator rig from ever reaching its measured 53 ms/tick
-disaster once a budget is configured.
+Both runs show the same mechanism working as designed: the island gets cut, the cut holds (no
+flapping, no runaway), and no release is ever attempted once the governor's own memory says a
+higher rate broke the budget before (§2.2). Neither run reaches anywhere near the reported
+three-alternator rig's measured 53 ms/tick disaster. But the *specific* trajectory is sensitive to
+what else the machine is doing at the time: run A took one cut to a rate that settled comfortably
+under budget; run B, under heavy contention, needed a second cut and settled noticeably noisier
+and closer to the budget line. Read the mechanism as the claim of this section and treat any
+single number here (one cut vs. two, 9 ms vs. 14 ms) as what one real run happened to measure, not
+a guarantee. This is also why `solveBudgetMs` is not tuned tighter than the generous 20 ms default
+(§5): a budget that assumed a quiet machine would be wrong on a busy one.
 
 ## 5. Defaults, and why
 
@@ -171,10 +187,34 @@ is the reasoning behind the numbers.
 
 | Config | Default | Why |
 |---|---|---|
-| `solveBudgetGovernor` | **on** | The whole point of this stream: protect the tick unconditionally. §4 shows it changes nothing when nothing is over budget (`SubTickSchedulerTest.aGovernorThatIsNotOverBudgetChangesNothingAtAll`, `nodeVoltagesAreTheSameWithAndWithoutTheGovernor`), so there is no accuracy cost to leaving it on for a world that never triggers it. |
+| `solveBudgetGovernor` | **on** | The whole point of this stream: protect the tick unconditionally. §4 shows it changes nothing when nothing is over budget (`SubTickSchedulerTest.aGovernorThatIsNotOverBudgetChangesNothingAtAll`, `nodeVoltagesAreTheSameWithAndWithoutTheGovernor`), so a world that never goes over budget is bit-for-bit unaffected. That is *not* the same as "no accuracy cost, full stop": measured below, two of this fork's own `SolverGolden` circuits — the exact shapes this fork already ships and pins as physically correct — exceed the 20 ms default on real hardware and so will be governed (run at a reduced sub-tick rate, differing from the golden-recorded physics) the first time a player builds one. |
 | `solveBudgetMs` | **20 ms** | Chosen, not measured — a world tick is 50 ms for the whole server, shared with vanilla and every other mod, so this leaves more than half of it free even while the electrical solve is at its budget. High enough that the ordinary cost of a few AC islands (see docs/AC.md §5.1's 16× table) should not brush it; a server owner who disagrees can change one number. This is the one default in this document not backed by an in-game measurement — see §6. |
 | `acFineRates` | **off** | The physics equivalence (§3) and the rounding table (§1) both support turning it on, but it has not been checked against a nonlinear island (§3's gap) or in game at all, and every rate change is a real matrix-rebuild cost paid on both the old and the new path during a transition. Safe to turn on; not defaulted on until that gap is closed. |
 | `acMinSamplesPerCycle` | 8 | A quarter of the shipped `acSamplesPerCycle` (32): a waveform sampled at 8/cycle is coarse but still recognisably a waveform on the multimeter, not a false floor `theGovernorNeverGoesBelowTheFloorAtEightSamplesPerCycle` would need to special-case. |
+
+### 5.1 The governor and this fork's own ill-conditioned golden circuits
+
+`SolverGoldenTest`'s two `ill_*` rectifier circuits exist specifically because they are hard for
+Newton's iteration (docs/AC.md's own reason for pinning them). Timed with a real clock at each
+circuit's own recorded `subTicks()`, JIT-warmed first (one JVM run, not hand-calculated):
+
+| circuit | subTicks | max ms/tick | avg ms/tick | over the 20 ms default? |
+|---|---:|---:|---:|---|
+| `rect_3ph_bridge` (well-conditioned) | 64 | 28.3 | 11.1 | avg no, max yes on this run |
+| `ill_rect_3ph_alternator` | 64 | 22.7 | 14.2 | yes, both |
+| `ill_rect_3ph_floating_1e6` (the 200-iteration case) | 64 | 45.7 | 32.2 | yes, solidly |
+
+So `solveBudgetGovernor` defaulting on is not accuracy-neutral in general: a player who builds the
+`ill_rect_3ph_floating_1e6` shape — a rectifier with its DC side floating behind a large
+resistance — will, on ordinary hardware, have that island governed down from its golden-recorded
+64 sub-ticks the first tick it runs, changing its waveform resolution from what `SolverGoldenTest`
+pins as correct. `rect_3ph_bridge`'s max above also shows the well-conditioned circuits are not
+immune either, just closer to the line: a busier server can push them over too (§4 makes the same
+point about machine load). This is a real, intentional trade-off of shipping the budget on by
+default — protect the tick even at the cost of resolution on the circuits already known to be
+expensive — not a defect, but it was undisclosed in an earlier draft of this section and is why
+`solveBudgetGovernor` is not free to leave on "because nothing changes until it triggers": for
+these two shapes specifically, it is expected to trigger.
 
 ## 6. What is not verified
 
@@ -190,8 +230,9 @@ covered by any test in this repository, and not claimed to be:
   and 32 samples/cycle, not the shipped defaults, which is why every measurement in this document
   that needed a specific rate called `setSamplingPolicy` explicitly rather than relying on config).
 - Whether 20 ms is actually a good default under a real modpack's real tick budget, with real
-  contention from everything else running in the same tick. §4's number is one island in an
-  otherwise idle JVM.
+  contention from everything else running in the same tick, in an actual game. §4's two runs are
+  one island each, on a development machine, alongside ordinary (or heavy) build/test load — not
+  a real server's mix of vanilla and other mods in the same world tick.
 - The multimeter and every other consumer of sub-tick sample counts under the union-find lockstep
   change (§2.3): `ProbeSampler` was not touched by this stream and was not re-read line by line
   against the new grouping; the claim that it still gets one consistent stream per tick rests on
