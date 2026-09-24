@@ -138,6 +138,18 @@ public class PerformanceCounter {
         }
     }
 
+    /**
+     * Epochs accumulated since the last {@link #reset()} (which {@link #end()} also triggers once
+     * {@code measurementTime} has elapsed). Exposed so a concurrency test can prove no update was
+     * lost to a race, not just that {@link #getMin()}/{@link #getMax()} stayed in bounds — a lost
+     * update cannot push either of those out of range, but it does under-count this.
+     */
+    public long getEpochCount() {
+        synchronized(lock) {
+            return epochCount;
+        }
+    }
+
     public double getAvg() {
         synchronized(lock) {
             if(epochCount == 0)

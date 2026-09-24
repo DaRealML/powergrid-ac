@@ -70,7 +70,12 @@ public class PerformanceCounterConcurrencyTest {
             throw new AssertionError(failure.get());
 
         // threads * iterations epochs were recorded (accumulator race would lose updates and
-        // under-count; this is exactly what the synchronized block in end() prevents).
+        // under-count; this is exactly what the synchronized block in end() prevents). Checked
+        // directly against getEpochCount(): getMin()/getMax() alone cannot catch a lost update,
+        // since a dropped increment/add cannot push either bound out of range.
+        assertEquals((long) threads * iterations, counter.getEpochCount(),
+                "epoch count must equal threads * iterations exactly: a lost update means the "
+                        + "synchronized accumulator block in end() regressed");
         // getMin() must never read as less than the smallest per-thread floor: that would mean an
         // end() paired with a start() belonging to a different, earlier thread.
         assertTrue(counter.getMin() >= 0, "min must be non-negative");
