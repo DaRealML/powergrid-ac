@@ -48,8 +48,9 @@ public class JavaMNA implements IMNA {
     protected DMatrixRMaj ErrorVector;
     protected DMatrixRMaj StateDelta;
 
-    private double[] columnScales;
-    private double[] rowScales;
+    // Row and column equilibration are provably identical by construction (computeScales()
+    // only ever sets them together, to the same value), so one array serves both roles.
+    private double[] scales;
 
     private final StateAccess stateAccess = new StateAccess();
     private final ResidualAccess residualAccess = new ResidualAccess();
@@ -335,7 +336,7 @@ public class JavaMNA implements IMNA {
         if(row >= nodes.size() || column >= nodes.size())
             throw new IllegalArgumentException("Provided entry lays outside of the allocated matrices.");
         if(SCALING) {
-            var scaledValue = value * columnScales[column] * rowScales[row];
+            var scaledValue = value * scales[column] * scales[row];
             if(ROW_EXCHANGE) {
                 if (enableRowExchange) {
                     var e = getOrCreateRow(row);
@@ -384,7 +385,7 @@ public class JavaMNA implements IMNA {
         int n = workMatrix.getNumRows();
         for(int i = 0; i < n; ++i) {
             if(nodes.get(i) instanceof ICouplingNode) {
-                columnScales[i] = rowScales[i] = 1;
+                scales[i] = 1;
                 continue;
             }
             double max = 0;
@@ -393,10 +394,10 @@ public class JavaMNA implements IMNA {
                 max += v * v;
             }
             if(max == 0) {
-                columnScales[i] = rowScales[i] = 1;
+                scales[i] = 1;
                 continue;
             }
-            columnScales[i] = rowScales[i] = Math.sqrt(Math.min(1.0 / Math.sqrt(max), 2000));
+            scales[i] = Math.sqrt(Math.min(1.0 / Math.sqrt(max), 2000));
         }
         scalesAge = 0;
     }
@@ -431,8 +432,7 @@ public class JavaMNA implements IMNA {
         StateVector = NewState;
 
         if(SCALING) {
-            columnScales = new double[size];
-            rowScales = new double[size];
+            scales = new double[size];
         }
         lowRank.reset(size);
         deltaPending = false;
@@ -508,8 +508,8 @@ public class JavaMNA implements IMNA {
             recalculateScales = true;
         }
         if(recalculateScales) {
-            workMatrix.multColumns(columnScales, ScaledJ);
-            ScaledJ.multRows(rowScales, null);
+            workMatrix.multColumns(scales, ScaledJ);
+            ScaledJ.multRows(scales, null);
             ScaledJ.markRefactorize();
             // Make sure to drop all exchanged rows
             enableRowExchange = false;
@@ -546,7 +546,7 @@ public class JavaMNA implements IMNA {
         var workMatrix = Jacobian;
         if(SCALING) {
             prepareScaled(workMatrix);
-            CommonOps_DDRM.multRows(rowScales, ResidualVector);
+            CommonOps_DDRM.multRows(scales, ResidualVector);
             workMatrix = ScaledJ;
         }
 
@@ -563,11 +563,65 @@ public class JavaMNA implements IMNA {
             return;
         }
         if(SCALING)
-            CommonOps_DDRM.multRows(columnScales, StateVector);
+            CommonOps_DDRM.multRows(scales, StateVector);
 
         // Equivalent of the converged branch of verifyConvergence(). The residual of a linear
         // solve is zero by construction, so there is no norm to test — but warm-up must still
         // be able to hold component state frozen after a structural change.
+        converged = true;
+        if(warmUpTicks > 0) {
+            --warmUpTicks;
+            converged = false;
+        }
+    }
+
+    /**
+     * {@link #singleTickLinear()} with the passes over the vectors fused.
+     * <p>
+     * The residual of a network without hooks is the right-hand side, reached by subtracting it
+     * from zero and negating (computeResidual() does exactly that), and then its rows are scaled:
+     * three passes over the vector become one expression per entry. Likewise the check for NaN and
+     * the scaling of the solution's columns share one loop. Each entry sees exactly the same
+     * operations in the same order as before, signed zeros included, so the residual is
+     * bit-identical, and the solution is checked before it is scaled, as it was.
+     * <p>
+     * The scales are prepared before the residual is built rather than after. They do not depend
+     * on it, so the order only mattered while the two were separate steps.
+     */
+    private void singleTickLinearFused() {
+        ++stats.residualBuilds;
+        prepareScaled(Jacobian);
+
+        var residual = ResidualVector.data;
+        var rhs = RHSVector.data;
+        var rows = scales;
+        int n = ResidualVector.getNumRows();
+        for(int i = 0; i < n; ++i)
+            residual[i] = -(0.0 - rhs[i]) * rows[i];
+
+        ++stats.linearSystemSolves;
+        ScaledJ.solve(ResidualVector, StateVector);
+
+        var state = StateVector.data;
+        var columns = scales;
+        boolean uncountable = false;
+        for(int i = 0; i < n; ++i) {
+            var value = state[i];
+            if(Double.isNaN(value) || Double.isInfinite(value)) {
+                uncountable = true;
+                break;
+            }
+            state[i] = value * columns[i];
+        }
+        if(uncountable) {
+            // As singleTickLinear(): collapse to the zero state rather than propagate NaN.
+            ++stats.singularSolves;
+            StateVector.zero();
+            StateDelta.zero();
+            converged = false;
+            return;
+        }
+
         converged = true;
         if(warmUpTicks > 0) {
             --warmUpTicks;
@@ -582,7 +636,10 @@ public class JavaMNA implements IMNA {
         // Networks with no solver hooks are linear and take the single-solve path above.
         if(network.innerHooks.isEmpty()) {
             ++stats.linearSolves;
-            singleTickLinear();
+            if(SolverSwitches.legacyLinearPath || !SCALING)
+                singleTickLinear();
+            else
+                singleTickLinearFused();
             PERF.end();
             return;
         }
@@ -636,7 +693,7 @@ public class JavaMNA implements IMNA {
 
             if(SCALING) {
                 prepareScaled(workMatrix);
-                CommonOps_DDRM.multRows(rowScales, ResidualVector);
+                CommonOps_DDRM.multRows(scales, ResidualVector);
                 workMatrix = ScaledJ;
             }
 
@@ -690,7 +747,7 @@ public class JavaMNA implements IMNA {
                 ++stats.singularSolves;
             if (valid) {
                 if(SCALING)
-                    CommonOps_DDRM.multRows(columnScales, StateVector);
+                    CommonOps_DDRM.multRows(scales, StateVector);
                 CommonOps_DDRM.subtract(StateVector, StateDelta, StateDelta);
                 final double fullStep = stepTolerance > 0 ? CommonOps_DDRM.elementMaxAbs(StateDelta) : 0;
                 // Perform solution fitting
@@ -874,9 +931,14 @@ public class JavaMNA implements IMNA {
 
         @Override
         public double safe_get(int row, int column) {
-            if(StateVector == null)
+            var state = StateVector;
+            if(state == null)
                 return 0;
-            return IMatrixAccess.super.safe_get(row, column);
+            // Same bounds test as IMatrixAccess.safe_get, on the fields rather than through two
+            // interface calls: every voltage read of every sub-tick lands here.
+            if(row >= state.numRows || column >= state.numCols)
+                return 0;
+            return state.data[row];
         }
 
         @Override
