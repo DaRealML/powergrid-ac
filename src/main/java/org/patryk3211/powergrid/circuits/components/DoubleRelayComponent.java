@@ -36,7 +36,7 @@ public class DoubleRelayComponent extends MirrorableComponent {
     @Override
     protected void addProperties(ImmutableCollection.Builder<ComponentProperty<?>> properties) {
         super.addProperties(properties);
-        properties.add(THRESHOLD_VOLTAGE, STATE, THRESHOLD_CURRENT, POLARIZED, current(16));
+        properties.add(THRESHOLD_VOLTAGE, STATE, THRESHOLD_CURRENT, POLARIZED, current(16), COIL_CURRENT);
     }
 
     @Override
@@ -46,6 +46,7 @@ public class DoubleRelayComponent extends MirrorableComponent {
         var offCurrent = onCurrent * ModdedConfigs.server().electricity.holdingCurrentPercent.getF();
         var resistance = placed.get(THRESHOLD_VOLTAGE) / onCurrent;
         var coilWire = builder.connectCoil(resistance, builder.terminalNode(0), builder.terminalNode(1));
+        coilWire.setCurrent(placed.get(COIL_CURRENT));
 
         final var switchResistance = 0.05f;
         var state = placed.get(STATE);
@@ -68,6 +69,8 @@ public class DoubleRelayComponent extends MirrorableComponent {
         placed.add(no1);
         placed.add(nc2);
         placed.add(no2);
+        // Not part of the switching logic; kept accessible so tick() can save its current back.
+        placed.add(coilWire);
 
         thermals.builder()
                 .setMaxCurrent(onCurrent * 2, resistance, 125f)
@@ -104,6 +107,8 @@ public class DoubleRelayComponent extends MirrorableComponent {
             ));
             placed.set(STATE, state);
         }
+        // Make the coil's current persistent, the same way CapacitorComponent/InductorComponent do.
+        placed.set(COIL_CURRENT, (float) placed.wires.get(4).current());
 
         return true;
     }

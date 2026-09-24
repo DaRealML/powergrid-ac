@@ -61,6 +61,9 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
 
     private int movingTicks;
 
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
+
     public ServoBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
         setLazyTickRate(AVERAGING_TICKS - 1);
@@ -156,6 +159,8 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(3);
         coil = builder.connectCoil(resistance("idle"), builder.terminalNode(0), builder.terminalNode(1));
+        coil.setCurrent(coilCurrent);
+        coilCurrent = 0;
         control = builder.connect(1000f, builder.terminalNode(2), builder.terminalNode(1));
     }
 
@@ -164,10 +169,14 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
         super.read(compound, registries, clientPacket);
         generatedSpeed = compound.getFloat("GeneratedSpeed");
         currentAngle = compound.getInt("Angle");
-        if(generatedSpeed != 0) {
-            coil.setResistance(resistance("on"));
-        } else {
-            coil.setResistance(resistance("idle"));
+        coilCurrent = compound.getFloat("CoilCurrent");
+        if(coil != null) {
+            coil.setCurrent(coilCurrent);
+            if(generatedSpeed != 0) {
+                coil.setResistance(resistance("on"));
+            } else {
+                coil.setResistance(resistance("idle"));
+            }
         }
         updateGeneratedRotation();
     }
@@ -177,6 +186,8 @@ public class ServoBlockEntity extends GeneratingKineticBlockEntity implements IE
         super.write(compound, registries, clientPacket);
         compound.putFloat("GeneratedSpeed", generatedSpeed);
         compound.putInt("Angle", currentAngle);
+        if(coil != null)
+            compound.putFloat("CoilCurrent", (float) coil.current());
     }
 
     @Override

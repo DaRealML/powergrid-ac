@@ -31,6 +31,7 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
     public static final EnumProperty<DisplayModuleType> CURRENT_MODULE = new EnumProperty<DisplayModuleType>(PowerGrid.MOD_ID, "modular_display_module",
             DisplayModuleType.class, new DisplayModuleType[]{DisplayModuleType.ZERO_TO_NINE, DisplayModuleType.NINE_TO_ZERO, DisplayModuleType.ONE_TO_ZERO, DisplayModuleType.HEXADECIMAL, DisplayModuleType.SYMBOLS, DisplayModuleType.ALPHABET});
     public static final EnumProperty<DyeColor> CURRENT_COLOR = new EnumProperty<DyeColor>(PowerGrid.MOD_ID, "modular_display_text_color", DyeColor.class);
+    private static final CoilCurrentProperty COIL_CURRENT = new CoilCurrentProperty(PowerGrid.MOD_ID, "coil_current");
 
     public ModularDisplayComponent(ComponentFootprint footprint) {
         super(footprint);
@@ -51,7 +52,7 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
     @Override
     protected void addProperties(ImmutableCollection.Builder<ComponentProperty<?>> properties) {
         super.addProperties(properties);
-        properties.add(CURRENT_MODULE, CURRENT_COLOR, REMOVE_BLANKING_PAGE, RESISTANCE, MIN_CURRENT, INDEX, HALF_CLICK, WIRE_RESET, power(25));
+        properties.add(CURRENT_MODULE, CURRENT_COLOR, REMOVE_BLANKING_PAGE, RESISTANCE, MIN_CURRENT, INDEX, HALF_CLICK, WIRE_RESET, power(25), COIL_CURRENT);
     }
 
     @Override
@@ -117,6 +118,8 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
                 placed.notifyClients(INDEX);
             }
         }
+        // Make the coil's current persistent, the same way CapacitorComponent/InductorComponent do.
+        placed.set(COIL_CURRENT, (float) placed.wires.get(1).current());
         return true;
     }
 
@@ -125,6 +128,7 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
 
         var coilNode = builder.addInternalNode();
         var coil = builder.connectCoil(25, builder.terminalNode(0), coilNode);
+        coil.setCurrent(placed.get(COIL_CURRENT));
         var coilNodeToNegitive = builder.connectSwitch(0.1f, builder.terminalNode(1), coilNode, true);
         var coilNodeToReset = builder.connectSwitch(0.1f, builder.terminalNode(2), coilNode, false);
         placed.add(coilNodeToReset); placed.add(coil); placed.add(coilNodeToNegitive);
@@ -208,4 +212,30 @@ public class ModularDisplayComponent extends OrientableComponent implements IRen
                 .setNormal(0f, 0f, 1f);
     }
 
+    private static class CoilCurrentProperty extends FloatProperty {
+        public CoilCurrentProperty(String namespace, String name) {
+            super(namespace, name, 0, 0, 0);
+        }
+
+        @Override
+        public Float parse(String str) throws NumberFormatException {
+            // Not allowed
+            return 0.0f;
+        }
+
+        @Override
+        public boolean isHidden() {
+            return true;
+        }
+
+        @Override
+        public boolean isUnsafe() {
+            return true;
+        }
+
+        @Override
+        protected float limit(float value) {
+            return value;
+        }
+    }
 }

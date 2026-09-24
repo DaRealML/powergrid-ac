@@ -49,6 +49,9 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
     private float trim = 1;
     private float coilPull = 0;
 
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
+
     public CarbonPileCoilBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
     }
@@ -68,6 +71,8 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(4);
         coil = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        coil.setCurrent(coilCurrent);
+        coilCurrent = 0;
         // Resistance values won't be valid here
         pile = builder.connectSwitch(1, builder.terminalNode(2), builder.terminalNode(3), false);
     }
@@ -78,6 +83,9 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
         baseResistance = tag.getFloat("Base");
         trim = tag.getFloat("Trim");
         coilPull = tag.getFloat("Coil");
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(coil != null)
+            coil.setCurrent(coilCurrent);
         refreshResistance();
     }
 
@@ -93,6 +101,8 @@ public class CarbonPileCoilBlockEntity extends ElectricBlockEntity implements IH
         tag.putFloat("Base", baseResistance);
         tag.putFloat("Trim", trim);
         tag.putFloat("Coil", coilPull);
+        if(coil != null)
+            tag.putFloat("CoilCurrent", (float) coil.current());
     }
 
     public static float gain() {

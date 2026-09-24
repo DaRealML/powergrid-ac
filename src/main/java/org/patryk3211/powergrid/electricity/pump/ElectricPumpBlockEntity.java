@@ -15,6 +15,7 @@ import net.createmod.catnip.math.BlockFace;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.BlockAndTintGetter;
@@ -43,6 +44,9 @@ public class ElectricPumpBlockEntity extends ElectricBlockEntity implements IHav
     protected LRSeriesWire pumpElement;
     private int prevSpeed;
 
+    /** The coil's current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
+    private float coilCurrent;
+
     Couple<MutableBoolean> sidesToUpdate = Couple.create(MutableBoolean::new);
     boolean pressureUpdate;
 
@@ -63,9 +67,26 @@ public class ElectricPumpBlockEntity extends ElectricBlockEntity implements IHav
     }
 
     @Override
+    protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.read(tag, registries, clientPacket);
+        coilCurrent = tag.getFloat("CoilCurrent");
+        if(pumpElement != null)
+            pumpElement.setCurrent(coilCurrent);
+    }
+
+    @Override
+    protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(tag, registries, clientPacket);
+        if(pumpElement != null)
+            tag.putFloat("CoilCurrent", (float) pumpElement.current());
+    }
+
+    @Override
     public void buildCircuit(CircuitBuilder builder) {
         builder.setTerminalCount(2);
         pumpElement = builder.connectCoil(resistance(), builder.terminalNode(0), builder.terminalNode(1));
+        pumpElement.setCurrent(coilCurrent);
+        coilCurrent = 0;
     }
 
     public void tick() {
