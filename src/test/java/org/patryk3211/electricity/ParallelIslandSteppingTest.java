@@ -6,10 +6,15 @@ import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
 import org.patryk3211.powergrid.electricity.sim.ParallelIslandStepping;
+import org.patryk3211.powergrid.electricity.sim.schedule.SubTickScheduler;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -198,5 +203,74 @@ public class ParallelIslandSteppingTest {
         assertEquals("deliberate failure for the test", thrown.getMessage());
         assertEquals(2, completed.get(),
                 "both non-failing (pooled) islands must still have run this round despite the third one throwing");
+    }
+
+    // ------------------------------------------------------------------ per-island timing, for SubTickScheduler's governor
+
+    private static ElectricalNetwork timedIsland(int subTicks) {
+        var net = new ElectricalNetwork(true) {
+            @Override
+            public void singleTick() { }
+        };
+        net.setSubTicks(subTicks);
+        return net;
+    }
+
+    /**
+     * {@link SubTickScheduler#step} accumulates {@code stepNanos[k]} across every round of a world
+     * tick to feed the tick-budget governor's per-island cost model. That only works if
+     * {@link ParallelIslandStepping#stepRound(List, int, int, java.util.function.LongSupplier, long[])}
+     * actually reports each island's own time back, including the ones that ran on the pool, not just
+     * the one the calling thread ran itself. A plain incrementing counter (not System.nanoTime) proves
+     * this without depending on real wall-clock noise: every {@code clock.getAsLong()} call returns a
+     * new, higher value, atomically even when several pool threads call it at once, so any island that
+     * was actually timed reports a positive duration and one that was not stays exactly zero.
+     */
+    @Test
+    void stepRoundReportsEveryPooledIslandsTimingBackToTheCaller() {
+        var clock = new AtomicLong();
+        LongSupplier counting = clock::incrementAndGet;
+        // Twelve, well past minParallelIslands=1: several must run on the pool, one on the calling thread.
+        List<ElectricalNetwork> islands = new ArrayList<>();
+        for(int k = 0; k < 12; ++k)
+            islands.add(timedIsland(8));
+        var stepNanos = new long[islands.size()];
+
+        ParallelIslandStepping.stepRound(islands, 0, 8, counting, stepNanos);
+
+        for(int k = 0; k < islands.size(); ++k)
+            assertTrue(stepNanos[k] > 0, "island " + k + " should have been timed, was " + stepNanos[k]);
+    }
+
+    /**
+     * Mirrors {@code SubTickScheduler.step}'s own {@code governing && subTicks > 1} gate: an island
+     * running at the floor rate (1 sub-tick) steps once at the end of the tick and is never worth
+     * timing individually. Also proves {@code stepNanos} is per-island, not shared bookkeeping —
+     * timing some islands and not others must not disturb which index gets which value.
+     */
+    @Test
+    void stepRoundDoesNotTimeAnIslandAtTheFloorRate() {
+        var clock = new AtomicLong();
+        LongSupplier counting = clock::incrementAndGet;
+        List<ElectricalNetwork> islands = new ArrayList<>();
+        islands.add(timedIsland(1));
+        for(int k = 0; k < 5; ++k)
+            islands.add(timedIsland(8));
+        var stepNanos = new long[islands.size()];
+
+        ParallelIslandStepping.stepRound(islands, 0, 8, counting, stepNanos);
+
+        assertEquals(0L, stepNanos[0], "an island at the floor rate must not be timed");
+        for(int k = 1; k < islands.size(); ++k)
+            assertTrue(stepNanos[k] > 0, "island " + k + " should have been timed, was " + stepNanos[k]);
+    }
+
+    /** With {@code stepNanos} null, exactly today's un-timed behaviour: no exception, nothing to read. */
+    @Test
+    void stepRoundWithNoStepNanosArrayJustSteps() {
+        List<ElectricalNetwork> islands = new ArrayList<>();
+        for(int k = 0; k < 6; ++k)
+            islands.add(timedIsland(8));
+        assertDoesNotThrow(() -> ParallelIslandStepping.stepRound(islands, 0, 8, System::nanoTime, null));
     }
 }
