@@ -232,6 +232,24 @@ public class OrderedSparseLuTest {
         }
     }
 
+    @Test
+    void factorReturnsFalseWhenAPivotsReciprocalWouldOverflow() {
+        // A diagonal matrix needs no pivoting or fill: each diagonal entry is its own pivot,
+        // untouched by elimination. One entry small enough that its reciprocal overflows to
+        // Infinity makes a matrix EJML's own decompose() accepts (every row/column is nonzero,
+        // so nothing is structurally singular) but that must still collapse to the zero state,
+        // the same as the divide the old natural-order solve would have overflowed doing.
+        var dense = new DMatrixRMaj(4, 4);
+        dense.set(0, 0, 1);
+        dense.set(1, 1, 2);
+        dense.set(2, 2, Double.MIN_VALUE);
+        dense.set(3, 3, 3);
+        var sparse = org.ejml.ops.DConvertMatrixStruct.convert(dense, (org.ejml.data.DMatrixSparseCSC) null, 0);
+
+        var lu = new OrderedSparseLu();
+        Assertions.assertFalse(lu.factor(sparse), "a pivot whose reciprocal overflows must be reported singular");
+    }
+
     /** Peeks at the CSC storage of a sparse {@link DynamicallyTypedMatrix} through its public API only. */
     private static final class DynamicallyTypedMatrixAccess {
         static org.ejml.data.DMatrixSparseCSC csc(DynamicallyTypedMatrix m) {
