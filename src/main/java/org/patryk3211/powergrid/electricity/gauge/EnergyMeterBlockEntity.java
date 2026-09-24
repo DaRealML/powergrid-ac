@@ -22,6 +22,11 @@ import org.patryk3211.powergrid.electricity.sim.special.WattmeterWire;
 import java.util.List;
 
 public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuProvider {
+    // How often the meter's chunk is marked dirty for the autosave while energy is accumulating;
+    // see electricalTick(). Worst case this leaves under a second of reading unflushed on an
+    // unclean shutdown, well inside the game's own autosave interval.
+    private static final int DIRTY_MARK_INTERVAL = 20;
+
     private WattmeterWire series;
     private ElectricWire shunt;
 
@@ -31,6 +36,7 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
     private int lastRedstoneEnergy;
     private int redstoneTick;
     private int impulses;
+    private int dirtyMarkTicks;
     boolean measurementPrecision;
 
     public EnergyMeterBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
@@ -63,7 +69,15 @@ public class EnergyMeterBlockEntity extends ElectricBlockEntity implements MenuP
             }
             redstoneTick = 0;
         }
-        setUnsaved();
+        // `energy` accumulates every tick under any load, so a value comparison (as
+        // RotorBehaviour's rest-state skip uses) would never skip here -- it always differs from
+        // the last saved value by a nonzero amount. The chunk only needs to be marked dirty often
+        // enough that a save picks up a value close to current, not on the very tick it changed,
+        // so this is throttled the same way as CommutatorBlockEntity's EmfState.
+        if(++dirtyMarkTicks >= DIRTY_MARK_INTERVAL) {
+            dirtyMarkTicks = 0;
+            setUnsaved();
+        }
     }
 
     @Override
