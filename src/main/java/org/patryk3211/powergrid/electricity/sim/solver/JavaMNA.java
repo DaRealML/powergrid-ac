@@ -68,6 +68,216 @@ public class JavaMNA implements IMNA {
 
     private final List<ExchangeRow> changedRows = new ArrayList<>();
 
+    /**
+     * Plain counters describing what this solver has done, for benchmarks and profiling.
+     * <p>
+     * They only ever grow, are incremented with ordinary {@code long} arithmetic (no allocation, no
+     * synchronisation: an island is solved by one thread at a time), and change no behaviour.
+     * A reader takes two snapshots with {@link #copy()} and subtracts.
+     */
+    public static final class Statistics {
+        /** Calls to {@code singleTick()}: one per island per sub-tick. */
+        public long solves;
+        /** Solves that took the linear fast path (no solver hooks): one triangular solve each. */
+        public long linearSolves;
+        /** Solves that ran the Newton loop. */
+        public long newtonSolves;
+        /**
+         * Newton updates applied: passes of the loop that went on to solve for a step. A solve that
+         * converges at the first residual check contributes 0; one that runs to the cap contributes
+         * the cap.
+         */
+        public long newtonIterations;
+        /** Newton solves that ran out of iterations without meeting a stopping criterion. */
+        public long capHits;
+        /** Solves that ended above the minimum accepted precision ("possibly not converged"). */
+        public long nonConverged;
+        /** Solves whose linear system produced NaN or infinity and were collapsed to the zero state. */
+        public long singularSolves;
+        /** Passes of the line-search loop, each of which sweeps the hooks and builds a residual. */
+        public long lineSearchProbes;
+        /** Sweeps of every inner hook's {@code startIteration()}. */
+        public long hookSweeps;
+        /** Calls to {@code computeResidual()}. */
+        public long residualBuilds;
+        /** Triangular solves ({@code A x = b} against an existing factorisation, plus the factorisation itself when stale). */
+        public long linearSystemSolves;
+        /** LU factorisations of the matrix that is solved (the scaled Jacobian). */
+        public long refactorizations;
+        /** Incremental admittance stamps ({@code jacobianAdd} calls with a nonzero value). */
+        public long jacobianAdds;
+        /** Full rebuilds of the Jacobian from every wire and coupling. */
+        public long jacobianRebuilds;
+        /** Recomputations of the row/column equilibration scales. */
+        public long scaleRecomputes;
+        /** Newton systems solved as a low-rank update of an existing factorisation ({@link LowRankUpdate}). */
+        public long compensatedSolves;
+        /** Refactorisations the low-rank update asked for (a subset of {@link #refactorizations}). */
+        public long compensationRebases;
+        /** Newton systems the low-rank update declined, which were then solved by refactoring. */
+        public long compensationFallbacks;
+
+        public Statistics copy() {
+            var c = new Statistics();
+            c.solves = solves;
+            c.linearSolves = linearSolves;
+            c.newtonSolves = newtonSolves;
+            c.newtonIterations = newtonIterations;
+            c.capHits = capHits;
+            c.nonConverged = nonConverged;
+            c.singularSolves = singularSolves;
+            c.lineSearchProbes = lineSearchProbes;
+            c.hookSweeps = hookSweeps;
+            c.residualBuilds = residualBuilds;
+            c.linearSystemSolves = linearSystemSolves;
+            c.refactorizations = refactorizations;
+            c.jacobianAdds = jacobianAdds;
+            c.jacobianRebuilds = jacobianRebuilds;
+            c.scaleRecomputes = scaleRecomputes;
+            c.compensatedSolves = compensatedSolves;
+            c.compensationRebases = compensationRebases;
+            c.compensationFallbacks = compensationFallbacks;
+            return c;
+        }
+
+        /** {@code this - earlier}, field by field. */
+        public Statistics minus(Statistics earlier) {
+            var d = new Statistics();
+            d.solves = solves - earlier.solves;
+            d.linearSolves = linearSolves - earlier.linearSolves;
+            d.newtonSolves = newtonSolves - earlier.newtonSolves;
+            d.newtonIterations = newtonIterations - earlier.newtonIterations;
+            d.capHits = capHits - earlier.capHits;
+            d.nonConverged = nonConverged - earlier.nonConverged;
+            d.singularSolves = singularSolves - earlier.singularSolves;
+            d.lineSearchProbes = lineSearchProbes - earlier.lineSearchProbes;
+            d.hookSweeps = hookSweeps - earlier.hookSweeps;
+            d.residualBuilds = residualBuilds - earlier.residualBuilds;
+            d.linearSystemSolves = linearSystemSolves - earlier.linearSystemSolves;
+            d.refactorizations = refactorizations - earlier.refactorizations;
+            d.jacobianAdds = jacobianAdds - earlier.jacobianAdds;
+            d.jacobianRebuilds = jacobianRebuilds - earlier.jacobianRebuilds;
+            d.scaleRecomputes = scaleRecomputes - earlier.scaleRecomputes;
+            d.compensatedSolves = compensatedSolves - earlier.compensatedSolves;
+            d.compensationRebases = compensationRebases - earlier.compensationRebases;
+            d.compensationFallbacks = compensationFallbacks - earlier.compensationFallbacks;
+            return d;
+        }
+
+        /** {@code this += other}, so several islands can be summed. */
+        public void add(Statistics other) {
+            solves += other.solves;
+            linearSolves += other.linearSolves;
+            newtonSolves += other.newtonSolves;
+            newtonIterations += other.newtonIterations;
+            capHits += other.capHits;
+            nonConverged += other.nonConverged;
+            singularSolves += other.singularSolves;
+            lineSearchProbes += other.lineSearchProbes;
+            hookSweeps += other.hookSweeps;
+            residualBuilds += other.residualBuilds;
+            linearSystemSolves += other.linearSystemSolves;
+            refactorizations += other.refactorizations;
+            jacobianAdds += other.jacobianAdds;
+            jacobianRebuilds += other.jacobianRebuilds;
+            scaleRecomputes += other.scaleRecomputes;
+            compensatedSolves += other.compensatedSolves;
+            compensationRebases += other.compensationRebases;
+            compensationFallbacks += other.compensationFallbacks;
+        }
+    }
+
+    private final Statistics stats = new Statistics();
+
+    /**
+     * Switches for the Newton path. All on is what ships; each one, turned off, gives back what the
+     * solver did before the change it names, so a test can run old and new on the same circuit and a
+     * benchmark can say what each change bought. Plain statics, read once per solve.
+     */
+    public static final class Tuning {
+        /** Solve Newton systems as a low-rank update of one factorisation instead of refactoring after every change. */
+        public static boolean compensation = true;
+        /** Take the residual and error norm of the accepted line-search probe as the next iteration's, instead of rebuilding them. */
+        public static boolean reuseResidual = true;
+        /**
+         * Most nodes the low-rank update may touch before an island is solved by refactoring. Measured
+         * on meshes of 100 to 1000 nodes with 3 to 64 diodes: the update won by 1.3 to 22 times up
+         * to 32 diodes (64 nodes), and lost at 100 nodes with 64 diodes (0.6 times).
+         */
+        public static int maxTouchedNodes = 64;
+        /**
+         * Fewest nodes an island needs for the low-rank update. Below the sparse threshold the matrix
+         * is dense and factoring it costs less than the update's bookkeeping: a 3 node half-wave
+         * rectifier ran 8 percent slower with it.
+         */
+        public static int minNodes = 8;
+        /**
+         * A solve whose residual is below the stopping criterion is only accepted once the last
+         * Newton step also moved no state by more than this fraction of the largest state (or of
+         * 1 V/A, if that is larger); 0 turns the test off and leaves the residual as the only test.
+         * <p>
+         * The residual alone cannot tell a converged solution from one that is merely quiet: a node
+         * held by 1e-8 siemens is 10 volts off with a residual of 1e-7 amps, and that is the case
+         * for the floating side of a rectifier. The old limiter converged so slowly that the
+         * residual was far below the criterion by the time it was met, which hid this.
+         */
+        public static double stepTolerance = 1e-9;
+        /** What {@link #stepTolerance} ships as, for a test that turns it off and must put it back. */
+        public static final double SHIPPED_STEP_TOLERANCE = 1e-9;
+        /** Most extra iterations {@link #stepTolerance} may ask for after the residual is met. */
+        public static int stepExtraIterations = 2;
+        /**
+         * Apply the conductance changes the nonlinear elements make even when they are below the
+         * noise threshold {@code updateConductance} uses.
+         */
+        public static boolean exactHookUpdates = true;
+
+        /** Everything back to what the solver did at the commit these switches were added on. */
+        public static void legacy() {
+            compensation = false;
+            reuseResidual = false;
+            exactHookUpdates = false;
+            stepTolerance = 0;
+        }
+
+        public static void shipped() {
+            compensation = true;
+            reuseResidual = true;
+            maxTouchedNodes = 64;
+            minNodes = 8;
+            exactHookUpdates = true;
+            stepTolerance = 1e-9;
+            stepExtraIterations = 2;
+        }
+    }
+
+    private final LowRankUpdate lowRank = new LowRankUpdate();
+    // True while the nonlinear elements are being swept with the low-rank update on, which is when a
+    // stamp is theirs to record.
+    private boolean recording;
+    // The low-rank update holds differences the scaled matrix has but its factors do not.
+    private boolean deltaPending;
+
+    // Factorisations of matrices this solver has since replaced (allocate() builds new ones).
+    private long retiredFactorizations;
+
+    /**
+     * The live counters. {@link Statistics#refactorizations} is brought up to date on each call, so
+     * take a {@link Statistics#copy()} if two readings are to be compared.
+     */
+    public Statistics statistics() {
+        long live = 0;
+        if(ScaledJ != null)
+            live += ScaledJ.factorizations;
+        if(Jacobian != null)
+            live += Jacobian.factorizations;
+        if(A0 != null)
+            live += A0.factorizations;
+        stats.refactorizations = retiredFactorizations + live;
+        stats.compensationRebases = lowRank.rebases;
+        return stats;
+    }
+
     public JavaMNA(ElectricalNetwork network) {
         this.network = network;
     }
@@ -120,6 +330,7 @@ public class JavaMNA implements IMNA {
     public void jacobianAdd(int row, int column, double value) {
         if(value == 0)
             return;
+        ++stats.jacobianAdds;
         var nodes = network.getNodes();
         if(row >= nodes.size() || column >= nodes.size())
             throw new IllegalArgumentException("Provided entry lays outside of the allocated matrices.");
@@ -135,7 +346,13 @@ public class JavaMNA implements IMNA {
                 }
             }
             ScaledJ.add(row, column, scaledValue);
-            ScaledJ.markRefactorize();
+            if(recording) {
+                // A nonlinear element's stamp: the factors stay, the difference is remembered.
+                lowRank.record(row, column, scaledValue);
+                deltaPending = true;
+            } else {
+                ScaledJ.markRefactorize();
+            }
         } else {
             if(ROW_EXCHANGE) {
                 if (enableRowExchange) {
@@ -162,6 +379,7 @@ public class JavaMNA implements IMNA {
     }
 
     private void computeScales(DynamicallyTypedMatrix workMatrix) {
+        ++stats.scaleRecomputes;
         var nodes = network.getNodes();
         int n = workMatrix.getNumRows();
         for(int i = 0; i < n; ++i) {
@@ -194,6 +412,12 @@ public class JavaMNA implements IMNA {
             }
         }
 
+        if(Jacobian != null)
+            retiredFactorizations += Jacobian.factorizations;
+        if(ScaledJ != null)
+            retiredFactorizations += ScaledJ.factorizations;
+        if(A0 != null)
+            retiredFactorizations += A0.factorizations;
         Jacobian = new DynamicallyTypedMatrix(size, size, DynamicallyTypedMatrix.Solver.LU);
         if(ROW_EXCHANGE)
             A0 = new DynamicallyTypedMatrix(size, size, DynamicallyTypedMatrix.Solver.LU);
@@ -210,17 +434,27 @@ public class JavaMNA implements IMNA {
             columnScales = new double[size];
             rowScales = new double[size];
         }
+        lowRank.reset(size);
+        deltaPending = false;
 
         // Invalidate scales
         scalesAge = MAX_SCALE_REUSE_COUNT + 1;
     }
 
     private void iterHooks(int i, int max) {
+        ++stats.hookSweeps;
         network.countUpdates = false;
-        for(var hook : network.innerHooks) {
-            hook.startIteration(i);
+        network.exactUpdates = Tuning.exactHookUpdates;
+        recording = SCALING && Tuning.compensation && ScaledJ.getNumRows() >= Tuning.minNodes;
+        try {
+            for(var hook : network.innerHooks) {
+                hook.startIteration(i);
+            }
+        } finally {
+            recording = false;
+            network.exactUpdates = false;
+            network.countUpdates = true;
         }
-        network.countUpdates = true;
     }
 
     private void residualAdd(int row, double value) {
@@ -230,6 +464,7 @@ public class JavaMNA implements IMNA {
     }
 
     private void computeResidual() {
+        ++stats.residualBuilds;
         ResidualVector.zero();
         CommonOps_DDRM.subtract(ResidualVector, RHSVector, ResidualVector);
         for(var hook : network.innerHooks) {
@@ -240,6 +475,7 @@ public class JavaMNA implements IMNA {
 
     private void verifyConvergence(double norm, int i, int maxIterations) {
         if (norm > minimumAllowedPrecision) {
+            ++stats.nonConverged;
             if(converged)
                 network.convergenceProblems(norm, residualAccess);
             converged = false;
@@ -299,6 +535,12 @@ public class JavaMNA implements IMNA {
      * is the work that was only ever used to detect convergence.
      */
     private void singleTickLinear() {
+        if(deltaPending) {
+            // Hooks came and went since the last Newton solve: the factors describe an older matrix.
+            ScaledJ.markRefactorize();
+            lowRank.invalidateBase();
+            deltaPending = false;
+        }
         computeResidual();
 
         var workMatrix = Jacobian;
@@ -308,11 +550,13 @@ public class JavaMNA implements IMNA {
             workMatrix = ScaledJ;
         }
 
+        ++stats.linearSystemSolves;
         workMatrix.solve(ResidualVector, StateVector);
 
         if(MatrixFeatures_DDRM.hasUncountable(StateVector)) {
             // Mirrors the general path: a singular or otherwise unsolvable system collapses to
             // the zero state rather than propagating NaN through component models.
+            ++stats.singularSolves;
             StateVector.zero();
             StateDelta.zero();
             converged = false;
@@ -334,28 +578,61 @@ public class JavaMNA implements IMNA {
     @Override
     public void singleTick() {
         PERF.start();
+        ++stats.solves;
         // Networks with no solver hooks are linear and take the single-solve path above.
         if(network.innerHooks.isEmpty()) {
+            ++stats.linearSolves;
             singleTickLinear();
             PERF.end();
             return;
         }
+        ++stats.newtonSolves;
         int maxIterations = network.maxIterations.apply(network.hasHooks());
         int i;
         double norm = 0;
+        final boolean lowRankSolve = SCALING && Tuning.compensation && ScaledJ.getNumRows() >= Tuning.minNodes;
+        final boolean reuseResidual = Tuning.reuseResidual;
+        if(lowRankSolve)
+            lowRank.setMaxTouched(Tuning.maxTouchedNodes);
+        if(!lowRankSolve && deltaPending) {
+            ScaledJ.markRefactorize();
+            lowRank.invalidateBase();
+            deltaPending = false;
+        }
+        // The line search that accepts a step has just built the residual and error of the state it
+        // accepted, hooks and all. The next iteration would build the same numbers again, bit for bit.
+        boolean residualFresh = false;
+        double freshNorm = 0;
+        // Largest change the previous iteration made to any state, and how many iterations have
+        // run with the residual already below the criterion. Zero: nothing has moved yet.
+        double lastStep = 0;
+        int extra = 0;
+        final double stepTolerance = Tuning.stepTolerance;
         for (i = 0; i < maxIterations; ++i) {
             if(i == 0)
                 iterHooks(i, maxIterations);
             var workMatrix = Jacobian;
-            computeResidual();
+            double nextNorm;
+            if(residualFresh) {
+                nextNorm = freshNorm;
+                residualFresh = false;
+            } else {
+                computeResidual();
 
-            workMatrix.mult(StateVector, ErrorVector);
-            CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
-            var nextNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
+                workMatrix.mult(StateVector, ErrorVector);
+                CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
+                nextNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
+            }
             var dNorm = Math.abs(nextNorm - norm);
             norm = nextNorm;
-            if (norm < absoluteStoppingCriterion || dNorm < relativeStoppingCriterion)
+            if (norm < absoluteStoppingCriterion) {
+                if(stepTolerance <= 0 || extra >= Tuning.stepExtraIterations || lastStep <= 0
+                        || lastStep <= stepTolerance * Math.max(1.0, CommonOps_DDRM.elementMaxAbs(StateVector)))
+                    break;
+                ++extra;
+            } else if (dNorm < relativeStoppingCriterion) {
                 break;
+            }
 
             if(SCALING) {
                 prepareScaled(workMatrix);
@@ -396,32 +673,55 @@ public class JavaMNA implements IMNA {
             }
 
             StateDelta.setTo(StateVector);
-            workMatrix.solve(ResidualVector, StateVector);
+            ++stats.linearSystemSolves;
+            if(lowRankSolve && workMatrix == ScaledJ && lowRank.solve(ScaledJ, ResidualVector, StateVector)) {
+                ++stats.compensatedSolves;
+            } else {
+                if(lowRankSolve) {
+                    // The factors lag the matrix by the recorded differences; make the ordinary solve refactor.
+                    ++stats.compensationFallbacks;
+                    ScaledJ.markRefactorize();
+                    lowRank.invalidateBase();
+                }
+                workMatrix.solve(ResidualVector, StateVector);
+            }
             var valid = !MatrixFeatures_DDRM.hasUncountable(StateVector);
+            if(!valid)
+                ++stats.singularSolves;
             if (valid) {
                 if(SCALING)
                     CommonOps_DDRM.multRows(columnScales, StateVector);
                 CommonOps_DDRM.subtract(StateVector, StateDelta, StateDelta);
+                final double fullStep = stepTolerance > 0 ? CommonOps_DDRM.elementMaxAbs(StateDelta) : 0;
                 // Perform solution fitting
                 double alpha = 0;
                 workMatrix = Jacobian;
                 while(alpha < maxSearchAlpha) {
+                    ++stats.lineSearchProbes;
                     iterHooks(i, maxIterations);
                     computeResidual();
                     workMatrix.mult(StateVector, ErrorVector);
                     CommonOps_DDRM.subtract(ErrorVector, ResidualVector, ErrorVector);
                     double testNorm = CommonOps_DDRM.elementMaxAbs(ErrorVector);
-                    if(testNorm < norm)
+                    if(testNorm < norm) {
+                        residualFresh = reuseResidual;
+                        freshNorm = testNorm;
                         break;
+                    }
                     double deltaAlpha = (1 - alpha) * 0.5;
                     alpha += deltaAlpha;
                     CommonOps_DDRM.add(StateVector, -deltaAlpha, StateDelta, StateVector);
                 }
+                lastStep = (1 - alpha) * fullStep;
             } else {
                 StateVector.zero();
                 StateDelta.zero();
+                lastStep = Double.MAX_VALUE;
             }
         }
+        stats.newtonIterations += i;
+        if(i >= maxIterations)
+            ++stats.capHits;
         verifyConvergence(norm, i, maxIterations);
         PERF.end();
     }
@@ -441,6 +741,10 @@ public class JavaMNA implements IMNA {
 
     @Override
     public void jacobianPrepareForWrite() {
+        ++stats.jacobianRebuilds;
+        // The matrix is about to be rewritten from nothing: whatever the factors describe is gone.
+        lowRank.invalidateBase();
+        deltaPending = false;
         enableRowExchange = false;
         Jacobian.denseZero();
     }

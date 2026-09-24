@@ -50,6 +50,9 @@ public class DynamicallyTypedMatrix {
     private Solver solverType;
     private boolean refactorize;
 
+    /** Factorisations performed (setA calls), for {@link JavaMNA.Statistics}. Plain counter, never reset. */
+    long factorizations;
+
     public DynamicallyTypedMatrix(int rows, int cols) {
         this(rows, cols, Solver.CHOLESKY);
     }
@@ -210,6 +213,7 @@ public class DynamicallyTypedMatrix {
 
     @SuppressWarnings("unchecked")
     public void refactorize() {
+        ++factorizations;
         if(solver != null) {
             if (sparse) {
                 solverValid = ((LinearSolverSparse<DMatrixSparseCSC, DMatrixRMaj>) (Object) solver).setA(prepareSparseA(solver.modifiesA()));
@@ -420,6 +424,11 @@ public class DynamicallyTypedMatrix {
 
     public boolean isMarked() {
         return refactorize;
+    }
+
+    /** Whether the last factorisation succeeded, so that {@link #solve} answers with a solution and not with zeros. */
+    boolean factorizationValid() {
+        return solver != null && solverValid;
     }
 
     public enum State {

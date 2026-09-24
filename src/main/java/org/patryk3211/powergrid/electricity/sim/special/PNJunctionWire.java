@@ -32,8 +32,45 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
     private double G = ElectricalNetwork.G_MIN;
     private double Ieq = 0;
     private double prevV;
+    // Junction voltage (terminal voltage minus the drop across the series resistance) of the
+    // previous evaluation, which is what the limiter compares against unless legacyLimiter is set.
+    private double prevJunctionV;
 
     public int iterationLimit = -1;
+
+    /**
+     * Limit the change of the terminal voltage between Newton evaluations, as this class always
+     * did, instead of the change of the junction voltage.
+     * <p>
+     * The limiter is only right for a bare exponential. Here the series resistance is folded into
+     * the current law, so the terminal voltage of a conducting diode runs to volts and tens of
+     * volts while the junction sits near a volt, and limiting that terminal voltage compresses every
+     * step to a fraction of a volt: a rectifier bridge needed 80 to 150 Newton iterations per
+     * sub-tick to climb from cut-off to conduction. The converged answer does not depend on the
+     * limiter, only the path to it does, but that is only so where it converges: with this limiter
+     * one solve in six (a grounded alternator bridge) and one in three (the same bridge floating)
+     * ran to the 200 iteration cap and returned a state that satisfies no circuit equation. Kept so
+     * a test can run both against the same circuit, and reproduce the original answers.
+     */
+    public static boolean legacyLimiter = false;
+
+    /**
+     * Newton iteration from which the terminal-voltage limiter takes over from the junction one.
+     * <p>
+     * The junction limiter is much faster (4 iterations a solve where the other needs 80) but it
+     * can settle into a cycle of three residuals on a chain of diodes, which the other does not
+     * (random circuits: 16 of 200 hit the 200 iteration cap with it alone, most of them draws the
+     * original converged). A solve that has not converged in this many iterations is not converging,
+     * so it is finished by the limiter that always did.
+     */
+    public static int legacyLimiterAfter = 40;
+
+    // Terms that depend only on the temperature, the ideality factor and the constants of the
+    // device, which change rarely and used to be rebuilt (with a pow and an exp) on every Newton
+    // evaluation.
+    private boolean termsValid;
+    private double termsTemperature, termsIdeality;
+    private double thermalVoltage, nVt, vtN, vCrit, satCurrent, isRs, omegaLog, breakdownOmegaLog;
 
     public PNJunctionWire(double reverseSaturationCurrent, double seriesResistance, double temperatureCelsius, double idealityFactor, IElectricNode node1, IElectricNode node2) {
         super(node1, node2);
@@ -95,6 +132,7 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
 
     public void setTemperatureCelsius(double temperatureCelsius) {
         this.temperatureCelsius = temperatureCelsius;
+        termsValid = false;
     }
 
     @Override
@@ -111,35 +149,51 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
     public void startIteration(int iteration) {
         if(iterationLimit > 0 && iteration > iterationLimit)
             return;
-        double k = 1.380649e-23; // Boltzmann constant in J/K
-        double q = 1.602176634e-19; // Elementary charge in C
-        double V_T = (k * (temperatureCelsius + 273.15)) / q; // Thermal voltage in V
-        double n = idealityFactor;
-        double V = potentialDifference();
-        double Vcrit = n * V_T * Math.log(V_T / (reverseSaturationCurrent * Math.sqrt(2)));
-        prevV = V = pnLim(V, prevV, Vcrit, V_T);
-        double I_s1 = reverseSaturationCurrent;
-        double E_g = 1.12; // Silicon bandgap energy in eV
-        double T_1 = 22 + 273.15; // Reference temperature in K
-        double T_2 = temperatureCelsius + 273.15; // Actual temperature in K
-        double T_2_div_T_1 = T_2 / T_1;
-        double I_s2 = I_s1 * Math.pow(T_2_div_T_1, 3/n) * Math.exp(- (q * E_g / k / T_2 / n) * (1 - T_2_div_T_1));
+        if(!termsValid || termsTemperature != temperatureCelsius || termsIdeality != idealityFactor)
+            computeTerms();
+        double V_T = thermalVoltage;
         double R_s = seriesResistance;
-        // Banwell and Jayakumar (2000)
-        double IsRs = I_s2 * R_s;
-        double Omega_arg = Math.log(IsRs / n / V_T) + (IsRs + V) / (n * V_T);
-        double WTerm = WrightOmega4(Omega_arg);
+        double I_s2 = satCurrent;
+        double V = potentialDifference();
+        double WTerm, I;
+        if(legacyLimiter || iteration >= legacyLimiterAfter) {
+            prevV = V = pnLim(V, prevV, vCrit, V_T);
+            // Banwell and Jayakumar (2000)
+            WTerm = WrightOmega4(omegaLog + (isRs + V) / nVt);
+            I = vtN * WTerm / R_s - I_s2;
+            // Keep the reference of the other limiter where it would be, for the next solve.
+            prevJunctionV = V - R_s * I;
+        } else {
+            WTerm = WrightOmega4(omegaLog + (isRs + V) / nVt);
+            I = vtN * WTerm / R_s - I_s2;
+            // The junction is what the exponential acts on; V - I*Rs is its voltage.
+            double junction = V - R_s * I;
+            if(junction > vCrit) {
+                double limited = pnLim(junction, prevJunctionV, vCrit, V_T);
+                if(limited != junction) {
+                    // Re-evaluate at the limited junction voltage. The exponential is inverted
+                    // in closed form, so no second Wright omega is needed.
+                    junction = limited;
+                    double e = Math.exp(junction / nVt);
+                    I = I_s2 * (e - 1);
+                    V = junction + R_s * I;
+                    WTerm = R_s * I_s2 * e / nVt;
+                }
+            }
+            prevJunctionV = junction;
+            prevV = V;
+        }
         double G = Math.max(WTerm / (R_s * (1 + WTerm)), ElectricalNetwork.G_MIN);
 
-        double I = V_T * n * WTerm / R_s - I_s2;
         if(breakdownVoltage > 0) {
             // Reverse breakdown using a shifted diode current curve
             double V_over = -breakdownVoltage - V; //so only when in reverse bias
-            double B_IsRs = breakdownSaturationCurrent * R_s;
-            double B_Omega_arg = Math.log(B_IsRs / n / V_T) + (B_IsRs + V_over) / (n * V_T);
-            double B_WTerm = WrightOmega4(B_Omega_arg);
+            double B_Omega_arg = breakdownOmegaLog + (breakdownSaturationCurrent * R_s + V_over) / nVt;
+            // Far from breakdown the argument is so negative that exp() underflows to exactly zero,
+            // which makes this term exactly zero: skip the evaluation, not the arithmetic below.
+            double B_WTerm = B_Omega_arg < -746 ? 0 : WrightOmega4(B_Omega_arg);
             G += Math.max(B_WTerm / (R_s * (1 + B_WTerm)), ElectricalNetwork.G_MIN);
-            I -= V_T * n * B_WTerm / R_s - breakdownSaturationCurrent;
+            I -= vtN * B_WTerm / R_s - breakdownSaturationCurrent;
         }
 
         // Adding a resistor across the diode helps with convergence in certain cases.
@@ -163,6 +217,30 @@ public class PNJunctionWire extends AbstractElectricWire implements ISolverHook 
 
     public void setIdealityFactor(double idealityFactor) {
         this.idealityFactor = idealityFactor;
+        termsValid = false;
+    }
+
+    private void computeTerms() {
+        double k = 1.380649e-23; // Boltzmann constant in J/K
+        double q = 1.602176634e-19; // Elementary charge in C
+        double n = idealityFactor;
+        double V_T = (k * (temperatureCelsius + 273.15)) / q; // Thermal voltage in V
+        thermalVoltage = V_T;
+        nVt = n * V_T;
+        vtN = V_T * n;
+        vCrit = n * V_T * Math.log(V_T / (reverseSaturationCurrent * Math.sqrt(2)));
+        double I_s1 = reverseSaturationCurrent;
+        double E_g = 1.12; // Silicon bandgap energy in eV
+        double T_1 = 22 + 273.15; // Reference temperature in K
+        double T_2 = temperatureCelsius + 273.15; // Actual temperature in K
+        double T_2_div_T_1 = T_2 / T_1;
+        satCurrent = I_s1 * Math.pow(T_2_div_T_1, 3/n) * Math.exp(- (q * E_g / k / T_2 / n) * (1 - T_2_div_T_1));
+        isRs = satCurrent * seriesResistance;
+        omegaLog = Math.log(isRs / n / V_T);
+        breakdownOmegaLog = Math.log(breakdownSaturationCurrent * seriesResistance / n / V_T);
+        termsTemperature = temperatureCelsius;
+        termsIdeality = idealityFactor;
+        termsValid = true;
     }
 
     @Override
