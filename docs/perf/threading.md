@@ -93,6 +93,17 @@ state, confirming the coordinator's read. **Conclusion: nothing reachable from `
 a `Level`, `BlockPos`, sound or particle call**, so running islands off the main thread does not
 need a "defer to after the join" step for anything found.
 
+**Scope correction (from review):** the grep above was scoped to `sim/`, so it was not actually
+exhaustive over the codebase — a hook implementer placed elsewhere would not have been found. Re-run
+unscoped, over the whole `src/main/java` tree:
+`grep -rlE "implements.*\b(IOuterHook|IMultiHooks|ISolverHook|ISubTickRate)\b" src/main/java`. It
+adds exactly one file to the list above:
+`light/factorylight/TopLevelSharedFilamentWire.java` (`implements IOuterHook`, no Minecraft import,
+and — checked directly — it does not override `preSolve()`/`postUpperSolve()`, so it inherits
+`IOuterHook`'s default no-ops). The conclusion still holds; it was previously verified by reading
+this one file directly rather than by the table's stated methodology, which is now fixed to actually
+be exhaustive.
+
 ### 2.4 EJML's sparse/dense LU — checked, no shared workspace found; also stress-tested
 
 `JavaMNA` always factorises through `DynamicallyTypedMatrix.Solver.LU` (dense
@@ -217,7 +228,7 @@ measured ticks:
 | Linear | 50 | 0.178 ms | 0.367 ms | **0.49x** |
 | Linear | 300 | 0.842 ms | 0.947 ms | **0.89x** |
 | Nonlinear (3-phase + 6-diode bridge, like `b_seed_floating`) | 1 | 2.50 ms | 2.46 ms | 1.02x |
-| Nonlinear | 4 | 9.73 ms | 2.73 ms | **3.56x** |
+| Nonlinear | 4 | 9.73 ms | 2.73 ms | 3.56x (unreliable — see §4.4) |
 | Nonlinear | 8 | 18.98 ms | 5.02 ms | **3.78x** |
 | Nonlinear | 16 | 38.27 ms | 7.57 ms | **5.05x** |
 | Nonlinear | 50 | 119.22 ms | 21.80 ms | **5.47x** |
@@ -251,10 +262,44 @@ The fix was to warm up a sequential and a parallel world *together*, alternating
 them in alternating single-tick slices and take the median of each side, so neither phase is ever
 "the second one" for the whole measurement. Re-run this way: linear islands regress at every count
 from 1 to 300 (0.29x-0.86x, i.e. slower), and nonlinear islands still gain (1.07x at 1, 3.34x at 4,
-5.33x at 50) — both consistent with §4.2's original figures. This is offered as a second,
-methodologically stricter run that reaches the same conclusion, not a replacement for §4.2; the
-practical lesson for phase 2 is that any further micro-benchmarking of the cheap-island case must
-control for this ordering effect or its sign is not trustworthy.
+5.33x at 50) — mostly consistent with §4.2's original figures, with one exception recorded in §4.4
+below. This is offered as a second, methodologically stricter run that reaches the same conclusion,
+not a replacement for §4.2; the practical lesson for phase 2 is that any further micro-benchmarking
+of the cheap-island case must control for this ordering effect or its sign is not trustworthy.
+
+### 4.4 The 4-island nonlinear row does not reproduce as a fixed multiplier
+
+A review of this branch reproduced §4.2/§4.3's 4-island nonlinear number (3.56x, then 3.34x on the
+order-bias-controlled re-measurement) and got 1.19x and 2.42x instead, on the same machine — every
+*other* row in the same two reviewer runs landed close to its documented figure (1 island 0.87x/0.97x
+vs ~1.0x claimed, 50 islands 4.91x/4.62x vs 5.33-5.47x claimed, `g_many_small` 0.74x/0.77x vs
+0.74-0.89x claimed). Only the 4-island nonlinear row was off by this much, in both reviewer runs, in
+the same direction.
+
+Reproduced independently again here, with an order-bias-controlled harness matching §4.3's method
+(4 fresh copies of `SolverGolden.rectifierThreePhaseFloating()`, rate 8, both worlds warmed up
+*together* for 30 ticks alternating, then 60 further ticks timed alternately and the median of each
+side taken), three separate `./gradlew` invocations (fresh JVM each time):
+
+| Run | Sequential median | Parallel median | Speedup |
+|---|---:|---:|---:|
+| 1 | 2.71 ms | 1.36 ms | 1.99x |
+| 2 | 2.71 ms | 1.26 ms | 2.16x |
+| 3 | 2.68 ms | 1.15 ms | 2.33x |
+
+Three more independent numbers, clustered around 2x — close to the reviewer's own 1.19x/2.42x range,
+not to the 3.34-3.56x this doc originally reported. The most likely explanation: this specific row's
+absolute cost (a few milliseconds per tick) is the smallest and shortest of the nonlinear series,
+so it is the most sensitive to whatever background compilation the shared machine's other agents are
+doing at the moment of measurement (every measurement session in this doc, including this one, ran
+while sibling worktrees were also building — see the noise caveat at the top of §4). Five independent
+measurement sessions (the original, the order-bias-controlled one, this review's two, and this
+verification's three sub-runs — eight numbers in all) span roughly 1.2x to 3.6x with no run below
+1.0x, so **the qualitative claim holds — 4 nonlinear islands are a real, reproducible net win, never
+a regression, in every one of eight independent measurements — but no single multiplier in the
+2-3.6x range should be treated as a stable, reproducible figure for this specific row.** The 8, 16
+and 50-island rows, which cost enough per tick to average out this noise, are the ones to trust for
+a specific number.
 
 ## 5. What this stream does and does not fix
 
@@ -354,3 +399,56 @@ ran the verification the recommendation above still owed:
   before-numbers (`b_seed_floating`: 1.1 / 3.2 / 6.9 / 29.9 / 53.1 ms/tick at 8 / 16 / 32 / 64 / 128
   sub-ticks) already predate this stream's changes and stand as the measured baseline for the actual
   performance problem; only a whole-suite baseline test *count* at the exact branch base is missing.
+
+## 9. Three-reviewer pass: what was fixed, and what was checked and left alone
+
+Three reviewers examined this branch after §8. Each finding was reproduced or checked directly
+before anything was changed; this section records the outcome of each one, code fixes are in the
+commits after §8's, and doc-only findings are folded into the sections above (§4.4, §2.3's scope
+correction).
+
+- **Blocker, `PerformanceCounter` — real, fixed.** `PerformanceCounterConcurrencyTest`'s own comment
+  claimed the synchronized accumulator block was proven by the test, but no assertion read
+  `epochCount`; only `getMin()`/`getMax()` were checked, and a lost update cannot move either of
+  those. Reproduced the reviewer's own mutation (accumulator update moved outside the lock): 14/20
+  repetitions failed once a real assertion was added. Added `PerformanceCounter.getEpochCount()` and
+  an exact `threads * iterations` assertion; saw it fail against the mutation, restored, reran clean.
+- **Major, docs §4.2/§4.3's 4-island nonlinear number — real, documented.** See §4.4: re-measured
+  three more times independently and got 1.99x/2.16x/2.33x, close to the reviewer's own 1.19x/2.42x,
+  not the originally documented 3.34x-3.56x. The direction (a real speedup, never a regression) holds
+  across all eight independent measurements now on record; the specific multiplier does not, because
+  this row's absolute cost is small enough that shared-machine background compilation dominates the
+  signal. No code changed; §4.2's table and §4.3 now point at §4.4 instead of asserting a number this
+  doc cannot stand behind.
+- **Major, `WorldNetworks.preTick`'s integration point untested — real, and worse than stated:
+  documented.** Confirmed the reviewer's finding (no test constructs a `WorldNetworks`, which needs
+  a live `Level`) and found something the reviewer's own review did not need to trigger: merely
+  *touching* `PowerGrid.LOGGER` for the first time in this headless JVM — which `preTick()`'s
+  branch does, and which `ParallelIslandStepping.stepRound`'s pooled-failure path also does — throws
+  `IncompatibleClassChangeError` out of `Create`'s registrate bootstrap. Confirmed with a standalone
+  probe test containing only `PowerGrid.LOGGER.info(...)`, no other code from this stream, reproduced
+  three times including with a freshly restarted Gradle daemon. So it is not just that
+  `WorldNetworks.preTick`'s 3-line integration branch is unreached by any test — a large part of
+  `WorldNetworks`, and one path inside `ParallelIslandStepping` itself, could not be reached by a
+  headless test *even if one were written*, without first standing up enough of a fake Minecraft
+  environment for `PowerGrid`'s static init to complete, which is out of scope for this stream. This
+  specific integration diff is verified by code review only, not by test, and cannot currently be
+  otherwise — consistent with this project's own testing docs ("no Minecraft"; "what no test can
+  reach: block entities, behaviours, ... networking").
+- **Minor, exception-handling divergence in `stepRound` — real, and now covered where it can be
+  reached.** Confirmed: the sequential loop it replaces aborts the rest of the round on the first
+  exception; `stepRound` submits the whole batch first and only rethrows after every island has run.
+  Added `ParallelIslandSteppingTest.islandFailureIsRethrownButSiblingsStillCompleteTheRound`
+  (deliberately placing the failing island last, on the calling thread, to avoid the
+  `PowerGrid.LOGGER` landmine above — a pooled failure's own log call is still unreachable
+  headlessly, stated as such in the test's javadoc). Saw it fail first against a mutation that
+  swallowed the rethrow, restored, reran clean. The divergence itself is intentional (a
+  partially-failed round should not silently leave some islands unstepped and others stepped) and is
+  now recorded here rather than only implied by the code.
+- **Minor, `cs_CZ.json` uncommitted change — confirmed, left alone on purpose.** This file shows
+  modified in `git status` in every session in this worktree; it is a known Windows
+  `cs_CZ.json`/`cs_cz.json` case-collision artifact this stream's own task rules say never to stage,
+  revert or commit. Not touched.
+- **Minor, "only the location the brief allowed" for this doc's path — unverifiable, agreed.** No
+  stream-assignment brief exists anywhere in the repo to check the path against (confirmed again by
+  the same repo-wide search the previous session ran). Left as previously stated.
