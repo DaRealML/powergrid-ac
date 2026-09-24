@@ -3,6 +3,7 @@ package org.patryk3211.electricity;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
+import org.patryk3211.powergrid.electricity.sim.ParallelIslandStepping;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.schedule.SolveGovernor;
 import org.patryk3211.powergrid.electricity.sim.schedule.SubTickScheduler;
@@ -11,6 +12,7 @@ import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePort;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
 
 /**
@@ -158,6 +160,17 @@ public class SubTickSchedulerTest {
     static LongSupplier ticking(long stepNanos) {
         var now = new long[]{ 0 };
         return () -> now[0] += stepNanos;
+    }
+
+    /**
+     * {@link #ticking}, but safe to read concurrently from {@link ParallelIslandStepping}'s pool: a
+     * plain {@code long[]} read-modify-write races under concurrent callers, which would make a
+     * parallel-stepping test's cost noisy (or worse, corrupt) for reasons that have nothing to do with
+     * whether {@code stepRound} reports timing back correctly. {@link AtomicLong#addAndGet} does not.
+     */
+    static LongSupplier tickingConcurrent(long stepNanos) {
+        var now = new AtomicLong();
+        return () -> now.addAndGet(stepNanos);
     }
 
     @Test
@@ -435,5 +448,155 @@ public class SubTickSchedulerTest {
         // The pair still solves together, once per tick each.
         var stats = new JavaMNA.Statistics[]{ world.islands.get(1).solverStatistics(), world.islands.get(2).solverStatistics() };
         Assertions.assertEquals(stats[0].solves, stats[1].solves);
+    }
+
+    // ------------------------------------------------------------------ ParallelIslandStepping, driven through the scheduler
+
+    /**
+     * {@code count} independent diode-bridge rectifiers, the same shape
+     * {@code nodeVoltagesAreTheSameWithAndWithoutTheGovernor} builds one of: nonlinear (forces
+     * Newton every sub-tick) and, with several of them in one world, independent of each other, so
+     * {@link ParallelIslandStepping} has real, non-lockstep work to spread over its pool.
+     */
+    private static SolverBench.World rectifierIslands(int count) {
+        var world = new SolverBench.World();
+        for(int c = 0; c < count; ++c) {
+            var net = world.island(false, 1);
+            var pos = net.N();
+            var neg = SolverGolden.ground(net);
+            var terminal = net.N();
+            SolverGolden.acSource(net, terminal, null, 0.5, 325, 50).setSamplingPolicy(32, 64);
+            net.network.addWire(SolverGolden.diode(terminal, pos));
+            net.network.addWire(SolverGolden.diode(neg, terminal));
+            SolverGolden.cap(net, 470e-6, 0.01, pos, neg);
+            SolverGolden.res(net, 50, pos, neg);
+        }
+        return world;
+    }
+
+    /** Same tolerance {@code ParallelIslandSteppingTest} uses for two separately built "identical" worlds. */
+    private static void assertVoltagesClose(SolverBench.World expected, SolverBench.World actual, String context) {
+        Assertions.assertEquals(expected.islands.size(), actual.islands.size(), context);
+        for(int k = 0; k < expected.islands.size(); ++k) {
+            var a = expected.islands.get(k);
+            var b = actual.islands.get(k);
+            for(int n = 0; n < a.size(); ++n) {
+                var ev = a.getNodes().get(n).getStateValue();
+                var av = b.getNodes().get(n).getStateValue();
+                var allowed = 1e-6 + 1e-9 * Math.max(Math.abs(ev), Math.abs(av));
+                Assertions.assertTrue(Math.abs(av - ev) <= allowed,
+                        context + " island " + k + " node " + n + ": expected " + ev + " but was " + av);
+            }
+        }
+    }
+
+    @Test
+    void parallelIslandsGiveTheSamePhysicsAsSequentialThroughTheScheduler() {
+        var previousEnabled = ParallelIslandStepping.ENABLED;
+        var previousThreshold = ParallelIslandStepping.minParallelIslands;
+        var previousThreads = ParallelIslandStepping.threads;
+        try {
+            // A lockstep pair alongside the independent rectifiers, so this exercises the exclusion
+            // (the pair must never be handed to the pool) through SubTickScheduler specifically, not
+            // just through ParallelIslandStepping.stepRound directly as ParallelIslandSteppingTest does.
+            var sequential = rectifierIslands(5);
+            var h1 = new IElectricNode[1];
+            var h2 = new IElectricNode[1];
+            var one = dcIsland(sequential, h1);
+            var two = dcIsland(sequential, h2);
+            link(sequential, one, h1[0], two, h2[0]);
+            var parallel = rectifierIslands(5);
+            var ph1 = new IElectricNode[1];
+            var ph2 = new IElectricNode[1];
+            var pOne = dcIsland(parallel, ph1);
+            var pTwo = dcIsland(parallel, ph2);
+            link(parallel, pOne, ph1[0], pTwo, ph2[0]);
+
+            var seqScheduled = new Scheduled(sequential, null);
+            var parScheduled = new Scheduled(parallel, null);
+            for(var s : List.of(seqScheduled, parScheduled)) {
+                s.scheduler.conservativeLockstep = true;
+                s.settings.ceiling = 32;
+            }
+
+            ParallelIslandStepping.ENABLED = false;
+            ParallelIslandStepping.resetPoolForTests();
+            for(int t = 0; t < 6; ++t)
+                seqScheduled.tick();
+
+            ParallelIslandStepping.ENABLED = true;
+            ParallelIslandStepping.minParallelIslands = 1;
+            ParallelIslandStepping.threads = Math.max(2, Runtime.getRuntime().availableProcessors());
+            ParallelIslandStepping.resetPoolForTests();
+            for(int t = 0; t < 6; ++t)
+                parScheduled.tick();
+
+            assertVoltagesClose(sequential, parallel,
+                    "the scheduler must reach the same solver state whether or not ParallelIslandStepping is enabled");
+        } finally {
+            ParallelIslandStepping.ENABLED = previousEnabled;
+            ParallelIslandStepping.minParallelIslands = previousThreshold;
+            ParallelIslandStepping.threads = previousThreads;
+            ParallelIslandStepping.resetPoolForTests();
+        }
+    }
+
+    @Test
+    void theGovernorCutsARealOverloadWhetherOrNotIslandsRunOnThePool() {
+        // A scripted, thread-safe clock, not the real one: anOverBudgetIslandIsCutToASteadyRateAboveItsFloor
+        // uses the same technique for the sequential path, for the same reason (a real-clock assertion
+        // is only as reliable as this machine's momentary load, and this project has been burned by
+        // that before — see docs/perf/scheduling.md). tickingConcurrent is that clock made safe to read
+        // from several pool threads at once, so this exercises the real thread pool while staying
+        // deterministic: the point being tested is that a POOLED island's own stepNanos correctly
+        // reaches the governor, not that six threads are faster than one on this particular machine
+        // (docs/perf/threading.md already answers that question with real numbers).
+        var previousEnabled = ParallelIslandStepping.ENABLED;
+        var previousThreshold = ParallelIslandStepping.minParallelIslands;
+        var previousThreads = ParallelIslandStepping.threads;
+        try {
+            ParallelIslandStepping.ENABLED = true;
+            ParallelIslandStepping.minParallelIslands = 1;
+            ParallelIslandStepping.threads = 2;
+            ParallelIslandStepping.resetPoolForTests();
+
+            // Each timed step reads the clock twice; six islands sharing this clock (whichever thread
+            // does the reading) give a deterministic, machine-independent total, the same reasoning
+            // anOverBudgetIslandIsCutToASteadyRateAboveItsFloor uses for one.
+            var world = rectifierIslands(6);
+            var scheduled = new Scheduled(world, tickingConcurrent(100_000));
+            scheduled.settings.ceiling = 64;
+            scheduled.settings.budgetMs = 8;
+            var events = new ArrayList<SolveGovernor.Event>();
+            scheduled.scheduler.governor().setListener(events::add);
+
+            var rates = new ArrayList<Integer>();
+            for(int t = 0; t < 80; ++t) {
+                scheduled.tick();
+                rates.add(world.islands.get(0).getSubTicks());
+            }
+
+            var settled = rates.get(rates.size() - 1);
+            Assertions.assertTrue(settled < 64, "six Newton-iterating islands on an 8ms budget must be governed down from the 64 ceiling, settled at " + settled);
+            // 50 Hz at 32 samples per cycle and a floor of 8 per cycle: 64 / 4 = 16, as in
+            // anOverBudgetIslandIsCutToASteadyRateAboveItsFloor.
+            Assertions.assertTrue(settled >= 16, "must never drop below the floor, settled at " + settled);
+            Assertions.assertTrue(events.stream().anyMatch(e -> e.kind() == SolveGovernor.EventKind.ENGAGED),
+                    "the governor must have engaged at least once");
+            // Held for a further stretch without changing: the pool reporting timing back correctly
+            // is exactly what lets the governor converge instead of endlessly re-measuring.
+            var afterSettle = new ArrayList<Integer>();
+            for(int t = 0; t < 20; ++t) {
+                scheduled.tick();
+                afterSettle.add(world.islands.get(0).getSubTicks());
+            }
+            Assertions.assertTrue(afterSettle.stream().allMatch(r -> r == settled),
+                    "the rate must hold once settled, not flap: " + afterSettle);
+        } finally {
+            ParallelIslandStepping.ENABLED = previousEnabled;
+            ParallelIslandStepping.minParallelIslands = previousThreshold;
+            ParallelIslandStepping.threads = previousThreads;
+            ParallelIslandStepping.resetPoolForTests();
+        }
     }
 }

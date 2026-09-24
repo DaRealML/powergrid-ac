@@ -342,7 +342,10 @@ phase 2 replaces the count threshold with a real cost signal.
    correct by construction rather than by convention.
 3. **Pool sizing**: `availableProcessors() - 2`, configurable, is this phase's default; phase 2
    should expose it as a real config entry (not a system property) and consider whether it should
-   shrink further on a server also running other mods' worker pools.
+   shrink further on a server also running other mods' worker pools. **Done, §10**: `parallelIslands`,
+   `parallelIslandsMinCount` and `parallelIslandsThreads` are now real `CSolver` config entries, read
+   fresh every tick the same way every other AC solver setting is. Whether it should shrink further
+   alongside other mods' pools was not investigated.
 4. **Classes that change**: `sim/ParallelIslandStepping.java` (the gate goes here),
    `WorldNetworks.java` (no further change expected — the branch this phase added stays), and
    wherever the config screen's electricity/solver section lives, for a real toggle plus the cost
@@ -359,10 +362,11 @@ Everything here ran through the headless JUnit suite (`SolverBench`'s `World`/`t
 never a real Minecraft `Level`). Not verified in game: whether `WorldNetworks.preTick()` actually
 overlaps with other main-thread work the way the headless harness assumes, the `/powergrid
 performance` command's output with the fixed `PerformanceCounter` under real concurrent load, and
-the config screen (no config entry was added this phase — the switches are system properties only).
-Thread pool behaviour under a real server's lifecycle (startup/shutdown, world unload while a round
-is mid-flight) was not exercised; the pool's threads are daemon threads so they cannot keep the JVM
-alive, but a clean shutdown path was not built or tested.
+the config screen's actual behaviour in a running client (the entries exist as of §10, but no one has
+opened the config screen and clicked them). Thread pool behaviour under a real server's lifecycle
+(startup/shutdown, world unload while a round is mid-flight) was not exercised; the pool's threads
+are daemon threads so they cannot keep the JVM alive, but a clean shutdown path was not built or
+tested.
 
 ## 8. Phase 2 verification
 
@@ -452,3 +456,127 @@ correction).
 - **Minor, "only the location the brief allowed" for this doc's path — unverifiable, agreed.** No
   stream-assignment brief exists anywhere in the repo to check the path against (confirmed again by
   the same repo-wide search the previous session ran). Left as previously stated.
+
+## 10. Wired into `WorldNetworks.preTick`, for real
+
+Everything above (§1-§9) was written, reviewed and merged before this class was ever called from a
+real world tick — §5's merge with `ws/perf-sched` found the two streams had rewritten the same
+stepping loop, and the merge deliberately kept `SubTickScheduler.step()`'s sequential loop as the
+only active path rather than inventing untested integration code on the spot (that merge's own
+commit message says so). This section is that integration, done afterward, once asked for directly: "how do I enable
+multithreading" surfaced that flipping `ParallelIslandStepping.ENABLED` did precisely nothing,
+because nothing called it any more.
+
+### 10.1 The actual gap
+
+`SubTickScheduler.step()`'s governor bookkeeping depends on `stepNanos[k]`: each island's own wall
+time this tick, read with the scheduler's own clock (real in production, scripted in tests),
+accumulated into a `SolveGovernor.Entry` and used to decide which island to cut. The sequential loop
+fills it inline, timing each `singleTick()` call itself. `ParallelIslandStepping.stepRound` had
+nothing to plug into that — it just ran islands, on whichever thread, and returned.
+
+### 10.2 The fix: `stepRound` reports timing back, by index, thread-safely
+
+`stepRound` gained an overload, `stepRound(islands, i, maxSubTicks, clock, stepNanos)`: the original
+3-argument form still exists and now just calls this one with `System::nanoTime` and a null array,
+so every existing caller (`SolverBench.World.tickParallel()`, `ParallelIslandSteppingTest`) is
+unchanged. When `stepNanos` is non-null, every stepped island's own duration — measured with the
+*caller's* clock, not a hardcoded one, so a test can still supply a fake one — is added into
+`stepNanos[k]`, where `k` is that island's index in the `islands` list the caller passed in. That
+holds for lockstep (always-sequential) islands and pooled ones alike, and mirrors
+`SubTickScheduler.step()`'s own `governing && subTicks > 1` gate exactly, so an island at its floor
+rate still costs nothing extra to (not) time.
+
+Writes from a pool thread into `stepNanos[k]` are visible to the caller once `stepRound` returns
+because every `Future.get()` inside it happens-before that return — the same join that already
+provides the round barrier now also provides the memory-visibility guarantee this needed. Different
+islands write different array indices, so there is nothing to lock: two threads never touch the same
+slot.
+
+`SubTickScheduler.step()` now reads:
+
+```java
+if(ParallelIslandStepping.ENABLED) {
+    var timing = governing ? stepNanos : null;
+    for(int i = 0; i < max; ++i)
+        ParallelIslandStepping.stepRound(islands, i, max, clock, timing);
+} else {
+    // exactly the original inline loop, unchanged
+}
+```
+
+**The disabled path is untouched on purpose.** `ParallelIslandStepping.stepRound` still has to walk
+every island and bucket it into a lockstep/independent list even when the pool goes unused (below
+`minParallelIslands`, or just to find out there's nothing to pool) — real allocation that the old
+inline loop never paid. Gating the dispatch on `ENABLED` at the top of `step()`, rather than pushing
+that decision down into `stepRound` alone, means the shipped default (off) still costs exactly what
+it always did: this is the same "nothing changes for a small world, or with it disabled" property §3
+and §6 already promised, now kept through the real call site too, not just in `stepRound`'s own
+fallback branch.
+
+One more thing found and fixed in the same sitting, discovered only by running the merged suite:
+`ParallelIslandStepping`'s thread pool was built once and cached, so changing `threads` after the
+pool existed had no effect until a test-only reset. Since `threads` is now a live config value (§10.3)
+that a server owner can change without restarting, `pool()` was extended to rebuild itself when the
+configured size actually changes, not just on first use.
+
+### 10.3 Real config, not a system property
+
+`ParallelIslandStepping.ENABLED`/`minParallelIslands`/`threads` were system-property-backed static
+fields with no config-screen entry (§7 said so). Three `CSolver` entries now drive them every tick,
+the same way `acFineRates` and `solveBudgetGovernor` already drive their own switches:
+
+- `parallelIslands` (bool, default `false`)
+- `parallelIslandsMinCount` (int, default `4`, minimum `1`)
+- `parallelIslandsThreads` (int, default `0` = automatic: `availableProcessors() - 2`, minimum `0`)
+
+`WorldNetworks.preTick()` assigns all three from `cSolver` every tick, right next to the existing
+`schedulerSettings.x = cSolver.y.get()` block. The system properties still work (nothing reads them
+away), but the config values are what a running server actually sees.
+
+### 10.4 Verification
+
+- **Physics unaffected.** `SubTickSchedulerTest.parallelIslandsGiveTheSamePhysicsAsSequentialThroughTheScheduler`
+  builds five independent nonlinear (diode-bridge) islands plus a lockstep-joined pair, steps one
+  copy with `ParallelIslandStepping.ENABLED=false` and a separately-built copy with it forced on
+  (`minParallelIslands=1`), and compares every node's voltage within the same tolerance
+  `ParallelIslandSteppingTest` already uses for two independently-built "identical" worlds.
+- **Timing actually reaches the governor, per island, including pooled ones.** Two new
+  `ParallelIslandSteppingTest` cases drive the new `stepRound` overload directly with a plain
+  incrementing counter as the clock (atomic, so it is safe to read from several pool threads at
+  once, unlike a naive shared `long`): `stepRoundReportsEveryPooledIslandsTimingBackToTheCaller` (12
+  islands, well past the pooling threshold, every one timed) and
+  `stepRoundDoesNotTimeAnIslandAtTheFloorRate` (an island at 1 sub-tick must read zero, matching the
+  sequential path's own micro-optimisation). Both were seen failing first against the actual
+  mutation that broke them (`stepTimed` reduced to a bare `singleTick()` call, no timing at all) —
+  a differential/physics-only test would not have caught this, since dropping the timing changes
+  nothing about the answer, only whether the governor can see the cost.
+- **The governor still functions end to end with the pool engaged.**
+  `SubTickSchedulerTest.theGovernorCutsARealOverloadWhetherOrNotIslandsRunOnThePool` runs six
+  independent nonlinear islands through `SubTickScheduler` with `ParallelIslandStepping.ENABLED=true`
+  and the pool deliberately narrowed to 2 threads (so islands genuinely queue, rather than each
+  getting its own thread and making the test trivially fast), and checks the governor engages, cuts
+  the rate down from the ceiling, never below the floor, and holds without flapping. This uses a
+  *scripted* clock (`tickingConcurrent`, an `AtomicLong`-based version of the same `ticking()` helper
+  the sequential-path governor tests already use) rather than the real one: an earlier version of
+  this test used `System.nanoTime()` and was genuinely flaky under this machine's own background
+  load (six islands, run on real threads, sometimes finished under budget purely because the machine
+  was quiet that moment) — the same class of noise this project's own scheduling work already hit
+  and already solved the same way once. The scripted clock proves the wiring is correct
+  independent of how fast this machine happens to be; the real, measured speedup numbers are §4's,
+  not this test's job to reproduce.
+- **Full suite green throughout**, `SolverGoldenTest` unchanged, run repeatedly (not once) to check
+  for the kind of intermittent concurrency bug a single green run cannot rule out.
+
+### 10.5 What is still open
+
+- **The cost-aware gate (§6, "what phase 2 must build" item 1) is still not built.** This work was
+  scoped to making the existing, reviewed mechanism actually reachable and configurable, not to
+  changing the recommendation about the default. `parallelIslands` still defaults to `false` for
+  exactly the reason §6 already gives: a plain island-count threshold cannot tell a cheap island from
+  an expensive one, and 300 cheap islands still regress under it.
+- **Nothing here was exercised in a real Minecraft server** — see the updated §7. The config entries
+  compile and are read every tick in the headless suite's own construction of `CSolver`, but no one
+  has opened a real config screen, toggled them, and watched a real world's TPS change.
+- A clean thread-pool shutdown path for a real server lifecycle (world unload mid-round, server stop)
+  is still not built or tested, unchanged from §7.
