@@ -3,9 +3,15 @@ package org.patryk3211.electricity;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.Test;
+import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
 import org.patryk3211.powergrid.electricity.sim.ParallelIslandStepping;
 
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -146,5 +152,51 @@ public class ParallelIslandSteppingTest {
                 }
             }
         }
+    }
+
+    /**
+     * {@code stepRound} submits every eligible island in a batch before any failure is known, so
+     * unlike the sequential loop it replaces (which stops at the first exception), one island
+     * throwing must not stop its siblings from completing their round. It must still surface the
+     * failure to the caller once every island has run.
+     * <p>
+     * The failing island is placed LAST deliberately, so {@code stepRound} runs it on the calling
+     * thread rather than the pool (the last island in the batch is always handed to the caller —
+     * see its own doc comment). A pooled failure goes through {@code PowerGrid.LOGGER.error(...)}
+     * first, and this headless suite has no Minecraft environment to initialize the mod's logger
+     * class through (the project's own testing docs say so: "no Minecraft"); triggering that for
+     * the first time here throws an unrelated {@code IncompatibleClassChangeError} from deep in
+     * Create's registrate bootstrap, confirmed with a standalone probe that only touched
+     * {@code PowerGrid.LOGGER} and crashed the same way with none of this class's code involved.
+     * That is a pre-existing gap in what this suite can reach, not something this test should paper
+     * over, so it is avoided here rather than worked around.
+     */
+    @Test
+    void islandFailureIsRethrownButSiblingsStillCompleteTheRound() {
+        var completed = new AtomicInteger();
+        var ok1 = new ElectricalNetwork(true) {
+            @Override
+            public void singleTick() {
+                completed.incrementAndGet();
+            }
+        };
+        var ok2 = new ElectricalNetwork(true) {
+            @Override
+            public void singleTick() {
+                completed.incrementAndGet();
+            }
+        };
+        var failing = new ElectricalNetwork(true) {
+            @Override
+            public void singleTick() {
+                throw new IllegalStateException("deliberate failure for the test");
+            }
+        };
+        List<ElectricalNetwork> networks = List.of(ok1, ok2, failing);
+
+        var thrown = assertThrows(RuntimeException.class, () -> ParallelIslandStepping.stepRound(networks, 0, 1));
+        assertEquals("deliberate failure for the test", thrown.getMessage());
+        assertEquals(2, completed.get(),
+                "both non-failing (pooled) islands must still have run this round despite the third one throwing");
     }
 }
