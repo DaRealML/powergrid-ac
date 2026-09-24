@@ -39,6 +39,7 @@ import org.patryk3211.powergrid.electricity.sim.special.AlternatorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.GeneratorCoupling;
 import org.patryk3211.powergrid.electricity.sim.special.TransmissionLinePart;
 import org.patryk3211.powergrid.kinetics.generator.rotor.RotorBlockEntity;
+import org.patryk3211.powergrid.utility.DirtyMarkThrottle;
 import org.patryk3211.powergrid.utility.Lang;
 import org.patryk3211.powergrid.utility.Unit;
 
@@ -380,7 +381,16 @@ public class CommutatorBlockEntity extends RotorBlockEntity implements IElectric
             setChanged();
         }
         if(!level.isClientSide) {
-            if(source != null) {
+            // EmfState (what write() saves for `source`) is recomputed from the current every
+            // solve, so under load it moves practically every tick and a value comparison like
+            // RotorBehaviour's would never skip. The chunk only needs to be marked dirty often
+            // enough that an autosave or unload picks up a recent value, not on every one of the
+            // ticks it changed on, so this is throttled to once per DIRTY_MARK_INTERVAL ticks
+            // instead of comparing the value. Uses the shaft's own tick count, not the world's, so
+            // machines built at different times don't all mark dirty on the same tick.
+            // DirtyMarkThrottle.isDueOnTick() holds no Minecraft types and is unit tested directly;
+            // this call site and the EmfState staleness it accepts are not (see class comment there).
+            if(source != null && DirtyMarkThrottle.isDueOnTick(rotorBehaviour.getShaftTick())) {
                 level.blockEntityChanged(worldPosition);
             }
         } else {

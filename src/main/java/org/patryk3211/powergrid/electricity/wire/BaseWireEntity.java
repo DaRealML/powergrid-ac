@@ -81,6 +81,20 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
 
     protected Float resistanceOverride = null;
 
+    // The temperature the server integrates. The synced data holds the last value published to
+    // clients, which trails this by less than WireThermal.PUBLISH_DEAD_BAND; NaN means "not read
+    // from the synced data yet" (a fresh entity, or one just loaded from disk).
+    private float exactTemperature = Float.NaN;
+
+    // Ambient temperature at the wire's position, and where and how many ticks ago it was read.
+    // Looking a biome up is a chunk lookup with ChunkStatus.BIOMES, which the four-entry chunk
+    // cache in ServerChunkCache does not share with the FULL lookups everything else makes, so
+    // doing it per wire per tick both costs and evicts. ThermalBehaviour caches its own the same way.
+    private static final int AMBIENT_REFRESH_TICKS = 200;
+    private float ambientTemperature;
+    private BlockPos ambientAt;
+    private int ambientAge;
+
     protected boolean sublevelMove;
 
     public BaseWireEntity(EntityType<?> type, Level world) {
@@ -130,7 +144,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             return;
         }
 
-        float temperature = entityData.get(TEMPERATURE);
+        float temperature = exactTemperature();
         overheated = entityData.get(OVERHEAT_TICKS) >= ThermalBehaviour.OVERHEAT_TICKS;
         if(level().isClientSide && !(level() instanceof PonderLevel))
             return;
@@ -142,7 +156,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
         energy += I * I * getResistance() / 20f;
         if(!overheated) {
             // If wire is overheated it is considered dead.
-            energy -= dissipationFactor * (temperature - ThermalBehaviour.getAmbientTemperature(level(), blockPosition())) / 20f;
+            energy -= dissipationFactor * (temperature - ambientTemperature()) / 20f;
             temperature += energy / thermalMass;
 
             if(testForOverheat(temperature, energy)) {
@@ -156,15 +170,39 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
             }
         }
 
-        entityData.set(TEMPERATURE, temperature);
+        exactTemperature = temperature;
+        // Every change of a synced float is a packet to every viewer, and this one changes in its
+        // low bits for minutes after any load change (and for as long as an alternating current
+        // keeps the per-tick RMS moving). Publish only what a viewer could tell apart.
+        if(WireThermal.shouldPublish(temperature, entityData.get(TEMPERATURE), overheatTemperature))
+            entityData.set(TEMPERATURE, temperature);
+    }
+
+    private float ambientTemperature() {
+        var pos = blockPosition();
+        // Refreshed when the wire moves (a sub-level carrying it) and every ten seconds otherwise,
+        // which is as much as a biome edit made while the server runs can matter to a heat balance
+        // whose time constant is minutes.
+        if(ambientAt == null || ++ambientAge >= AMBIENT_REFRESH_TICKS || !pos.equals(ambientAt)) {
+            ambientTemperature = ThermalBehaviour.getAmbientTemperature(level(), pos);
+            ambientAt = pos;
+            ambientAge = 0;
+        }
+        return ambientTemperature;
     }
 
     public boolean isOverheated() {
         return overheated;
     }
 
+    /** The temperature as clients see it: within {@link WireThermal#PUBLISH_DEAD_BAND} of the exact one. */
     public float getTemperature() {
         return entityData.get(TEMPERATURE);
+    }
+
+    /** The temperature the server integrates, which is what gets saved and copied when a wire splits. */
+    public float exactTemperature() {
+        return Float.isNaN(exactTemperature) ? entityData.get(TEMPERATURE) : exactTemperature;
     }
 
     @Override
@@ -377,6 +415,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
         setEndpoint2(endpoint2);
 
         entityData.set(TEMPERATURE, nbt.getFloat("Temperature"));
+        exactTemperature = Float.NaN;
     }
 
     public void setColor(int color) {
@@ -436,7 +475,7 @@ public abstract class BaseWireEntity extends Entity implements EntityDataS2CPack
 
         nbt.put("LastKnownPos", NbtUtils.writeBlockPos(blockPosition()));
 
-        nbt.putFloat("Temperature", entityData.get(TEMPERATURE));
+        nbt.putFloat("Temperature", exactTemperature());
     }
 
     @Override

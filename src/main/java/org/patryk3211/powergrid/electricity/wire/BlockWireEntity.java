@@ -350,7 +350,7 @@ public class BlockWireEntity extends WireEntity implements IComplexRaycast {
         entity.setItem(getItem(), getWireCount());
         entity.setEndpoint1(getEndpoint2());
         entity.setEndpoint2(getEndpoint1());
-        entity.getEntityData().set(TEMPERATURE, getTemperature());
+        entity.getEntityData().set(TEMPERATURE, exactTemperature());
         entity.setColor(getColor());
 
         var pos = position();
@@ -429,7 +429,7 @@ public class BlockWireEntity extends WireEntity implements IComplexRaycast {
         int items = (int) movedLength;
         wire2.incrementWireCount(items);
 
-        wire2.getEntityData().set(TEMPERATURE, getTemperature());
+        wire2.getEntityData().set(TEMPERATURE, exactTemperature());
         wire2.setEndpoint2(getEndpoint2());
         wire2.setEndpoint1(junction);
         this.setEndpoint2(junction);

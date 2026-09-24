@@ -47,10 +47,12 @@ public class PerformanceCounter {
 
     private double prevAvg;
 
-    private long stamp = new Date().getTime();
-    // Held as a plain timestamp: end() runs twice per solve of every island, up to 128 times per
-    // world tick, and used to allocate a Date each time only for the command that reads it.
-    private long lastMeasurementMillis;
+    // Everything is timed on the monotonic clock. end() runs twice per solve of every island, up
+    // to 128 times per world tick, and used to make a Date (and a wall-clock read) each time to
+    // find out whether the measurement window had closed; the wall-clock time of the last call is
+    // only needed when a player asks for it, so it is reconstructed then instead.
+    private long stamp = System.nanoTime();
+    private long lastMeasurementNanos;
     private boolean measured;
 
     public PerformanceCounter(String name) {
@@ -77,7 +79,8 @@ public class PerformanceCounter {
             // skip the sample than to invent a bogus duration.
             return;
         }
-        var duration = System.nanoTime() - startedAt;
+        var now = System.nanoTime();
+        var duration = now - startedAt;
         synchronized(lock) {
             if(minTime == 0) {
                 minTime = duration;
@@ -90,14 +93,12 @@ public class PerformanceCounter {
             ++epochCount;
             microsTotal += duration / 1000;
 
-            var currentTime = System.currentTimeMillis();
-            var stampDuration = currentTime - stamp;
-            if(stampDuration >= measurementTime) {
+            if(now - stamp >= measurementTime * 1_000_000L) {
                 prevAvg = (double) microsTotal / epochCount;
-                stamp = currentTime;
+                stamp = now;
                 reset();
             }
-            lastMeasurementMillis = currentTime;
+            lastMeasurementNanos = now;
             measured = true;
         }
     }
@@ -164,6 +165,11 @@ public class PerformanceCounter {
     }
 
     public String getTimestamp() {
-        return FORMAT.format(measured ? new Date(lastMeasurementMillis) : null);
+        // A counter that has never been ended reports the present rather than failing.
+        long age;
+        synchronized(lock) {
+            age = measured ? (System.nanoTime() - lastMeasurementNanos) / 1_000_000L : 0L;
+        }
+        return FORMAT.format(new Date(System.currentTimeMillis() - age));
     }
 }
