@@ -311,16 +311,26 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
             network.prepare(network.getSubTicks());
         }
 
-        for(int i = 0; i < maxSubTicks; ++i) {
-            // I guess this could go on a thread-pool
-            for(var network : subnetworks) {
-                // Step this island only on the sub-iterations it participates in. The integer
-                // division crosses a boundary exactly `subTicks` times over `maxSubTicks`
-                // iterations, so an island running at the full rate steps every time and one
-                // running at 1 steps once, at the end of the world tick.
-                var subTicks = network.getSubTicks();
-                if((i + 1) * subTicks / maxSubTicks > i * subTicks / maxSubTicks)
-                    network.singleTick();
+        // Islands are electrically independent except through a TransmissionLinePort pair
+        // (see ParallelIslandStepping's own doc comment for the full argument and the correctness
+        // constraint that keeps a linked pair off the thread pool), so ParallelIslandStepping can
+        // spread them over several threads within one sub-tick round. It is opt-in and off by
+        // default (docs/perf/threading.md has the measurement behind that): with it disabled this
+        // is exactly the loop it replaces, run on this thread, in this order.
+        if(ParallelIslandStepping.ENABLED) {
+            for(int i = 0; i < maxSubTicks; ++i)
+                ParallelIslandStepping.stepRound(subnetworks, i, maxSubTicks);
+        } else {
+            for(int i = 0; i < maxSubTicks; ++i) {
+                for(var network : subnetworks) {
+                    // Step this island only on the sub-iterations it participates in. The integer
+                    // division crosses a boundary exactly `subTicks` times over `maxSubTicks`
+                    // iterations, so an island running at the full rate steps every time and one
+                    // running at 1 steps once, at the end of the world tick.
+                    var subTicks = network.getSubTicks();
+                    if((i + 1) * subTicks / maxSubTicks > i * subTicks / maxSubTicks)
+                        network.singleTick();
+                }
             }
         }
         perf.end();

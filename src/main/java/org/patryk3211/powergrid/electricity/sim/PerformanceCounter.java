@@ -34,7 +34,16 @@ public class PerformanceCounter {
     private long maxTime;
     private long epochCount;
 
-    private long start;
+    // One island is solved by one thread at a time, but several islands can call start()/end()
+    // on this SAME shared instance concurrently (JavaMNA and ElectricalNetwork each keep one
+    // static PERF for every island of that class). A plain `start` field would let one island's
+    // end() read another island's start timestamp; a ThreadLocal gives every thread its own.
+    private final ThreadLocal<Long> start = new ThreadLocal<>();
+
+    // Guards every read/write of the accumulators below, so a concurrent start()/end() from two
+    // islands can never interleave a read-modify-write and lose an update. Contention is
+    // negligible: this only wraps updating a handful of longs, not the solve itself.
+    private final Object lock = new Object();
 
     private double prevAvg;
 
@@ -55,43 +64,62 @@ public class PerformanceCounter {
     }
 
     public void start() {
-        start = System.nanoTime();
+        start.set(System.nanoTime());
     }
 
     public void end() {
-        var duration = System.nanoTime() - start;
-        if(minTime == 0) {
-            minTime = duration;
-        } else if(minTime > duration) {
-            minTime = duration;
+        var startedAt = start.get();
+        if(startedAt == null) {
+            // end() without a matching start() on this thread: nothing to measure, and better to
+            // skip the sample than to invent a bogus duration.
+            return;
         }
-        if(maxTime < duration) {
-            maxTime = duration;
-        }
-        ++epochCount;
-        microsTotal += duration / 1000;
+        var duration = System.nanoTime() - startedAt;
+        synchronized(lock) {
+            if(minTime == 0) {
+                minTime = duration;
+            } else if(minTime > duration) {
+                minTime = duration;
+            }
+            if(maxTime < duration) {
+                maxTime = duration;
+            }
+            ++epochCount;
+            microsTotal += duration / 1000;
 
-        var currentTime = new Date();
-        var stampDuration = currentTime.getTime() - stamp;
-        if(stampDuration >= measurementTime) {
-            prevAvg = (double) microsTotal / epochCount;
-            stamp = currentTime.getTime();
-            reset();
+            var currentTime = new Date();
+            var stampDuration = currentTime.getTime() - stamp;
+            if(stampDuration >= measurementTime) {
+                prevAvg = (double) microsTotal / epochCount;
+                stamp = currentTime.getTime();
+                reset();
+            }
+            lastMeasurement = currentTime;
         }
-        lastMeasurement = currentTime;
     }
 
     public void reset() {
-        microsTotal = 0;
-        epochCount = 0;
-        maxTime = 0;
-        minTime = 0;
+        synchronized(lock) {
+            microsTotal = 0;
+            epochCount = 0;
+            maxTime = 0;
+            minTime = 0;
+        }
     }
 
     public void log() {
+        // Snapshot every field under the lock so the three numbers logged are from one instant,
+        // not min/max/avg each read at whatever point a concurrent end() happened to be at.
+        long min, max, total, count;
+        synchronized(lock) {
+            min = minTime;
+            max = maxTime;
+            total = microsTotal;
+            count = epochCount;
+        }
         PowerGrid.LOGGER.info("Performance counter '{}':", name);
         PowerGrid.LOGGER.info("  Min / Max / Avg");
-        PowerGrid.LOGGER.info("  {}µs / {}µs / {}µs", minTime / 1000f, maxTime / 1000f, (float) microsTotal / epochCount);
+        PowerGrid.LOGGER.info("  {}µs / {}µs / {}µs", min / 1000f, max / 1000f, (float) total / count);
     }
 
     public String getName() {
@@ -99,18 +127,36 @@ public class PerformanceCounter {
     }
 
     public double getMin() {
-        return minTime / 1000.0;
+        synchronized(lock) {
+            return minTime / 1000.0;
+        }
     }
 
     public double getMax() {
-        return maxTime / 1000.0;
+        synchronized(lock) {
+            return maxTime / 1000.0;
+        }
+    }
+
+    /**
+     * Epochs accumulated since the last {@link #reset()} (which {@link #end()} also triggers once
+     * {@code measurementTime} has elapsed). Exposed so a concurrency test can prove no update was
+     * lost to a race, not just that {@link #getMin()}/{@link #getMax()} stayed in bounds — a lost
+     * update cannot push either of those out of range, but it does under-count this.
+     */
+    public long getEpochCount() {
+        synchronized(lock) {
+            return epochCount;
+        }
     }
 
     public double getAvg() {
-        if(epochCount == 0)
-            return prevAvg;
-        var weight = epochCount / 1000.0;
-        return prevAvg * 1 / (1 + weight) + ((double) microsTotal / epochCount) * weight / (1 + weight);
+        synchronized(lock) {
+            if(epochCount == 0)
+                return prevAvg;
+            var weight = epochCount / 1000.0;
+            return prevAvg * 1 / (1 + weight) + ((double) microsTotal / epochCount) * weight / (1 + weight);
+        }
     }
 
     public String getTimestamp() {

@@ -5,6 +5,7 @@ import jdk.jfr.Recording;
 import jdk.jfr.consumer.RecordedFrame;
 import jdk.jfr.consumer.RecordingFile;
 import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
+import org.patryk3211.powergrid.electricity.sim.ParallelIslandStepping;
 import org.patryk3211.powergrid.electricity.sim.node.FloatingNode;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.solver.JavaMNA;
@@ -126,6 +127,38 @@ public final class SolverBench {
                         network.singleTick();
                 }
             }
+            ++worldTick;
+            afterTick.run();
+        }
+
+        /**
+         * Same schedule as {@link #tick()}, but each sub-tick round is handed to
+         * {@link ParallelIslandStepping#stepRound}, which spreads the non-lockstep islands over a
+         * thread pool when {@link ParallelIslandStepping#ENABLED} says to. Behaviour is identical
+         * to {@link #tick()} whenever parallelism is disabled or below threshold, by construction.
+         */
+        public void tickParallel() {
+            int max = 1;
+            for(int k = 0; k < islands.size(); ++k) {
+                var network = islands.get(k);
+                network.computeSubTicks(1);
+                network.setSubTicks(rates.get(k));
+                max = Math.max(max, network.getSubTicks());
+            }
+            if(max > 1) {
+                for(var network : islands) {
+                    if(network.requiresLockstep())
+                        network.setSubTicks(max);
+                }
+            }
+            maxSubTicks = max;
+
+            for(var network : islands) {
+                network.setWorldTick(worldTick);
+                network.prepare(network.getSubTicks());
+            }
+            for(int i = 0; i < max; ++i)
+                ParallelIslandStepping.stepRound(islands, i, max);
             ++worldTick;
             afterTick.run();
         }
@@ -280,6 +313,34 @@ public final class SolverBench {
     }
 
     /**
+     * {@code count} tiny 2-4 node islands (a resistor or two into a load), the closer stand-in for
+     * a large factory base's many small, unrelated circuits than {@link #fiftyIslands}'s fifty
+     * alternator pairs. Every island is linear and cheap by itself, which is the point: this is
+     * where per-island thread hand-off overhead has the least work to hide behind, so it is the
+     * scenario that finds the parallel stepper's break-even point rather than its ceiling.
+     */
+    static World manySmallIslands(int rate, int count) {
+        var world = new World();
+        var random = new java.util.Random(12345);
+        for(int i = 0; i < count; ++i) {
+            var net = world.island(true, rate);
+            var gnd = SolverGolden.ground(net);
+            var hot = net.N();
+            SolverGolden.acSource(net, hot, null, 1, 12, 5).setSamplingPolicy(32, rate);
+            if(random.nextBoolean()) {
+                // 3-4 nodes: source, a mid node, the load.
+                var mid = net.N();
+                SolverGolden.res(net, 5, hot, mid);
+                SolverGolden.res(net, 50, mid, gnd);
+            } else {
+                // 2 nodes: source straight into the load.
+                SolverGolden.res(net, 40, hot, gnd);
+            }
+        }
+        return world;
+    }
+
+    /**
      * One island of about 300 nodes: a 15 by 20 resistive mesh with a load on every node, fed by a
      * 50 Hz source at one corner; optionally three rectifier branches hanging off it.
      * <p>
@@ -361,6 +422,7 @@ public final class SolverBench {
             new Scenario("f_motors1", "f", "one LR motor on 50 Hz", r -> motors(r, 1)),
             new Scenario("f_motors20", "f", "twenty LR motors on 50 Hz", r -> motors(r, 20)),
             new Scenario("g_50_islands", "g", "fifty independent two-winding islands", SolverBench::fiftyIslands),
+            new Scenario("g_many_small", "g", "three hundred tiny 2-4 node islands (factory-base stand-in)", r -> manySmallIslands(r, 300)),
             new Scenario("h_mesh300", "h", "one linear island of ~300 nodes", r -> bigMesh(r, 0, false)),
             new Scenario("h_mesh300_3diodes", "h", "the same with three diode branches", r -> bigMesh(r, 3, false)),
             new Scenario("h_mesh300_hub_3diodes", "h", "as above but every load tied to one ground node (a matrix hub)", r -> bigMesh(r, 3, true)),
