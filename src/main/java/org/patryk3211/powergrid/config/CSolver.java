@@ -61,6 +61,10 @@ public class CSolver extends ConfigBase {
     public final ConfigBool solveBudgetGovernor = b(true, "solveBudgetGovernor", Comments.solveBudgetGovernor);
     public final ConfigFloat solveBudgetMs = f(20f, 0, "solveBudgetMs", Comments.solveBudgetMs);
 
+    public final ConfigBool parallelIslands = b(false, "parallelIslands", Comments.parallelIslands);
+    public final ConfigInt parallelIslandsMinCount = i(4, 1, "parallelIslandsMinCount", Comments.parallelIslandsMinCount);
+    public final ConfigInt parallelIslandsThreads = i(0, 0, "parallelIslandsThreads", Comments.parallelIslandsThreads);
+
     public final ConfigEnum<SolverBackend> solverBackend = e(SolverBackend.NATIVE, "solverBackend", Comments.solverBackend);
 
     @Override
@@ -113,6 +117,10 @@ public class CSolver extends ConfigBase {
 
         public static final String solveBudgetGovernor = "Reduce the sub-tick cap of the most expensive AC islands when solving every island together is taking too much of a world tick, so one runaway network cannot alone destroy the server's TPS. Only ever lowers a rate below what acSamplesPerCycle/acMaxSubTicks would otherwise grant, never raises one above it, and never goes below acMinSamplesPerCycle or multiTicks. Disable to restore the uncapped original behaviour.";
         public static final String solveBudgetMs = "Wall-clock time per world tick that solving every AC island together may take before solveBudgetGovernor starts cutting rates. A world tick is 50ms for the whole server, shared with vanilla and every other mod, so this should leave that mostly free; see docs/perf/scheduling.md for the measurements the default was chosen from. Zero disables the governor regardless of solveBudgetGovernor.";
+
+        public static final String parallelIslands = "Experimental! Step electrically independent AC islands (no transmission line between them) on a thread pool instead of one at a time. Off by default because it regresses a world of many cheap islands: per-island thread hand-off costs more than a sub-100-microsecond linear solve, at every island count measured from 1 to 300. It helps a world running several genuinely expensive (nonlinear: diode, tube, arc) islands at once, 3 to 5 times faster at 4 to 50 of them; it does nothing for a single expensive island, since there is nothing to split across threads. See docs/perf/threading.md before enabling this on a real server.";
+        public static final String parallelIslandsMinCount = "Independent islands stepping in the same round below this count always run sequentially on the main thread, whatever parallelIslands says: thread hand-off only pays for itself past a few dozen islands at minimum, depending on how expensive each one is.";
+        public static final String parallelIslandsThreads = "Worker threads for parallelIslands. Zero means automatic: leave two cores free for the server's main thread and everything else competing with it (chunk generation, other mods, network IO), never fewer than one. Takes effect on the next world tick; the pool itself is rebuilt only when this changes, not every tick.";
 
         public static final String bjtLimAlpha = "BJT inter-iteration voltage change smoothing multiplier";
         public static final String diodeLimAlpha = "Diode inter-iteration voltage change smoothing multiplier";

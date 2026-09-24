@@ -16,6 +16,7 @@
 package org.patryk3211.powergrid.electricity.sim.schedule;
 
 import org.patryk3211.powergrid.electricity.sim.ElectricalNetwork;
+import org.patryk3211.powergrid.electricity.sim.ParallelIslandStepping;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -341,26 +342,39 @@ public final class SubTickScheduler {
     /**
      * The stepping loop: {@link #maxSubTicks()} outer iterations, each stepping an island only when
      * its own count crosses a boundary. Ends the tick for the governor.
+     * <p>
+     * With {@link ParallelIslandStepping#ENABLED} off (the shipped default) this is exactly the
+     * plain sequential loop it has always been, with no new allocation — {@link ParallelIslandStepping}
+     * is only even asked to bucket islands once that flag is on. When it is on, each round is handed
+     * to {@link ParallelIslandStepping#stepRound(List, int, int, LongSupplier, long[])}, which spreads
+     * the independent (non-lockstep) islands of that round over a thread pool but still reports each
+     * one's own wall time back into {@link #stepNanos}, so the governor's cost model works the same
+     * way whether or not a given round actually used the pool.
      */
     public void step(List<ElectricalNetwork> islands) {
         var n = islands.size();
         var max = maxSubTicks;
-        for(int i = 0; i < max; ++i) {
-            // I guess this could go on a thread-pool
-            for(int k = 0; k < n; ++k) {
-                var network = islands.get(k);
-                // Step this island only on the sub-iterations it participates in. The integer
-                // division crosses a boundary exactly `subTicks` times over `max` iterations, so an
-                // island running at the full rate steps every time and one running at 1 steps once,
-                // at the end of the world tick.
-                var subTicks = network.getSubTicks();
-                if((i + 1) * subTicks / max > i * subTicks / max) {
-                    if(governing && subTicks > 1) {
-                        var t0 = clock.getAsLong();
-                        network.singleTick();
-                        stepNanos[k] += clock.getAsLong() - t0;
-                    } else {
-                        network.singleTick();
+        if(ParallelIslandStepping.ENABLED) {
+            var timing = governing ? stepNanos : null;
+            for(int i = 0; i < max; ++i)
+                ParallelIslandStepping.stepRound(islands, i, max, clock, timing);
+        } else {
+            for(int i = 0; i < max; ++i) {
+                for(int k = 0; k < n; ++k) {
+                    var network = islands.get(k);
+                    // Step this island only on the sub-iterations it participates in. The integer
+                    // division crosses a boundary exactly `subTicks` times over `max` iterations, so an
+                    // island running at the full rate steps every time and one running at 1 steps once,
+                    // at the end of the world tick.
+                    var subTicks = network.getSubTicks();
+                    if((i + 1) * subTicks / max > i * subTicks / max) {
+                        if(governing && subTicks > 1) {
+                            var t0 = clock.getAsLong();
+                            network.singleTick();
+                            stepNanos[k] += clock.getAsLong() - t0;
+                        } else {
+                            network.singleTick();
+                        }
                     }
                 }
             }

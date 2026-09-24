@@ -321,19 +321,19 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         schedulerSettings.budgetMs = cSolver.solveBudgetGovernor.get() ? cSolver.solveBudgetMs.get() : 0;
         scheduler.plan(subnetworks, schedulerSettings);
 
+        // Read fresh each tick, same as everything else above: SubTickScheduler.step() only even
+        // asks ParallelIslandStepping to bucket islands when ENABLED is true, so this costs nothing
+        // extra while it is off (the shipped default). See docs/perf/threading.md.
+        ParallelIslandStepping.ENABLED = cSolver.parallelIslands.get();
+        ParallelIslandStepping.minParallelIslands = cSolver.parallelIslandsMinCount.get();
+        var configuredThreads = cSolver.parallelIslandsThreads.get();
+        ParallelIslandStepping.threads = configuredThreads > 0 ? configuredThreads
+                : Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
+
         attachProbeSamplers();
 
         // Read once, so every island in this solve is anchored to the same instant whatever the
-        // level's clock does while it runs. SubTickScheduler.step() now owns the per-round
-        // stepping loop ParallelIslandStepping was built against (see its own class comment: the
-        // same "I guess this could go on a thread-pool" line lives there now) but the two were
-        // never tested together, so ParallelIslandStepping is not wired in here yet. Doing that
-        // for real needs the governor's per-island wall-clock timing (SubTickScheduler.step's
-        // stepNanos[k], which its cost model and hysteresis depend on) to survive a switch to
-        // threads, which ParallelIslandStepping.stepRound does not currently return. Until then
-        // ParallelIslandStepping stays reachable and tested (see docs/perf/threading.md) but only
-        // through SolverBench and its own tests, not through a real world tick; ENABLED's default
-        // is off regardless.
+        // level's clock does while it runs.
         scheduler.prepare(subnetworks, world.getGameTime());
         scheduler.step(subnetworks);
         perf.end();

@@ -44,8 +44,10 @@ Each row was found by a player in game, not by a test. **Add a row when a new on
 | Two value boxes on one face | A side face is 10x12 px and Create hit-tests a box as a sphere of `scale/2` = 4 px radius, so they overlap | One box per face (`getClockWise()` / `getCounterClockWise()`) |
 | `git add -A` | `cs_CZ.json` and `cs_cz.json` collide on Windows and leave a permanently dirty file | Stage files by name, always |
 
-Live config knobs are read per tick (`multiTicks`, `integrationTheta`), on reload (precisions,
-smoothing alphas) or per query (`seriesWireOptimization`). If you add one, say where it is read.
+Live config knobs are read per tick (`multiTicks`, `integrationTheta`, `parallelIslands`/
+`parallelIslandsMinCount`/`parallelIslandsThreads` in `WorldNetworks.preTick`), on reload
+(precisions, smoothing alphas) or per query (`seriesWireOptimization`). If you add one, say where
+it is read.
 
 ## Simulation conventions
 
