@@ -31,10 +31,15 @@ work should scale with the solver's own trouble.
   one -- see `git log` for `ab10ead8`.
 - Every fix keeps `./gradlew test --tests org.patryk3211.electricity.SolverGoldenTest --rerun`
   green (40 tests, 1 skipped, 0 failures, 0 errors, after every commit in this list) and the full
-  suite green at the final commit (247 tests, 1 skipped, 0 failures, 0 errors; branch base
-  `25339680` was 233 tests, 1 skipped, 0 failures, 0 errors -- the 14 extra tests are
-  `SpreadOverTicksTest` and this stream's own bench/golden additions, not new coverage of these
-  fixes, which nothing headless can reach).
+  suite green at the final commit (263 tests, 1 skipped, 0 failures, 0 errors; branch base
+  `25339680` was 233 tests, 1 skipped, 0 failures, 0 errors). The 30 extra tests are
+  `SpreadOverTicksTest`, this stream's own bench/golden additions, and (after a review pass) 16 new
+  tests -- `PerTickThrottleTest`, `SyncBatchingTest`, `PerformanceCounterTest`, plus one case each
+  added to `WireThermalTest` and `SpreadOverTicksTest` -- that pin the predicates and accumulation
+  helpers `DirtyMarkThrottle` and `SyncBatching` expose specifically so a mutation-tested gap in
+  items 1, 2, 4, 5, 8 and 9 below has a test at all; the block-entity/`WorldNetworks` call sites
+  themselves are still not new coverage, since nothing headless can reach them. See "Review
+  response" below for what a review pass found and how each finding was resolved.
 
 ## Audit table, ordered by impact
 
@@ -81,6 +86,72 @@ What was verified headless: the code compiles, `SolverGoldenTest` and the full s
 `SynchedEntityData`, NBT, packet encoding) these fixes and the earlier ones touch, on real code,
 outside a block entity. None of it confirms in-game TPS, chunk-save latency, or that a player
 cannot tell the difference in the field -- a tester's report is the only thing that can.
+
+## Review response
+
+Three reviewers examined this branch after the table above landed. Each finding below was
+reproduced or verified first; code was changed only where that confirmed a real gap, and every new
+test was seen to fail against the reviewer's own mutation before the fix, then re-confirmed passing
+(see the four commits after `deb96052` for the exact mutate/run/revert sequence each one records).
+
+**Blockers, confirmed and addressed** (all four were "coverage gap, not a code defect": every
+production predicate was already correct, mutation-tested and shown to have no test):
+
+- `CommutatorBlockEntity`'s dirty-mark gate (item 2) had no test; closing it permanently still
+  passed the full suite. A first fix (a public static predicate directly on the class) failed for a
+  different reason than expected: `CommutatorBlockEntity` is itself a `BlockEntity`, and just
+  loading the class to call a static method throws `NoClassDefFoundError` (NeoForge's event bus is
+  not on the headless test classpath) -- confirmed directly, not assumed. The interval-comparison
+  logic now lives in `DirtyMarkThrottle`, a new dependency-free utility shared by
+  `CommutatorBlockEntity`, `ThermalBehaviour` and `EnergyMeterBlockEntity` (previously three
+  independent copies of the same constant, flagged as a risk in the prior report), and is tested
+  directly. The `source != null` / `dissipatedPower != 0` gates around each call site are still
+  untested, same as before -- that residual gap is stated plainly, not papered over.
+- `WorldNetworks.postTick`'s lazy packet build and `fullSyncTargets()`'s dedup (items 4-5) had no
+  test either, and both mutations were shown to be *correctness* bugs (silent data loss / duplicate
+  sends), not just perf reverts. Both accumulation patterns are now `SyncBatching.Lazy` and
+  `SyncBatching.firstOccurrencePerKey`, dependency-free and tested with plain values. `postTick()`
+  and `fullSyncTargets()` themselves still need a `Level` and are not covered by anything headless
+  -- narrowed, not closed.
+- `RotorBehaviour`'s two predicates (part of the same batch finding) needed no rework: it is a
+  lighter `Behaviour`, not a `BlockEntity`, and its extracted static methods load and run fine.
+
+**Major, confirmed and addressed:**
+
+- `WireThermal.sides()`'s `>=`-vs-`>` boundary (a mutation the file's *existing* WireThermalTest
+  missed) is now pinned by a test that lands exactly on a threshold, which every prior test's
+  continuous-trajectory construction could not do by chance.
+- The `PerformanceCounter`/sibling-stream overlap: `git diff 25339680..ws/perf-kernel` and
+  `..ws/perf-threading` both confirmed to touch the same lines as this branch's `ab10ead8`
+  independently (the threading stream wraps the same fields in a lock, a superset of this fix).
+  Not something this stream can resolve unilaterally -- it needs the coordinator's merge order.
+  Flagged here for that purpose; no code changed in response to this one.
+- The `ab10ead8` commit message's "observable output is unchanged" claim: not quite true (a
+  never-measured counter used to throw on `getTimestamp()`, now returns a value). Restated
+  accurately in `PerformanceCounterTest`'s own commit rather than editing the historical message.
+
+**Minor, addressed:**
+
+- `SpreadOverTicksTest` did not pin the ceiling-vs-floor share on a round's first tick (only the
+  round-wide maximum, which a floor-division mutation still satisfies by catching up later). Added
+  `theFirstTickOfARoundTakesTheCeilingShareNotTheFloor`, using the reviewer's own
+  size=2000/interval=7 example.
+
+**Minor, disputed or left as reported (no code change):**
+
+- The adversarial solver-correctness checklist (wrong answers on ill-conditioned circuits, diode
+  breakdown, etc.) does not apply to this stream, which touches no solver file -- agreed, and
+  already stated in this doc's opening paragraph. Nothing to change here; that checklist belongs to
+  whichever stream owns `electricity/sim`.
+- `SpreadOverTicks`'s pre/post-decrement release-timing survivor (SOT-M3): agreed this is real but
+  memory-retention-only, not a counted/ordered behaviour change, and the reviewer's own assessment
+  that a GC-retention test would be awkward for little value is accepted as-is. Not fixed.
+- `cs_CZ.json` sitting modified in the working tree: not this stream's doing (no commit here
+  touches it; `git status` shows it dirty purely from the Windows `cs_CZ.json`/`cs_cz.json`
+  case-collision SKILL.md already documents), left untouched as instructed.
+- `PerfCounterReproTest.java`, a throwaway probe the finding says was left in the tree: not present
+  in this worktree when this round started (`git status`/directory listing confirmed) -- already
+  resolved, nothing to delete.
 
 ## Follow-ups (out of this session's scope or budget)
 
