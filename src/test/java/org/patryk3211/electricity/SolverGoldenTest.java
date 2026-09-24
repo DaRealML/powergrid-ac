@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DynamicTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
+import org.patryk3211.powergrid.electricity.sim.solver.SolverSwitches;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -237,6 +238,43 @@ public class SolverGoldenTest {
                         + ", more than the " + circuit.tolerance().relative() + " a candidate is allowed");
         }
         Assertions.assertTrue(failures.isEmpty(), String.join("\n", failures));
+    }
+
+    // ------------------------------------------------------------ the switches must agree with what they replace
+
+    /**
+     * {@link SolverSwitches#legacyValueAccess}, {@link SolverSwitches#legacyHookIteration},
+     * {@link SolverSwitches#legacySparseLu} and {@link SolverSwitches#legacyLinearPath} each keep
+     * a pre-kernel-stream code path reachable for exactly this kind of differential run (see
+     * docs/perf/kernel.md), but nothing before this test actually ran one: a regression in a fast
+     * path that still passed the (switch-blind) golden comparison would have gone undetected.
+     */
+    @Test
+    void legacySwitchesAgreeWithTheFastPathOnEveryGoldenCircuit() {
+        Assumptions.assumeFalse(regenerating());
+        var failures = new ArrayList<String>();
+        for(var circuit : SolverGolden.CIRCUITS) {
+            var fast = SolverGolden.run(circuit);
+            SolverGolden.Run legacy;
+            try {
+                SolverSwitches.legacyValueAccess = true;
+                SolverSwitches.legacyHookIteration = true;
+                SolverSwitches.legacySparseLu = true;
+                SolverSwitches.legacyLinearPath = true;
+                legacy = SolverGolden.run(circuit);
+            } finally {
+                SolverSwitches.legacyValueAccess = false;
+                SolverSwitches.legacyHookIteration = false;
+                SolverSwitches.legacySparseLu = false;
+                SolverSwitches.legacyLinearPath = false;
+            }
+            var deviation = worstRelativeDeviation(fast, legacy);
+            System.out.printf("legacy switches %-32s differ by %.2e of peak (tolerance %.0e)%n",
+                    circuit.name(), deviation, circuit.tolerance().relative());
+            if(circuit.pointwise() && deviation > circuit.tolerance().relative() / 10)
+                failures.add(circuit.name() + ": fast path and legacy switches differ by " + deviation);
+        }
+        Assertions.assertTrue(failures.isEmpty(), String.join(System.lineSeparator(), failures));
     }
 
     @Test

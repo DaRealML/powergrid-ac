@@ -50,6 +50,43 @@ public class DynamicallyTypedMatrix {
     private Solver solverType;
     private boolean refactorize;
 
+    // Sparse LU matrices are factorised and solved by OrderedSparseLu, which holds the factors, so
+    // `solver` stays null for them. Cleared by callers that need EJML's own decomposition.
+    private OrderedSparseLu ordered;
+    private boolean ordering = true;
+
+    private void dropSolver() {
+        solver = null;
+        ordered = null;
+    }
+
+    private boolean hasFactorisation() {
+        return solver != null || ordered != null;
+    }
+
+    /** Switch this matrix to EJML's own sparse LU, whose factors and pivots the caller wants to read. */
+    private void useEjmlDecomposition() {
+        if(ordering) {
+            ordering = false;
+            dropSolver();
+        }
+    }
+
+    /** Sparse LU goes through OrderedSparseLu unless a switch or a caller says otherwise. */
+    private boolean orderedApplies() {
+        return sparse && ordering && solverType == Solver.LU && !SolverSwitches.legacySparseLu;
+    }
+
+    /** Nonzeros in the factors of an ordered sparse LU, or -1 when this matrix is not factorised that way. Tests and benchmarks. */
+    int factorNonzeros() {
+        return ordered == null ? -1 : ordered.factorNonzeros();
+    }
+
+    /** Times the ordering of an ordered sparse LU was recomputed, or -1. Tests and benchmarks. */
+    long orderings() {
+        return ordered == null ? -1 : ordered.orderings;
+    }
+
     /** Factorisations performed (setA calls), for {@link JavaMNA.Statistics}. Plain counter, never reset. */
     long factorizations;
 
@@ -61,7 +98,7 @@ public class DynamicallyTypedMatrix {
         matrix = new DMatrixRMaj(rows, cols);
         sparse = false;
         resultMatrix = null;
-        solver = null;
+        dropSolver();
         this.solverType = solverType;
     }
 
@@ -70,7 +107,7 @@ public class DynamicallyTypedMatrix {
             matrix = new DMatrixRMaj(matrix.getNumRows(), matrix.getNumCols());
             sparse = false;
             resultMatrix = null;
-            solver = null;
+            dropSolver();
         } else {
             matrix.zero();
         }
@@ -126,7 +163,7 @@ public class DynamicallyTypedMatrix {
             } else {
                 this.matrix = DConvertMatrixStruct.convert(matrix, (DMatrixSparseCSC) null, G_THRESHOLD);
                 resultMatrix = null;
-                solver = null;
+                dropSolver();
             }
             sparse = true;
         } else {
@@ -135,7 +172,7 @@ public class DynamicallyTypedMatrix {
             } else {
                 this.matrix = new DMatrixRMaj(matrix);
                 resultMatrix = null;
-                solver = null;
+                dropSolver();
             }
             sparse = false;
         }
@@ -157,12 +194,12 @@ public class DynamicallyTypedMatrix {
         if(!sparse && to == State.SPARSE) {
             this.matrix = DConvertMatrixStruct.convert((DMatrixRMaj) matrix, (DMatrixSparseCSC) null, G_THRESHOLD);
             resultMatrix = null;
-            solver = null;
+            dropSolver();
             sparse = true;
         } else if(sparse && to == State.DENSE) {
             this.matrix = new DMatrixRMaj(matrix);
             resultMatrix = null;
-            solver = null;
+            dropSolver();
             sparse = false;
         } else if(sparse && to == State.SPARSE) {
             CommonOps_DSCC.removeZeros((DMatrixSparseCSC) matrix, G_THRESHOLD);
@@ -214,6 +251,16 @@ public class DynamicallyTypedMatrix {
     @SuppressWarnings("unchecked")
     public void refactorize() {
         ++factorizations;
+        if(orderedApplies()) {
+            if(ordered == null) {
+                ordered = new OrderedSparseLu();
+                solver = null;
+            }
+            solverValid = ordered.factor((DMatrixSparseCSC) matrix);
+            refactorize = false;
+            return;
+        }
+        ordered = null;
         if(solver != null) {
             if (sparse) {
                 solverValid = ((LinearSolverSparse<DMatrixSparseCSC, DMatrixRMaj>) (Object) solver).setA(prepareSparseA(solver.modifiesA()));
@@ -232,10 +279,14 @@ public class DynamicallyTypedMatrix {
     }
 
     public void solve(DMatrixRMaj b, DMatrixRMaj x) {
-        if(solver == null || refactorize)
+        if(!hasFactorisation() || refactorize)
             refactorize();
         if(!solverValid) {
             x.zero();
+            return;
+        }
+        if(ordered != null) {
+            ordered.solve(b, x);
             return;
         }
         solver.solve(b, x);
@@ -245,6 +296,7 @@ public class DynamicallyTypedMatrix {
     public void solve(DynamicallyTypedMatrix b, DynamicallyTypedMatrix x) {
         if((sparse && b.sparse != x.sparse) || (!sparse && (b.sparse || x.sparse)))
             throw new IllegalStateException("Sparsity of matrices doesn't match");
+        useEjmlDecomposition();
         if(solver == null)
             refactorize();
         if(!solverValid) {
@@ -261,6 +313,7 @@ public class DynamicallyTypedMatrix {
 
     private final DGrowArray gx = new DGrowArray();
     public void solveRow(DMatrixRMaj B, DMatrixRMaj X) {
+        useEjmlDecomposition();
         if(solver == null || refactorize)
             refactorize();
         if(!solverValid) {
@@ -361,7 +414,7 @@ public class DynamicallyTypedMatrix {
             matrix = new DMatrixRMaj(n, n);
         }
         sparse = target.sparse;
-        solver = null;
+        dropSolver();
         resultMatrix = null;
     }
 

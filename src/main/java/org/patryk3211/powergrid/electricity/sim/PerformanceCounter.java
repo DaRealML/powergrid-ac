@@ -48,7 +48,10 @@ public class PerformanceCounter {
     private double prevAvg;
 
     private long stamp = new Date().getTime();
-    private Date lastMeasurement;
+    // Held as a plain timestamp: end() runs twice per solve of every island, up to 128 times per
+    // world tick, and used to allocate a Date each time only for the command that reads it.
+    private long lastMeasurementMillis;
+    private boolean measured;
 
     public PerformanceCounter(String name) {
         this.name = name;
@@ -87,14 +90,15 @@ public class PerformanceCounter {
             ++epochCount;
             microsTotal += duration / 1000;
 
-            var currentTime = new Date();
-            var stampDuration = currentTime.getTime() - stamp;
+            var currentTime = System.currentTimeMillis();
+            var stampDuration = currentTime - stamp;
             if(stampDuration >= measurementTime) {
                 prevAvg = (double) microsTotal / epochCount;
-                stamp = currentTime.getTime();
+                stamp = currentTime;
                 reset();
             }
-            lastMeasurement = currentTime;
+            lastMeasurementMillis = currentTime;
+            measured = true;
         }
     }
 
@@ -160,6 +164,6 @@ public class PerformanceCounter {
     }
 
     public String getTimestamp() {
-        return FORMAT.format(lastMeasurement);
+        return FORMAT.format(measured ? new Date(lastMeasurementMillis) : null);
     }
 }
