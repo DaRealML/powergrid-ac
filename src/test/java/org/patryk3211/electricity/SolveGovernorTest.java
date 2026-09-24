@@ -309,6 +309,87 @@ public class SolveGovernorTest {
                 () -> new SolveGovernor.Settings(10, 2, 2, 1.0, 0.75, 200, 1200, 8), "attack target at the budget itself");
     }
 
+    // ------------------------------------------------------------------ status must match what actually ran
+
+    @Test
+    void statusReflectsAHeldBackRiseOnTheSameTick() {
+        var sim = new Sim(budget(10), 128);
+        sim.unit("alt", 32, 8, linear(0.2));      // 6.4 ms: comfortable
+        sim.run(100);
+        // The rotor spins up: wanted jumps to 128, which would cost 25.6 ms and is held back
+        // before it ever runs (aRateRiseThatWouldBreakTheBudgetIsHeldBackBeforeItIsRun).
+        sim.wanted("alt", 128);
+        sim.tick();
+        var applied = sim.rate("alt");
+        Assertions.assertTrue(applied < 128, "the rise should have been held back this same tick");
+        var reported = sim.governor.status().units().get(0).rate();
+        Assertions.assertEquals(applied, reported,
+                "status must report the rate actually applied this tick, not the full wanted rate");
+    }
+
+    // ------------------------------------------------------------------ release order and the cost model's tie-break
+
+    @Test
+    void releaseGoesToTheCheapestCappedUnitFirst() {
+        var sim = new Sim(budget(10), 128);
+        // Same per-step cost for both; only the floor differs, so once both are driven all the way
+        // down under a heavy, unshakeable load, "cheap" is unambiguously the cheaper total ms.
+        var load = new double[]{ 0.3 };
+        sim.unit("cheap", 128, 16, r -> load[0] * MS);
+        sim.unit("dear", 128, 64, r -> load[0] * MS);
+        sim.run(400);
+        Assertions.assertEquals(16, sim.rate("cheap"), "cheap should be driven to its own floor");
+        Assertions.assertEquals(64, sim.rate("dear"), "dear should be driven to its own floor");
+        Assertions.assertEquals(2, sim.governor.cappedUnits(), sim.governor.status().toString());
+
+        // The load disappears for both at once: whichever is cheapest right now must release first.
+        load[0] = 0.01;
+        String firstToRise = null;
+        var prevCheap = sim.rate("cheap");
+        var prevDear = sim.rate("dear");
+        var releaseWait = sim.governor.settings().releaseWaitTicks();
+        for(int t = 0; t < 40 * releaseWait && firstToRise == null; ++t) {
+            sim.tick();
+            var c = sim.rate("cheap");
+            var d = sim.rate("dear");
+            if(c != prevCheap)
+                firstToRise = "cheap";
+            else if(d != prevDear)
+                firstToRise = "dear";
+            prevCheap = c;
+            prevDear = d;
+        }
+        Assertions.assertEquals("cheap", firstToRise,
+                "release() must try the cheapest capped unit first: " + sim.governor.status());
+    }
+
+    @Test
+    void bestRateOnANearTiePrefersTheHigherRememberedRate() {
+        var sim = new Sim(budget(10), 128);
+        // 128 costs only 1% more in total than 64: a near tie inside bestRate()'s own 3% band. A
+        // plain lowest-cost comparison would settle for 64 (marginally cheaper, and the first entry
+        // TreeMap hands it); the documented rule prefers the higher rate on a near tie "because it
+        // is the better waveform". The 10% MIN_GAIN bar makes a 1% saving a regret either way, which
+        // is what puts bestRate() in the driver's seat instead of the plain attack/release path.
+        // Neither rate is actually under budget here (both cost about 15 ms against a 10 ms budget),
+        // so the unit is judged, uncapped, and immediately re-capped by holdBackRises() within the
+        // same couple of ticks -- capOf() is read right at the judgement, before that re-cap can
+        // hide what bestRate() actually decided.
+        sim.unit("u", 128, 8, rate -> (rate <= 64 ? 15.0 : 15.15) / rate * MS);
+        var before = sim.governor.status().regrets();
+        var capAtJudgement = Integer.MIN_VALUE;
+        for(int t = 0; t < 10 && sim.governor.status().regrets() == before; ++t) {
+            sim.tick();
+            if(sim.governor.status().regrets() > before)
+                capAtJudgement = sim.governor.capOf("u");
+        }
+        Assertions.assertNotEquals(Integer.MIN_VALUE, capAtJudgement,
+                "expected the first cut (128 -> 64) to be judged a regret: " + sim.governor.status());
+        Assertions.assertEquals(Integer.MAX_VALUE, capAtJudgement,
+                "a near-tie must prefer the higher remembered rate (128, i.e. no cap) over the "
+                        + "marginally cheaper 64: cap was " + capAtJudgement);
+    }
+
     // ------------------------------------------------------------------ it must never make things worse
 
     @Test

@@ -347,6 +347,9 @@ public final class SolveGovernor {
         }
         for(var entry : rising) {
             var st = states.get(entry.key);
+            // Applied immediately, not just remembered as a cap: status() reads st.rate, and a rise
+            // held back on its very first tick must be reported as held back on that same tick.
+            st.rate = entry.rate;
             if(entry.rate < st.wanted) {
                 if(!st.capped()) {
                     st.capFrom = st.wanted;
