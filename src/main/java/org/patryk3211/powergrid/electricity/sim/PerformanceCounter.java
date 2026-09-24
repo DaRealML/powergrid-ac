@@ -38,8 +38,13 @@ public class PerformanceCounter {
 
     private double prevAvg;
 
-    private long stamp = new Date().getTime();
-    private Date lastMeasurement;
+    // Everything is timed on the monotonic clock. end() runs once per solve, twice on the Java
+    // backend, and used to make a Date (and a wall-clock read) each time to find out whether the
+    // measurement window had closed; the wall-clock time of the last call is only needed when a
+    // player asks for it, so it is reconstructed then.
+    private long stamp = System.nanoTime();
+    private long lastMeasurementNanos;
+    private boolean measured;
 
     public PerformanceCounter(String name) {
         this.name = name;
@@ -59,7 +64,8 @@ public class PerformanceCounter {
     }
 
     public void end() {
-        var duration = System.nanoTime() - start;
+        var now = System.nanoTime();
+        var duration = now - start;
         if(minTime == 0) {
             minTime = duration;
         } else if(minTime > duration) {
@@ -71,14 +77,13 @@ public class PerformanceCounter {
         ++epochCount;
         microsTotal += duration / 1000;
 
-        var currentTime = new Date();
-        var stampDuration = currentTime.getTime() - stamp;
-        if(stampDuration >= measurementTime) {
+        if(now - stamp >= measurementTime * 1_000_000L) {
             prevAvg = (double) microsTotal / epochCount;
-            stamp = currentTime.getTime();
+            stamp = now;
             reset();
         }
-        lastMeasurement = currentTime;
+        lastMeasurementNanos = now;
+        measured = true;
     }
 
     public void reset() {
@@ -114,6 +119,8 @@ public class PerformanceCounter {
     }
 
     public String getTimestamp() {
-        return FORMAT.format(lastMeasurement);
+        // A counter that has never been ended reports the present rather than failing.
+        var age = measured ? (System.nanoTime() - lastMeasurementNanos) / 1_000_000L : 0L;
+        return FORMAT.format(new Date(System.currentTimeMillis() - age));
     }
 }
