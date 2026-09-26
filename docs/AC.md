@@ -1125,16 +1125,16 @@ eight-cycle window as the meter reads it:
 
 | Case | Mean | Ripple |
 |---|---|---|
-| Strong drive, one winding | 223.7 V | 0.47 % |
-| Strong drive, three windings | 223.9 V | 0.47 % |
-| Four times the rotor inertia | 223.7 V | 0.15 % |
-| Self-excited, shunt field coil | 278.9 V | 0.78 % |
-| Drive at its limit (`maxForce` 125) | **189.3 V** | **2.45 %** |
+| Strong drive, one winding | 224.5 V | 0.06 % |
+| Strong drive, three windings | 224.9 V | 0.06 % |
+| Four times the rotor inertia | 224.5 V | 0.04 % |
+| Self-excited, shunt field coil | 281.6 V | 0.07 % |
+| Drive at its limit (`maxForce` 125) | **189.3 V** | **2.46 %** |
 
-So the electrics hold still to within half a percent, and what does not hold still is the shaft. A
-prime mover that cannot supply the torque the load is taking lets the speed fall until the two
-balance, and the EMF falls with it -- a machine that should read 224 V reads 189 V and wanders five
-times as much. The cure is input power, a heavier rotor, or a lighter load; it is not electrical.
+So the electrics hold still to a few hundredths of a percent, and what does not hold still is the
+shaft. A prime mover that cannot supply the torque the load is taking lets the speed fall until the
+two balance, and the EMF falls with it -- a machine that should read 224 V reads 189 V and wanders
+much more. The cure is input power, a heavier rotor, or a lighter load; it is not electrical.
 
 Worth knowing about the per-tick RMS: `AbstractElectricWire.rmsCurrent()` covers one world tick,
 which at 4.53 Hz is 0.23 of a cycle, and the RMS of a quarter cycle swings by more than two to one
@@ -1143,6 +1143,50 @@ compares against a threshold, and why the measurements above use a sliding whole
 instead. A test that measures per-tick RMS is measuring its own window.
 
 `GeneratorVoltageRippleTest` pins all five rows; `WholeCycleRmsTest` pins the window.
+
+#### The governor's own droop, and why it was raised to Kp=0.99
+
+A player report: their build could only land within 0.4 Hz of 60 Hz, even under an ordinary,
+non-overloaded load -- distinct from the "drive at its limit" row above, where the prime mover
+genuinely cannot supply the torque. `RotorBehaviour`'s speed loop is proportional-plus-derivative,
+and a PD loop always leaves a steady-state error under sustained load; there is no misuse here,
+just an incomplete controller. Measured directly (the same 12 Ω load as the table above, drive
+otherwise unlimited): the shaft settled **1.4361 rpm** below `TARGET_RPM` at the shipped Kp=0.85,
+which is 0.31 Hz at 13 pole pairs -- the same order of magnitude as the report.
+
+A full PID (adding an integral term) was prototyped and rejected. The steady-state droop can be
+driven to exactly zero that way, but only by having the integral term supply, by the time it
+converges, a correcting force equal to the *entire* load -- and `RotorBehaviour`'s force source is
+one-directional (`Math.min(Math.abs(force), maxForce) * Math.signum(target)`, never negative), so
+it cannot brake. The moment that load is removed, the same force keeps being applied for a while
+with nothing left to balance it, and the shaft overshoots the target by roughly the size of the load
+it was compensating -- recoverable only by the small constant friction term, over several seconds.
+For a player deliberately running close to `rotorRPMMax` to reach a chosen frequency, that overshoot
+can reach the overspeed check (`RotorBehaviour.OVERSPEED_TICKS`) and destroy the block outright. This
+is not a tuning mistake to fix with a better clamp -- it is inherent to closing an integral loop with
+an actuator that cannot reverse.
+
+Raising Kp instead has none of that risk: the closed loop `v' = (1 - Kp) * v + Kp * target` is a
+convex combination for any `Kp` in `(0, 1]`, so it is a **monotonic contraction toward the target and
+cannot overshoot it**, regardless of how large the load or how long it has been applied -- at the
+boundary Kp=1 it is deadbeat (`v' = target` outright). Above Kp=1 the `(1 - Kp)` weight goes
+negative and the loop starts oscillating (decaying until Kp=2, undamped at exactly 2, diverging
+beyond it), which buys nothing over the deadbeat case at Kp=1, so there is no reason to ever want it.
+Measured droop at the same 12 Ω load: **0.0209 rpm at Kp=0.99**, a 69x cut, which is 0.0045 Hz at 13
+pole pairs -- below what a player can distinguish from exact. It does not reach zero at Kp<1, only
+asymptotes toward it, but it carries no new failure mode. `rotorKp`'s config gained an upper bound of
+1 (it previously had none) so a misconfigured server cannot push it into the oscillating region. As a
+side effect, the tighter loop also suppresses most of the single-phase torque-ripple wander from
+§3.16's first report above -- that table's numbers are all measured at the new Kp=0.99, down
+substantially from the Kp=0.85 figures the first version of this section quoted.
+
+`GeneratorVoltageRippleTest.theGovernorHoldsCloseToTargetSpeedUnderOrdinaryLoad` pins the droop
+figure; it fails against the old Kp=0.85 by construction (checked before the fix landed).
+
+**Existing worlds keep whatever `rotorKp` value is already written into their config file** --
+NeoForge configs persist every value, including defaults, on first generation. Raising the code
+default only changes newly generated configs; a server that wants the fix on an existing world needs
+`rotorKp` edited by hand to `0.99` (or anywhere up to the new bound of 1).
 
 ---
 

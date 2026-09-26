@@ -19,7 +19,7 @@ import net.createmod.catnip.config.ConfigBase;
 
 public class CGenerator extends ConfigBase {
 	/* Gud Nuff values for the Kp and Kd terms. Tune these to your liking. */
-	public final ConfigFloat rotorKp = f(0.85f, 0f, "rotorKp", Comments.rotorKp);
+	public final ConfigFloat rotorKp = f(0.99f, 0f, 1f, "rotorKp", Comments.rotorKp);
 	public final ConfigFloat rotorKd = f(0.002f, 0f, "rotorKd", Comments.rotorKd);
 
 	public final ConfigInt rotorRPMMax = i(272, 0, "rotorRPMMax", Comments.rotorRPMMax);
@@ -45,7 +45,7 @@ public class CGenerator extends ConfigBase {
 
 	private static class Comments {
 		/* bla bla bla bla bla they do the thing. */
-		public static final String rotorKp = "Factor to scale the Proportional factorof the Rotor's force calculation";
+		public static final String rotorKp = "Factor to scale the Proportional factor of the Rotor's force calculation. Bounded below 1: the closed loop is a monotonic, non-oscillating contraction toward the target speed for any value in (0, 1), and steady-state droop under load shrinks as this approaches 1";
 		public static final String rotorKd = "Factor to scale the Differential factor of the Rotor's force calculation";
 		public static final String rotorRPMMax = "Maximum rotation speed of a rotor";
 		public static final String rotorAssemblyMaxSize = "Maximum length of a rotor assembly";

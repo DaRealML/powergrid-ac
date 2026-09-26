@@ -55,7 +55,7 @@ import org.patryk3211.powergrid.electricity.sim.special.LRSeriesWire;
  */
 public class GeneratorVoltageRippleTest extends TestHelper {
     /** Shipped kinetics.generatorControls values. */
-    private static final float KP = 0.85f, KD = 0.002f, SEGMENT_FRICTION = 0.25f;
+    private static final float KP = 0.99f, KD = 0.002f, SEGMENT_FRICTION = 0.25f;
 
     /** A commutator (0.1) plus two induction rotor segments (0.5 each). */
     private static final float INERTIA = 1.1f;
@@ -214,6 +214,26 @@ public class GeneratorVoltageRippleTest extends TestHelper {
     }
 
     @Test
+    void theGovernorHoldsCloseToTargetSpeedUnderOrdinaryLoad() {
+        // Distinct from aMarginalPrimeMoverDroopsAndWobbles below: that test's drive is clamped
+        // to maxForce 125 and is genuinely out of torque. This one leaves maxForce effectively
+        // unlimited, so any gap between the settled speed and TARGET_RPM is the PD loop's own
+        // proportional droop -- a real player reported landing only within 0.4 Hz of 60 Hz on an
+        // ordinary, non-overloaded build. Measured here: 1.4361 rpm at the old Kp=0.85 (0.31 Hz
+        // at 13 pole pairs, matching the report), cut to 0.0209 rpm at the shipped Kp=0.99.
+        var m = machine(1, 12f);
+        for(int t = 0; t < 400; ++t) {
+            m.net.network.calculate(SUB_TICKS);
+            m.shaft.advance();
+        }
+        var droop = TARGET_RPM - m.shaft.getAngularVelocity();
+        System.out.printf("governor droop at Kp=%.3f: %.4f rpm%n", KP, droop);
+        Assertions.assertTrue(Math.abs(droop) < 0.05,
+                "The governor's own steady-state droop should stay under 0.05 rpm at Kp=" + KP
+                        + ", got " + String.format("%.4f", droop));
+    }
+
+    @Test
     void theMachineHoldsItsVoltageWhenTheDriveCanKeepUp() {
         // The control, and the answer to "should it wander at all": with a prime mover that can
         // hold the speed, it does not. One winding and three windings both sit inside half a
@@ -256,14 +276,18 @@ public class GeneratorVoltageRippleTest extends TestHelper {
     @Test
     void aHeavierRotorRipplesLess() {
         // The lever a single-phase build can pull without rewiring: more rotor segments is more
-        // inertia, and the speed ripple is the torque ripple integrated against it.
+        // inertia, and the speed ripple is the torque ripple integrated against it. At the shipped
+        // Kp=0.99 the governor's own tighter loop already suppresses most of the ripple itself --
+        // theMachineHoldsItsVoltageWhenTheDriveCanKeepUp's "one winding" row is 0.06% here against
+        // 0.47% at the old Kp=0.85 -- so inertia is no longer the dominant lever and the margin is
+        // smaller than it used to be, though still real.
         var light = slidingRms(machine(1, 12f, INERTIA), 200);
         var heavy = slidingRms(machine(1, 12f, INERTIA * 4), 200);
 
         System.out.printf("inertia %.1f: ripple %.2f%%; inertia %.1f: ripple %.2f%%%n",
                 INERTIA, light[0] * 100, INERTIA * 4, heavy[0] * 100);
-        Assertions.assertTrue(heavy[0] < light[0] * 0.6,
-                "Four times the inertia should cut the ripple substantially, got "
+        Assertions.assertTrue(heavy[0] < light[0] * 0.8,
+                "Four times the inertia should still cut the ripple, got "
                         + String.format("%.2f%%", heavy[0] * 100) + " against "
                         + String.format("%.2f%%", light[0] * 100));
     }
