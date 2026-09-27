@@ -375,8 +375,36 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
         return channels.get(channel).measure(level);
     }
 
+    /**
+     * Channel 0's reading, steadied against 20 Hz aliasing on an alternating supply where
+     * {@link MultimeterTrace} can vouch for it.
+     * <p>
+     * {@link #getMeasurement(Level, ItemStack, int)} returns the raw instantaneous reading — one
+     * sample per client tick — which is correct as a present-value primitive but aliases badly
+     * once the waveform's frequency approaches or exceeds that 20 Hz sampling rate, the same bug
+     * class described on {@link org.patryk3211.powergrid.electricity.wire.BaseWireEntity#heatingCurrent()}.
+     * The trace screen's ring buffer already accumulates a real history and knows how to take a
+     * whole-cycle RMS of it, so this borrows that instead of sampling the aliased value directly —
+     * but only once {@link MultimeterTrace#matches(ItemStack)} confirms the ring's history
+     * actually belongs to {@code stack} and there is at least one sample in it. Without that
+     * guard this would show one meter's waveform on another: the trace is a single global buffer
+     * that only ever tracks whichever stack was last passed to the main-hand sampler in
+     * {@link MultimeterItemRenderer#clientTick}, never the offhand one. When it does not match —
+     * the offhand meter, or a probe with no history yet — this falls back to the old instantaneous
+     * path unchanged.
+     */
+    private float getRmsMeasurement(Level level, ItemStack stack, int channel) {
+        if(MultimeterTrace.matches(stack) && MultimeterTrace.size(channel) > 0) {
+            var window = MultimeterTrace.analysisArray(channel);
+            var sampleRate = (double) MultimeterTrace.sampleRate();
+            var frequency = MultimeterPhasor.estimateFrequency(window, sampleRate);
+            return MultimeterTrace.rms(channel, frequency);
+        }
+        return getMeasurement(level, stack, channel);
+    }
+
     public Component getText(Level level, Player user, ItemStack stack) {
-        var measurement = getMeasurement(level, stack);
+        var measurement = getRmsMeasurement(level, stack, 0);
         return switch(getMode(stack)) {
             case 0 -> {
                 var voltage = Unit.VOLTAGE.formatWithPrefixes(measurement);
@@ -409,7 +437,7 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
     }
 
     public float getDial(Level level, ItemStack stack) {
-        float measurement = getMeasurement(level, stack);
+        float measurement = getRmsMeasurement(level, stack, 0);
         float value = Math.abs(switch(getMode(stack)) {
             case 0 -> measurement / ModdedConfigs.server().equipment.multimeterVoltage.getF();
             case 1 -> measurement / ModdedConfigs.server().equipment.multimeterCurrent.getF();

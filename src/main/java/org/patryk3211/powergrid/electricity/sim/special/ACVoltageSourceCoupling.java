@@ -18,6 +18,7 @@ package org.patryk3211.powergrid.electricity.sim.special;
 import org.jetbrains.annotations.Nullable;
 import org.patryk3211.powergrid.electricity.sim.node.IElectricNode;
 import org.patryk3211.powergrid.electricity.sim.node.VoltageSourceCoupling;
+import org.patryk3211.powergrid.electricity.sim.solver.IMultiHooks;
 import org.patryk3211.powergrid.electricity.sim.solver.IOuterHook;
 import org.patryk3211.powergrid.electricity.sim.solver.ISubTickRate;
 
@@ -61,10 +62,37 @@ import static org.patryk3211.powergrid.electricity.sim.special.AcSampling.TWO_PI
  * {@code amplitude} is the peak of the sine. For a sinusoid the RMS value a meter would show is
  * {@code amplitude / sqrt(2)}, available from {@link #getRmsVoltage()}.
  */
-public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IOuterHook, ISubTickRate {
+public class ACVoltageSourceCoupling extends VoltageSourceCoupling implements IOuterHook, ISubTickRate, IMultiHooks {
     private double amplitude;
     private double frequency;
     private double phaseOffset;
+
+    // RMS current over the sub-ticks of the last completed world tick, the same accumulate-then-
+    // divide scheme AbstractElectricWire uses for its own rmsCurrent() -- this source fixes its
+    // own voltage, so that is exact from getRmsVoltage() alone, but the current through it depends
+    // on whatever load is attached and genuinely needs measuring. Falls back to the instantaneous
+    // magnitude when the island is not sub-stepping, matching the wire's own convention.
+    private double sumSquaredCurrent;
+    private int tickCount;
+
+    @Override
+    public void prepare(int multiTicks) {
+        tickCount = multiTicks;
+        sumSquaredCurrent = 0;
+    }
+
+    @Override
+    public void postMicroTick() {
+        var i = getCurrent();
+        sumSquaredCurrent += i * i;
+    }
+
+    /** RMS current through this source over the last completed world tick. */
+    public double getRmsCurrent() {
+        if(tickCount <= 1)
+            return Math.abs(getCurrent());
+        return Math.sqrt(sumSquaredCurrent / tickCount);
+    }
 
     /**
      * Constant added to the sine. Lets one source express a DC supply (amplitude zero), a pure

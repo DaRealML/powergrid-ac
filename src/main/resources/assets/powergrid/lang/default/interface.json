@@ -12,6 +12,7 @@
   "powergrid.gui.creative_source.info_header": "Creative source information",
   "powergrid.gui.creative_source.voltage": "Source voltage",
   "powergrid.gui.creative_source.current": "Source current",
+  "powergrid.gui.creative_source.frequency": "Frequency",
 
   "powergrid.gui.creative_resistor.info_header": "Creative resistor information",
   "powergrid.gui.creative_resistor.resistance": "Resistance",

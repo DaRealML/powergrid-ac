@@ -8,6 +8,48 @@ shipped defaults every DC network is solved exactly as it was before.
 
 ---
 
+## Contents
+
+1. [What this adds](#1-what-this-adds)
+2. [Why this is small](#2-why-this-is-small)
+3. [Equations](#3-equations)
+   - [3.1 Phase](#31-phase)
+   - [3.2 Generated EMF](#32-generated-emf)
+   - [3.3 Electrical torque](#33-electrical-torque)
+   - [3.4 Armature (synchronous) reactance](#34-armature-synchronous-reactance)
+   - [3.5 RMS metering](#35-rms-metering)
+   - [3.6 Choosing the sub-tick rate](#36-choosing-the-sub-tick-rate)
+   - [3.7 Per-network stepping schedule](#37-per-network-stepping-schedule)
+   - [3.8 Standalone alternating sources](#38-standalone-alternating-sources)
+   - [3.9 Reactive components under AC](#39-reactive-components-under-ac)
+   - [3.10 Self-excited machines](#310-self-excited-machines)
+   - [3.11 Motor coils](#311-motor-coils)
+   - [3.12 Coils, and why a winding is not a resistor](#312-coils-and-why-a-winding-is-not-a-resistor)
+   - [3.13 Thresholds, and the zero crossing](#313-thresholds-and-the-zero-crossing)
+   - [3.14 The integration scheme](#314-the-integration-scheme-and-what-backward-euler-was-costing)
+   - [3.15 Three-phase](#315-three-phase)
+   - [3.16 Why a generator's reading moves](#316-why-a-generators-reading-moves-and-how-much-of-it-is-real)
+   - [3.17 Reading AC through the multimeter and the creative source](#317-reading-ac-through-the-multimeter-and-the-creative-source)
+4. [The linear fast path](#4-the-linear-fast-path)
+5. [Player-facing controls](#5-player-facing-controls)
+   - [5.1 Pole-pair slider on the alternator](#51-pole-pair-slider-on-the-alternator)
+   - [5.2 Multimeter trace screen](#52-multimeter-trace-screen)
+   - [5.3 Phasors, impedance and Smith-chart data](#53-phasors-impedance-and-smith-chart-data)
+   - [5.4 Winding-angle slider on the alternator](#54-winding-angle-slider-on-the-alternator)
+6. [Files changed](#6-files-changed)
+7. [Verification](#7-verification)
+8. [The native backend](#8-the-native-backend)
+9. [Deliberate omissions](#9-deliberate-omissions)
+10. [Corrections to the feasibility assessment](#10-corrections-to-the-feasibility-assessment)
+11. [Open questions for the maintainer](#11-open-questions-for-the-maintainer)
+
+**Reading this cold?** §1 and §6 are the two-minute version — what was added and where. §3 is the
+physics; read it in order the first time. §3.15, §3.16 and §5.2 are post-release incident reports —
+a player found something wrong, it was measured, and it was fixed — and read fine on their own if
+that is what brought you here. §9–§11 are what was deliberately not done, and what is still open.
+
+---
+
 ## 1. What this adds
 
 | Piece | Where | Status |
@@ -1187,6 +1229,85 @@ figure; it fails against the old Kp=0.85 by construction (checked before the fix
 NeoForge configs persist every value, including defaults, on first generation. Raising the code
 default only changes newly generated configs; a server that wants the fix on an existing world needs
 `rotorKp` edited by hand to `0.99` (or anywhere up to the new bound of 1).
+
+---
+
+### 3.17 Reading AC through the multimeter and the creative source
+
+A tester's report, distinct from §3.16's: a creative-source-driven golden wire (3 mΩ, easily enough
+overcurrent to burn) failed to overheat at frequencies that divide 20 Hz evenly, smoked instead of
+burning at odd multiples of 5 Hz, and burned normally everywhere else -- and the multimeter tooltip
+and the creative source's own goggle readout showed near-zero values at the exact same frequencies,
+tracking a transformer's turns ratio as if reading "a parallel DC world."
+
+**Root cause, confirmed:** `MultimeterChannel.measure()` and `CreativeSourceBlockEntity`'s goggle
+tooltip both read a raw instantaneous voltage or current -- a single sample taken once per world
+tick. `BaseWireEntity.heatingCurrent()`'s own doc comment already describes exactly this failure
+mode for wire heating ("a wire carrying 10 A peak at 10, 20, 40 or 60 Hz sampled exactly zero
+heating"), because the phase advance per world tick, `2*pi*f*0.05`, lands on the same point of the
+sine every tick whenever `f` divides 20 Hz evenly, and lands alternately on a zero crossing and a
+peak at odd multiples of 5 Hz -- exactly the reported 0/5/other pattern.
+
+**What was NOT the bug, verified by measurement:** the solver itself.
+`AbstractElectricWire.rmsCurrent()`, driven through the real `SubTickScheduler` at the correct
+per-frequency sub-tick count, reads correctly at every frequency from 5 to 60 Hz including the
+exact aliasing points --
+confirmed with a throwaway test reproducing the tester's exact circuit (10 V peak, 3 mΩ, swept
+0-60 Hz) before any fix was written. `WireEntity.heatingCurrent()` already used `rmsCurrent()`, not
+the instantaneous value, so wire burnout itself was never actually broken -- the tester's read of
+"is it burning" was very likely formed by watching the (genuinely broken) tooltip and creative
+source readout, which *did* alias, rather than the wire.
+
+**The fix, in three parts:**
+
+1. **Multimeter tooltip and needle** now read `MultimeterTrace`'s existing whole-cycle RMS
+   (`rms(channel, frequency)`, already used correctly by the trace/scope screen) instead of the
+   instantaneous sample, whenever `MultimeterTrace` can confirm its ring buffer actually belongs to
+   the stack being rendered (a new `MultimeterTrace.matches(ItemStack)`, needed because the trace is
+   one global buffer that only ever tracks the main-hand meter). Falls back to the old instantaneous
+   reading for the off-hand meter or a probe with no history yet, so nothing regresses there.
+2. **The creative source's goggle tooltip** now reads a real RMS current (voltage source) or RMS
+   voltage (current source) instead of the instantaneous value. `ACVoltageSourceCoupling` and
+   `ACCurrentSourceNode` gained the same accumulate-over-sub-ticks-then-divide scheme
+   `AbstractElectricWire` already uses (`IMultiHooks.prepare`/`postMicroTick`, `getRmsCurrent`/
+   `getRmsVoltage`) for whichever quantity the source does *not* fix exactly by construction -- the
+   one it does fix (its own programmed output) already had an exact RMS accessor and needed nothing
+   new.
+3. **A separate, unrelated bug in the same report:** `/source set <pos> <value> 0` (an *explicit*
+   zero frequency) output 0 regardless of `<value>`, because the command placed `<value>` into the
+   sine's amplitude rather than its DC offset, and `amplitude * sin(2*pi*0*t + 0)` is `amplitude *
+   sin(0)`, i.e. zero. Omitting the frequency argument entirely took a different, correct code path
+   -- which is why "set a DC value" and "explicitly set frequency 0" behaved differently despite
+   being physically the same request. Now frequency 0 always folds to a plain DC output (amplitude
+   plus any dc_offset given, summed, since neither means anything separate from the other without an
+   oscillation), whichever command form asked for it.
+
+**Also changed, requested rather than a bug:** `<value>` in `/source ... set` is now read as RMS
+when the frequency is non-zero, matching how a real meter and this document normally speak about an
+AC supply (`ACVoltageSourceCoupling`'s "Amplitude is peak, not RMS" -- the command previously took
+the peak directly, silently, with no conversion). §3.15's example above and §3.8's example both
+predate this: `/source set <pos> <value> <frequency> <dc_offset> <phase>` still parses exactly as
+shown, but `<value>` there is now RMS, not peak. Two additive command forms exist alongside the
+original: `/source dc set <pos> <value>` for a pure DC source with no AC-only arguments to think
+about, and `/source ac set <pos> <value> [frequency] [dc_offset] [phase]`, grammatically identical to
+the original `set` past the first two arguments. The original flat form is unchanged and not
+deprecated -- existing macros keep working.
+
+**Also added:** a second click-and-hold slider on the creative source block,
+`CreativeSourceFrequencyBehaviour`, so frequency can be set in-world without a command. Amplitude
+keeps the north/south faces, frequency takes east/west, both using the same box position template
+`CenteredSideValueBoxTransform` already rotates onto whichever side is active. Both sliders'
+callbacks now go through one shared `applySliders()` rather than each calling `setValue`
+independently, so moving one can never silently
+zero the other's setting -- the same frequency-0-means-DC rule as the command fix, applied to the
+slider.
+
+**Not verified:** the actual in-game look of the tooltip, the goggle readout, and the new slider --
+all three are outside what this project's headless test suite can reach (per the trap table above),
+and the fixes were verified by reading the real solver/scheduler code, a throwaway sub-tick-accurate
+reproduction of the reported circuit, and the full 464-test suite, not by running a live client.
+Whether the east/west slider placement clips anything on either creative source block's model is
+unconfirmed.
 
 ---
 

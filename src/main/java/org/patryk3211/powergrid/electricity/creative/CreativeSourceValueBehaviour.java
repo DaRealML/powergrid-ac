@@ -22,6 +22,8 @@ import com.simibubi.create.foundation.blockEntity.behaviour.ValueSettingsBehavio
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueSettingsBoard;
 import com.simibubi.create.foundation.blockEntity.behaviour.ValueSettingsFormatter;
 import com.simibubi.create.foundation.blockEntity.behaviour.scrollValue.ScrollValueBehaviour;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.world.entity.player.Player;
@@ -39,6 +41,57 @@ public class CreativeSourceValueBehaviour extends ScrollValueBehaviour {
         this.multiplier = multiplier;
         between(-500, 500);
         withFormatter(i -> String.format("%.1f", Math.abs(processValue(i))));
+    }
+
+    /**
+     * Which slider on this block a click belongs to.
+     * <p>
+     * {@code ValueSettingsBehaviour.netId()} defaults to 0 for everything, and the server routes an
+     * incoming setting to the FIRST behaviour whose id matches the packet
+     * ({@code ValueSettingsPacket.applySettings}). This was safe while this was the only slider on
+     * the block entity; now that {@link CreativeSourceFrequencyBehaviour} shares it, the ids have
+     * to be distinct. This one keeps 0, its previous implicit default.
+     */
+    @Override
+    public int netId() {
+        return 0;
+    }
+
+    /**
+     * And the same again for Create's clipboard, which keys copied settings by
+     * {@code getClipboardKey()} -- "Settings" for every value behaviour unless it says otherwise.
+     */
+    @Override
+    public String getClipboardKey() {
+        return "Amplitude";
+    }
+
+    private static final String KEY = "Amplitude";
+
+    /**
+     * Its own key in the block entity's NBT.
+     * <p>
+     * {@code ScrollValueBehaviour.write} puts its value under the fixed key {@code "ScrollValue"},
+     * and every behaviour on a block entity shares one compound -- so two sliders on one block
+     * overwrite each other on write and then both read the survivor back. The two sliders end up
+     * shadowing a single number, live, because the same compound is what gets synced to the
+     * client. Reading and writing our own key on top of the inherited one settles both directions;
+     * the inherited key is still written, and simply ignored.
+     */
+    @Override
+    public void write(CompoundTag nbt, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(nbt, registries, clientPacket);
+        nbt.putInt(KEY, value);
+    }
+
+    @Override
+    public void read(CompoundTag nbt, HolderLookup.Provider registries, boolean clientPacket) {
+        super.read(nbt, registries, clientPacket);
+        // Without our key this is a world saved before the frequency slider existed, where the
+        // shared "ScrollValue" key held the amplitude and nothing else -- so what super.read took
+        // is right.
+        if(nbt.contains(KEY))
+            value = nbt.getInt(KEY);
     }
 
     public ValueSettingsBoard createBoard(Player player, BlockHitResult hitResult) {

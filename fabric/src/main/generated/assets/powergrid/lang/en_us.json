@@ -422,6 +422,7 @@
   "powergrid.gui.creative_resistor.power": "Dissipated power",
   "powergrid.gui.creative_resistor.resistance": "Resistance",
   "powergrid.gui.creative_source.current": "Source current",
+  "powergrid.gui.creative_source.frequency": "Frequency",
   "powergrid.gui.creative_source.info_header": "Creative source information",
   "powergrid.gui.creative_source.voltage": "Source voltage",
   "powergrid.gui.current_meter.title": "Measured current",

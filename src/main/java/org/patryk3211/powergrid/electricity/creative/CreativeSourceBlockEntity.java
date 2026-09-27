@@ -39,6 +39,7 @@ import java.util.List;
 
 public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IHaveGoggleInformation {
     private CreativeSourceValueBehaviour value;
+    private CreativeSourceFrequencyBehaviour frequencySlider;
 
     private ACCurrentSourceNode currentSourceNode;
     private ACVoltageSourceCoupling voltageSourceNode;
@@ -99,12 +100,36 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
             multiplier = 0.0f;
         }
 
-        value = new CreativeSourceValueBehaviour(label, this, multiplier, new CreativeSourceBoxTransform());
-        value.withMultipliedCallback(f -> {
-            if(!overwrite)
-                setValue(f);
-        });
+        value = new CreativeSourceValueBehaviour(label, this, multiplier, new CreativeSourceBoxTransform(Direction.Axis.Z));
+        value.withMultipliedCallback(f -> applySliders());
         behaviours.add(value);
+
+        frequencySlider = new CreativeSourceFrequencyBehaviour(this, new CreativeSourceBoxTransform(Direction.Axis.X));
+        frequencySlider.withFrequencyCallback(hz -> applySliders());
+        behaviours.add(frequencySlider);
+    }
+
+    /**
+     * Push both sliders into the block entity's actual electrical state.
+     * <p>
+     * The two sliders used to be one: {@code value.withMultipliedCallback} called the single-arg,
+     * DC-only {@link #setValue(float)} directly, which is now wrong whenever the frequency slider
+     * is non-zero -- it would silently reset the frequency to 0 on every amplitude adjustment,
+     * each slider fighting the other for the last word. Either slider's callback re-reads BOTH
+     * current values here instead of trusting its own callback argument, so the other slider's
+     * setting is never clobbered. Frequency 0 still means plain DC using the amplitude value
+     * directly -- never amplitude fed through the sine waveform, which can read zero right at a
+     * zero crossing -- matching the meaning DC has always had here.
+     */
+    private void applySliders() {
+        if(overwrite)
+            return;
+        var amplitude = value.getMultipliedValue();
+        var freq = frequencySlider.getFrequency();
+        if(freq == 0)
+            setValue(amplitude);
+        else
+            setValue(amplitude, freq, 0, 0);
     }
 
     @Override
@@ -218,7 +243,11 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
                 .style(ChatFormatting.GRAY)
                 .forGoggles(tooltip);
 
-        var voltage = (voltageSource ? voltageSourceNode.getPositive().getVoltage() - voltageSourceNode.getNegative().getVoltage() : currentSourceNode.getVoltage());
+        // RMS, not the instantaneous voltage/current: sampled once per tick, the instantaneous
+        // value aliases hard at frequencies that divide 20 Hz evenly and reads as noise otherwise.
+        // Whichever quantity this source fixes exactly (its own output) reads that programmed RMS
+        // directly; the other genuinely depends on the load and comes from the new accumulator.
+        var voltage = (voltageSource ? voltageSourceNode.getRmsVoltage() : currentSourceNode.getRmsVoltage());
         var voltageText = String.format("%.2f", voltage);
         Lang.builder()
                 .text(voltageText)
@@ -231,7 +260,7 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
                 .style(ChatFormatting.GRAY)
                 .forGoggles(tooltip);
 
-        var current = (voltageSource ? -voltageSourceNode.getCurrent() : currentSourceNode.getCurrent());
+        var current = (voltageSource ? voltageSourceNode.getRmsCurrent() : currentSourceNode.getRmsCurrent());
         var currentText = String.format("%.2f", current);
         Lang.builder()
                 .text(currentText)
@@ -248,8 +277,14 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
     }
 
     public static class CreativeSourceBoxTransform extends CenteredSideValueBoxTransform {
-        public CreativeSourceBoxTransform() {
-            super((state, dir) -> dir.getAxis() != Direction.Axis.Y);
+        /**
+         * One box template position (see {@link #getSouthLocation()}), rotated by
+         * {@code CenteredSideValueBoxTransform} onto whichever horizontal side is active. Restricting
+         * each slider to its own axis -- amplitude on north/south, frequency on east/west -- keeps
+         * the two boxes on separate faces instead of both rendering, and hit-testing, on every side.
+         */
+        public CreativeSourceBoxTransform(Direction.Axis axis) {
+            super((state, dir) -> dir.getAxis() == axis);
         }
 
         @Override
