@@ -383,22 +383,32 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
      * sample per client tick — which is correct as a present-value primitive but aliases badly
      * once the waveform's frequency approaches or exceeds that 20 Hz sampling rate, the same bug
      * class described on {@link org.patryk3211.powergrid.electricity.wire.BaseWireEntity#heatingCurrent()}.
-     * The trace screen's ring buffer already accumulates a real history and knows how to take a
-     * whole-cycle RMS of it, so this borrows that instead of sampling the aliased value directly —
-     * but only once {@link MultimeterTrace#matches(ItemStack)} confirms the ring's history
-     * actually belongs to {@code stack} and there is at least one sample in it. Without that
-     * guard this would show one meter's waveform on another: the trace is a single global buffer
-     * that only ever tracks whichever stack was last passed to the main-hand sampler in
-     * {@link MultimeterItemRenderer#clientTick}, never the offhand one. When it does not match —
-     * the offhand meter, or a probe with no history yet — this falls back to the old instantaneous
-     * path unchanged.
+     * Two better sources exist, in order of preference, both guarded by
+     * {@link MultimeterTrace#matches(ItemStack)} confirming the data actually belongs to
+     * {@code stack} — without that this would show one meter's reading on another, since both are
+     * single global buffers that only ever track whichever stack was last passed to the main-hand
+     * sampler in {@link MultimeterItemRenderer#clientTick}, never the offhand one:
+     * <ol>
+     *     <li>The trace screen's ring buffer, when it holds real sub-tick history (the graph is
+     *     open): a proper whole-cycle RMS, the best available.</li>
+     *     <li>{@code MultimeterTrace}'s own last {@code MultimeterRmsS2CPacket}, sent by the server
+     *     every tick specifically for players who are NOT watching the graph (see
+     *     {@code WorldNetworks.flushProbeSamplers}) — a real per-tick RMS, not a full waveform, so
+     *     the needle and tooltip read correctly whether or not the graph is open.</li>
+     * </ol>
+     * When neither is available — the offhand meter, or a probe with no history yet — this falls
+     * back to the old instantaneous path unchanged.
      */
     private float getRmsMeasurement(Level level, ItemStack stack, int channel) {
-        if(MultimeterTrace.matches(stack) && MultimeterTrace.size(channel) > 0) {
-            var window = MultimeterTrace.analysisArray(channel);
-            var sampleRate = (double) MultimeterTrace.sampleRate();
-            var frequency = MultimeterPhasor.estimateFrequency(window, sampleRate);
-            return MultimeterTrace.rms(channel, frequency);
+        if(MultimeterTrace.matches(stack)) {
+            if(MultimeterTrace.size(channel) > 0) {
+                var window = MultimeterTrace.analysisArray(channel);
+                var sampleRate = (double) MultimeterTrace.sampleRate();
+                var frequency = MultimeterPhasor.estimateFrequency(window, sampleRate);
+                return MultimeterTrace.rms(channel, frequency);
+            }
+            if(MultimeterTrace.hasServerRms(channel))
+                return MultimeterTrace.serverRms(channel);
         }
         return getMeasurement(level, stack, channel);
     }

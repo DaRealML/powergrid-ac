@@ -117,19 +117,24 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
      * is non-zero -- it would silently reset the frequency to 0 on every amplitude adjustment,
      * each slider fighting the other for the last word. Either slider's callback re-reads BOTH
      * current values here instead of trusting its own callback argument, so the other slider's
-     * setting is never clobbered. Frequency 0 still means plain DC using the amplitude value
-     * directly -- never amplitude fed through the sine waveform, which can read zero right at a
-     * zero crossing -- matching the meaning DC has always had here.
+     * setting is never clobbered. Frequency 0 still means plain DC using the slider's value
+     * directly -- never fed through the sine waveform, which can read zero right at a zero
+     * crossing -- matching the meaning DC has always had here.
+     * <p>
+     * The value slider reads as RMS once the frequency slider is non-zero, matching
+     * {@code /powergrid source ac set}: what a player types is what a meter on the source would
+     * show, not the sine's peak. Converted to peak here, right before {@link #setValue}, which is
+     * the only thing that wants it.
      */
     private void applySliders() {
         if(overwrite)
             return;
-        var amplitude = value.getMultipliedValue();
+        var typed = value.getMultipliedValue();
         var freq = frequencySlider.getFrequency();
         if(freq == 0)
-            setValue(amplitude);
+            setValue(typed);
         else
-            setValue(amplitude, freq, 0, 0);
+            setValue((float) (typed * Math.sqrt(2)), freq, 0, 0);
     }
 
     @Override

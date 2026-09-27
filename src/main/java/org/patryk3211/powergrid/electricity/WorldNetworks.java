@@ -34,6 +34,7 @@ import org.patryk3211.powergrid.collections.ModdedPackets;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterWatchers;
 import org.patryk3211.powergrid.equipment.multimeter.ProbeSampler;
+import org.patryk3211.powergrid.network.packets.MultimeterRmsS2CPacket;
 import org.patryk3211.powergrid.network.packets.MultimeterSamplesS2CPacket;
 import org.patryk3211.powergrid.config.CSolver;
 import org.patryk3211.powergrid.electricity.base.ElectricBehaviour;
@@ -365,14 +366,14 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         probeSamplers.clear();
         if(!(world instanceof ServerLevel serverWorld))
             return;
-        if(MultimeterWatchers.isEmpty())
-            return;
         if(ModdedConfigs.server().equipment.multimeterSubTickSamples.get() <= 0)
             return;
 
+        // Not gated on MultimeterWatchers any more: the needle and tooltip need this too, not just
+        // the graph. Attaching a sampler costs an in-memory array write per sub-tick and nothing on
+        // the wire by itself — flushProbeSamplers is what decides whether a player's own connection
+        // pays for the full waveform or just its RMS, which is where the bandwidth actually is.
         for(var player : serverWorld.players()) {
-            if(!MultimeterWatchers.isWatching(player))
-                continue;
             var stack = player.getMainHandItem();
             if(!(stack.getItem() instanceof MultimeterItem))
                 continue;
@@ -388,10 +389,13 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
     }
 
     /**
-     * Send each watching player the samples their own probes captured, then unhook everything.
+     * Send each player the reading their own probes captured this tick, then unhook everything.
      * <p>
-     * The held stack is the subscription, so logging out, swapping the item or dying all clean
-     * up on their own with no registry to maintain.
+     * A player watching the graph gets the full sub-tick waveform, unchanged. Everyone else gets
+     * one float per channel — the tick's own RMS, computed here from the same samples rather than
+     * shipping them — which is what the needle and tooltip actually need and costs a few bytes
+     * instead of the whole waveform. The held stack is the subscription, so logging out, swapping
+     * the item or dying all clean up on their own with no registry to maintain.
      */
     private void flushProbeSamplers() {
         if(probeSamplers.isEmpty())
@@ -401,19 +405,34 @@ public class WorldNetworks extends SavedData implements NetworkGraph.IGraphModif
         var limit = ModdedConfigs.server().equipment.multimeterSubTickSamples.get();
 
         for(var entry : probeSamplers.entrySet()) {
+            var player = entry.getKey();
             var samplers = entry.getValue();
-            var payload = new float[samplers.size()][];
-            var any = false;
-            for(int i = 0; i < samplers.size(); ++i) {
-                var sampler = samplers.get(i);
-                payload[i] = sampler == null ? new float[0] : sampler.snapshot(limit);
-                any |= payload[i].length > 0;
+            var watching = MultimeterWatchers.isWatching(player);
+
+            if(watching) {
+                var payload = new float[samplers.size()][];
+                var any = false;
+                for(int i = 0; i < samplers.size(); ++i) {
+                    var sampler = samplers.get(i);
+                    payload[i] = sampler == null ? new float[0] : sampler.snapshot(limit);
+                    any |= payload[i].length > 0;
+                }
+                // Every attached probe now yields at least one sample per tick, so this no longer
+                // filters out slow islands — it fires only when EVERY channel failed to resolve
+                // server-side, which is exactly the case the client's own 20 Hz reading covers.
+                if(any)
+                    ModdedPackets.sendToClient(new MultimeterSamplesS2CPacket(payload), player);
+            } else {
+                var rms = new float[samplers.size()];
+                var any = false;
+                for(int i = 0; i < samplers.size(); ++i) {
+                    var sampler = samplers.get(i);
+                    rms[i] = sampler == null ? 0 : sampler.rms();
+                    any |= sampler != null && sampler.size() > 0;
+                }
+                if(any)
+                    ModdedPackets.sendToClient(new MultimeterRmsS2CPacket(rms), player);
             }
-            // Every attached probe now yields at least one sample per tick, so this no longer
-            // filters out slow islands — it fires only when EVERY channel failed to resolve
-            // server-side, which is exactly the case the client's own 20 Hz reading covers.
-            if(any)
-                ModdedPackets.sendToClient(new MultimeterSamplesS2CPacket(payload), entry.getKey());
         }
 
         for(var network : subnetworks)
