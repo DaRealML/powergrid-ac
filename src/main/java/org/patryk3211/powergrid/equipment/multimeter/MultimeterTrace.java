@@ -455,6 +455,24 @@ public class MultimeterTrace {
         }
     }
 
+    /**
+     * Whether this buffer's history currently belongs to {@code stack}, rather than to whichever
+     * other meter {@link #sample} was last called for.
+     * <p>
+     * The buffer is a single global instance, and {@link MultimeterItemRenderer#clientTick} only
+     * ever calls {@link #sample} for the main-hand stack. A caller that wants to reuse this
+     * history for a specific stack — rather than just draw whatever is in the ring — has to check
+     * this first, or it risks showing one meter's reading on another: the offhand meter, or a
+     * probe that was just reconnected and has no history here yet. Recomputes the exact signature
+     * {@link #sample} stores, from the same {@code "Channels"} tag, so the two can never disagree
+     * about what counts as "the same probe set".
+     */
+    public static boolean matches(ItemStack stack) {
+        var stackSignature = MultimeterItem.getModeData(stack).get("Channels") == null
+                ? 0 : MultimeterItem.getModeData(stack).get("Channels").hashCode();
+        return stackSignature == signature && MultimeterItem.getChannels(stack).size() == channelCount;
+    }
+
     public static float latest(int channel) {
         if(filled[channel] == 0)
             return 0;

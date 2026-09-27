@@ -16,6 +16,7 @@
 package org.patryk3211.powergrid.electricity.sim.special;
 
 import org.patryk3211.powergrid.electricity.sim.node.CurrentSourceNode;
+import org.patryk3211.powergrid.electricity.sim.solver.IMultiHooks;
 import org.patryk3211.powergrid.electricity.sim.solver.IOuterHook;
 import org.patryk3211.powergrid.electricity.sim.solver.ISubTickRate;
 
@@ -52,11 +53,38 @@ import static org.patryk3211.powergrid.electricity.sim.special.AcSampling.TWO_PI
  * before any hook runs, so {@link #preSolve()} would never fire and the phase would never
  * advance. Making this depend on the amplitude would also desynchronise that count.
  */
-public class ACCurrentSourceNode extends CurrentSourceNode implements IOuterHook, ISubTickRate {
+public class ACCurrentSourceNode extends CurrentSourceNode implements IOuterHook, ISubTickRate, IMultiHooks {
     private double amplitude;
     private double frequency;
     private double phaseOffset;
     private double dcOffset;
+
+    // RMS voltage over the sub-ticks of the last completed world tick. The dual of
+    // ACVoltageSourceCoupling's own RMS current: this source fixes its current exactly
+    // (getRmsCurrent() is already exact), but the voltage across it depends on the load and
+    // genuinely needs measuring. Falls back to the instantaneous magnitude when the island is
+    // not sub-stepping, matching AbstractElectricWire's own convention.
+    private double sumSquaredVoltage;
+    private int tickCount;
+
+    @Override
+    public void prepare(int multiTicks) {
+        tickCount = multiTicks;
+        sumSquaredVoltage = 0;
+    }
+
+    @Override
+    public void postMicroTick() {
+        var v = getVoltage();
+        sumSquaredVoltage += v * v;
+    }
+
+    /** RMS voltage across this source over the last completed world tick. */
+    public double getRmsVoltage() {
+        if(tickCount <= 1)
+            return Math.abs(getVoltage());
+        return Math.sqrt(sumSquaredVoltage / tickCount);
+    }
 
     /**
      * Angle in radians, wrapped to {@code [0, 2*pi)}, before the offset is added. Anchored to game
