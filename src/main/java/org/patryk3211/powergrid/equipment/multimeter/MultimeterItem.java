@@ -389,8 +389,15 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
      * single global buffers that only ever track whichever stack was last passed to the main-hand
      * sampler in {@link MultimeterItemRenderer#clientTick}, never the offhand one:
      * <ol>
-     *     <li>The trace screen's ring buffer, when it holds real sub-tick history (the graph is
-     *     open): a proper whole-cycle RMS, the best available.</li>
+     *     <li>The trace screen's ring buffer, but ONLY while {@link MultimeterTrace#receivingSubTicks()}
+     *     confirms it actually holds real sub-tick history (the graph is open): a proper
+     *     whole-cycle RMS, the best available. {@code size(channel) > 0} alone is not that check —
+     *     the buffer's own 20 Hz fallback path writes into this exact same ring with the raw
+     *     aliased instantaneous reading whenever the graph is closed, so {@code size() > 0} becomes
+     *     true almost immediately regardless of which kind of data is actually in there. Taking a
+     *     "whole-cycle RMS" over a ring full of aliased samples recovers nothing — they are all
+     *     aliased to the same wrong phase — which silently defeated this whole method the moment
+     *     the graph was closed until this was measured against a live report and traced back here.</li>
      *     <li>{@code MultimeterTrace}'s own last {@code MultimeterRmsS2CPacket}, sent by the server
      *     every tick specifically for players who are NOT watching the graph (see
      *     {@code WorldNetworks.flushProbeSamplers}) — a real per-tick RMS, not a full waveform, so
@@ -401,7 +408,7 @@ public class MultimeterItem extends Item implements IHaveElectricProperties {
      */
     private float getRmsMeasurement(Level level, ItemStack stack, int channel) {
         if(MultimeterTrace.matches(stack)) {
-            if(MultimeterTrace.size(channel) > 0) {
+            if(MultimeterTrace.receivingSubTicks() && MultimeterTrace.size(channel) > 0) {
                 var window = MultimeterTrace.analysisArray(channel);
                 var sampleRate = (double) MultimeterTrace.sampleRate();
                 var frequency = MultimeterPhasor.estimateFrequency(window, sampleRate);
