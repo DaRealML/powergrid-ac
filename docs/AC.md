@@ -1332,6 +1332,40 @@ connected moments ago).
 known 10 V peak sine; seen failing first against a mutation that returned the first sample instead
 of the true RMS.
 
+#### Follow-up to the follow-up: the new RMS path was never actually reached
+
+The fix above shipped the right server-side infrastructure and still did not fix the report: a
+player measuring a creative voltage source still saw a near-zero reading (0.023 mV) with the graph
+closed. The infrastructure was sound; the client-side code that was supposed to use it had a real
+bug, found by re-reading `getRmsMeasurement` line by line against what each piece it calls actually
+means rather than what it was assumed to mean.
+
+`MultimeterTrace.size(channel) > 0` was read as "this channel has real sub-tick history," and it does
+not mean that. The 20 Hz fallback path (`MultimeterTrace.sample`, the one that runs when the graph is
+closed) writes into the *exact same ring buffer* using the raw aliased instantaneous reading --
+that is the whole mechanism the graph itself falls back to when it has nothing better, and it has
+always filled `filled[channel]` the same way real sub-tick samples do. So `size(channel) > 0` became
+true within about one tick of picking the meter up, regardless of the graph, and `getRmsMeasurement`
+took the "take a whole-cycle RMS from the ring buffer" branch every time -- computing an RMS over a
+buffer entirely full of aliased samples, which recovers nothing, exactly as this section's own
+opening paragraph already said averaging aliased samples cannot do. The new, correct,
+server-computed `MultimeterRmsS2CPacket` value sitting right below it in the same method was never
+even reached.
+
+The actual signal for "does this ring buffer hold real sub-tick history" already existed:
+`MultimeterTrace.receivingSubTicks()`, the same flag `sample()` itself uses to decide whether to run
+its own 20 Hz fallback at all. `getRmsMeasurement` now checks that first, and only trusts the ring
+buffer's whole-cycle RMS while it is true; otherwise it falls through to the per-tick server RMS
+exactly as originally intended.
+
+Not verified by the automated suite -- this is client rendering state keyed off a live `Level` and
+`ItemStack`, outside what the headless suite can construct, the same limitation as everything else
+in this section. The full 466-test suite is unaffected either way, since none of it exercises this
+method. This is now the second time in this feature's history that a fix here shipped unverified in
+a live client and was wrong; the honest thing to record is that this whole area -- `MultimeterItem`,
+`MultimeterTrace`, `MultimeterItemRenderer` -- has no live-client verification at all yet, only
+careful reading, and a player report is what has caught both mistakes so far.
+
 #### Follow-up: the creative source's own slider was still peak
 
 Also requested: the in-world amplitude slider should set RMS voltage, matching the command fix
