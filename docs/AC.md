@@ -1298,16 +1298,56 @@ deprecated -- existing macros keep working.
 keeps the north/south faces, frequency takes east/west, both using the same box position template
 `CenteredSideValueBoxTransform` already rotates onto whichever side is active. Both sliders'
 callbacks now go through one shared `applySliders()` rather than each calling `setValue`
-independently, so moving one can never silently
-zero the other's setting -- the same frequency-0-means-DC rule as the command fix, applied to the
-slider.
+independently, so moving one can never silently zero the other's setting -- the same
+frequency-0-means-DC rule as the command fix, applied to the slider.
 
-**Not verified:** the actual in-game look of the tooltip, the goggle readout, and the new slider --
-all three are outside what this project's headless test suite can reach (per the trap table above),
-and the fixes were verified by reading the real solver/scheduler code, a throwaway sub-tick-accurate
-reproduction of the reported circuit, and the full 464-test suite, not by running a live client.
-Whether the east/west slider placement clips anything on either creative source block's model is
-unconfirmed.
+#### Follow-up: the tooltip fix only worked with the graph open
+
+A player report on the fix above: the tooltip read correctly once the multimeter's graph screen had
+been opened, and reverted to the aliased instantaneous value the moment it was closed. Real bug, and
+a different one from the aliasing itself.
+
+`MultimeterWatchers` gates the server's sub-tick sample stream on the graph screen being open,
+deliberately -- that stream can run at hundreds of samples a tick and is the only part of the meter
+that costs real bandwidth, and only the graph can even draw a waveform at that resolution. The
+tooltip fix above assumed `MultimeterTrace`'s ring buffer always held genuine sub-tick history to
+take a whole-cycle RMS from, but with the screen closed that stream never arrives, and the ring
+buffer's 20 Hz fallback path (`MultimeterTrace.sample`) fills it with exactly the same aliased
+instantaneous reading the fix was meant to replace -- averaging RMS over samples that are themselves
+all aliased to the same wrong phase recovers nothing, however many of them there are.
+
+The fix keeps the expensive stream gated on the graph exactly as before, and adds a second, cheap
+one that is not: `WorldNetworks.attachProbeSamplers` now hooks a `ProbeSampler` to every held,
+connected multimeter's channels every tick, watched or not -- the hook itself costs an array write
+per sub-tick, nothing on the wire. `flushProbeSamplers` then sends a watching player the full
+waveform exactly as before, and sends everyone else a single float per channel: the tick's own RMS,
+computed server-side from the same samples (`ProbeSampler.rms()`, the same sum-of-squares
+`AbstractElectricWire.rmsCurrent()` already uses) rather than shipped raw, over a new
+`MultimeterRmsS2CPacket`. A handful of bytes a tick, not the waveform. `getRmsMeasurement` now tries
+three sources in order: the graph's own whole-cycle RMS when watching, this per-tick RMS when not,
+and the raw instantaneous reading only when neither has arrived yet (the off-hand meter, or a probe
+connected moments ago).
+
+`ProbeSamplerTest.rmsOfAFullCycleTickMatchesTheKnownRms` pins `ProbeSampler.rms()` itself against a
+known 10 V peak sine; seen failing first against a mutation that returned the first sample instead
+of the true RMS.
+
+#### Follow-up: the creative source's own slider was still peak
+
+Also requested: the in-world amplitude slider should set RMS voltage, matching the command fix
+above, rather than the sine's peak. `CreativeSourceBlockEntity.applySliders` now converts the
+slider's value by `sqrt(2)` before calling `setValue` whenever the frequency slider is non-zero,
+exactly mirroring `/powergrid source ac set`'s own conversion; a frequency of zero still means plain
+DC, where the typed value is used directly with no conversion, since peak and RMS are the same
+number there.
+
+**Not verified:** the actual in-game look of the tooltip, the goggle readout, and both sliders --
+all outside what this project's headless test suite can reach (per the trap table above). What is
+verified: `ProbeSampler.rms()` against a known sine (new test, above), the full solver/scheduler
+behavior the whole of §3.17 depends on (verified earlier in this section), and the full test suite,
+466 tests, 0 failures. The actual client/server round trip of the new `MultimeterRmsS2CPacket` --
+whether the needle and tooltip really do read correctly the moment the graph is closed -- needs a
+live client and has not been run.
 
 ---
 

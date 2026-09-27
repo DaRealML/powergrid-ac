@@ -100,6 +100,24 @@ public class ProbeSampler implements IMultiHooks {
     }
 
     /**
+     * RMS over this tick's own captured samples, zero if none were captured.
+     * <p>
+     * The same per-tick sum-of-squares {@link org.patryk3211.powergrid.electricity.sim.AbstractElectricWire#rmsCurrent()}
+     * already uses for wire heating — accurate once the tick spans a full cycle or more, with the
+     * same documented wobble on a slow island where it does not (a tick at 4.53 Hz is 0.23 of a
+     * cycle). Computed here, server-side, for a player who is not watching the graph and so has no
+     * multi-tick history to take a better whole-cycle RMS from.
+     */
+    public float rms() {
+        if(count == 0)
+            return 0;
+        double sum = 0;
+        for(int i = 0; i < count; ++i)
+            sum += (double) samples[i] * samples[i];
+        return (float) Math.sqrt(sum / count);
+    }
+
+    /**
      * Copy the captured samples, decimated to at most {@code limit} entries.
      * <p>
      * Decimated rather than truncated: taking the first {@code limit} samples would show only

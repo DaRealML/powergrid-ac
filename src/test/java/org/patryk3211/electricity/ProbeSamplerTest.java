@@ -183,6 +183,36 @@ public class ProbeSamplerTest extends TestHelper {
     }
 
     @Test
+    void rmsOfAConstantTickIsItsOwnMagnitude() {
+        // A non-sub-stepping (or DC) island has exactly one sample, and RMS of one reading is just
+        // its own magnitude -- the same fallback AbstractElectricWire.rmsCurrent() uses at
+        // tickCount <= 1, which is what a caller with no sub-tick history should see too.
+        var net = new Network();
+        var source = net.V(10);
+        var ground = net.V(0);
+        var mid = net.N();
+        net.W(100f, source, mid);
+        net.W(100f, mid, ground);
+
+        var probe = ProbeSampler.voltage(mid, ground);
+        net.network.addObserver(probe);
+        net.network.calculate(1);
+
+        Assertions.assertEquals(5.0, probe.rms(), 1e-4, "RMS of one 5 V sample is 5 V");
+    }
+
+    @Test
+    void rmsOfAFullCycleTickMatchesTheKnownRms() {
+        // One full electrical cycle per world tick (20 Hz), sampled finely (64 sub-ticks): the RMS
+        // of a 10 V peak sine into a purely resistive divider should land close to 10/sqrt(2), the
+        // textbook answer this is being checked against rather than against the code's own formula.
+        var probe = varyingTick(64);
+        var expected = 10.0 / Math.sqrt(2);
+        Assertions.assertEquals(expected, probe.rms(), 0.05,
+                "RMS of a 10 V peak sine should be close to " + expected);
+    }
+
+    @Test
     void snapshotNeverExceedsItsLimit() {
         // A contract guard rather than a regression test: these three lengths are the same under
         // the stride form, and are pinned so that a future rewrite cannot quietly overrun the cap

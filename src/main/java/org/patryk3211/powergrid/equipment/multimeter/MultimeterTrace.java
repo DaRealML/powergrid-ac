@@ -17,6 +17,7 @@ package org.patryk3211.powergrid.equipment.multimeter;
 
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import org.patryk3211.powergrid.network.packets.MultimeterRmsS2CPacket;
 
 import java.lang.ref.WeakReference;
 
@@ -234,6 +235,31 @@ public class MultimeterTrace {
      */
     private static final int[] channelSamples = new int[MultimeterChannel.MAX_CHANNELS];
 
+    /**
+     * The server's own per-tick RMS for each channel, from {@link MultimeterRmsS2CPacket} —
+     * sent instead of the full waveform whenever the graph screen is not open. This is what the
+     * needle and tooltip fall back to once there is no sub-tick history to take a proper
+     * whole-cycle RMS from; see {@link MultimeterItem#getRmsMeasurement}.
+     */
+    private static final float[] serverRms = new float[MultimeterChannel.MAX_CHANNELS];
+    private static final boolean[] hasServerRms = new boolean[MultimeterChannel.MAX_CHANNELS];
+
+    /** Record the server's own RMS reading for each channel this packet covers. */
+    public static void acceptRms(float[] rms) {
+        for(int c = 0; c < rms.length && c < MultimeterChannel.MAX_CHANNELS; ++c) {
+            serverRms[c] = rms[c];
+            hasServerRms[c] = true;
+        }
+    }
+
+    public static boolean hasServerRms(int channel) {
+        return hasServerRms[channel];
+    }
+
+    public static float serverRms(int channel) {
+        return serverRms[channel];
+    }
+
     /** Effective sample rate of one channel in Hz, which may be below the headline rate. */
     public static int channelRate(int channel) {
         return 20 * Math.max(channelSamples[channel], 1);
@@ -348,6 +374,7 @@ public class MultimeterTrace {
             filled[c] = 0;
             currentChannel[c] = false;
             channelSamples[c] = 0;
+            hasServerRms[c] = false;
         }
         channelCount = 0;
         signature = 0;
