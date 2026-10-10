@@ -54,8 +54,9 @@ public class SourceCommand {
     private static CreativeSourceBlockEntity resolveSource(CommandContext<CommandSourceStack> ctx, BlockPos pos)
             throws CommandSyntaxException {
         var source = ctx.getSource();
-        var player = source.getPlayerOrException();
-        if(!(player.level().getBlockEntity(pos) instanceof CreativeSourceBlockEntity be)) {
+        // The source's own level, not a player's: a dedicated server's console, RCON and command
+        // blocks have no player, and getPlayerOrException made this command unusable from all of them.
+        if(!(source.getLevel().getBlockEntity(pos) instanceof CreativeSourceBlockEntity be)) {
             source.sendFailure(Component.literal("Block is not a creative source"));
             return null;
         }

@@ -22,6 +22,7 @@ import org.patryk3211.powergrid.equipment.multimeter.MultimeterChannel;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterItem;
 import org.patryk3211.powergrid.equipment.multimeter.MultimeterTrace;
 import org.patryk3211.powergrid.network.S2CPacket;
+import org.patryk3211.powergrid.utility.ClientSideAccess;
 
 /**
  * One world tick of sub-tick samples for every channel a player's multimeter is watching.
@@ -84,9 +85,17 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
 
     @Override
     public void handle(Minecraft mc) {
-        if(mc.player == null || mc.level == null)
+        // Through ClientSideAccess, not mc.player / mc.level. Those fields are LocalPlayer and
+        // ClientLevel, and passing a ClientLevel where measure() wants a Level makes the JVM
+        // verifier load ClientLevel to check the assignment -- while this class is being linked,
+        // which is when ModPackets registers it, on a dedicated server where loading that class
+        // is forbidden. The mod then fails to construct at all. ClientSideAccess is only ever
+        // loaded when a client actually runs this, which is the point of it.
+        var player = ClientSideAccess.player();
+        var level = ClientSideAccess.world();
+        if(player == null || level == null)
             return;
-        var stack = mc.player.getMainHandItem();
+        var stack = player.getMainHandItem();
         if(!(stack.getItem() instanceof MultimeterItem))
             return;
 
@@ -97,7 +106,7 @@ public class MultimeterSamplesS2CPacket implements S2CPacket {
         var probes = MultimeterItem.getChannels(stack);
         var live = new float[probes.size()];
         for(int c = 0; c < live.length; ++c)
-            live[c] = probes.get(c).measure(mc.level);
+            live[c] = probes.get(c).measure(level);
 
         // Appended here rather than polled from the client tick: this runs via mc.execute at an
         // arbitrary point in the frame, not tick-aligned, so polling would drop and duplicate

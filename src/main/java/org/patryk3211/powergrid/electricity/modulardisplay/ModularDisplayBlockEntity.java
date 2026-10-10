@@ -51,8 +51,22 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
     private DisplaySlotThermal[] slotThermals;
     private boolean[] removeBlankingPage = new boolean[SLOT_COUNT];
 
-    /** Each slot's stepper coil current, loaded in {@link #read} and applied once in {@link #buildCircuit}. */
-    private final float[] coilCurrents = new float[SLOT_COUNT];
+    /**
+     * Each slot's stepper coil current, loaded in {@link #read} and applied once in {@link #buildCircuit}.
+     * <p>
+     * Deliberately NOT initialised here: {@code buildCircuit} runs from {@code ElectricBehaviour}'s
+     * constructor, which {@code addBehaviours} reaches from inside {@code super(...)}, before this
+     * class's field initialisers have run. An inline {@code = new float[...]} was therefore still null
+     * when {@code buildCircuit} read it, and placing the block threw. Reach it through
+     * {@link #coilCurrents()}, which allocates on first use.
+     */
+    private float[] coilCurrents;
+
+    private float[] coilCurrents() {
+        if(coilCurrents == null)
+            coilCurrents = new float[SLOT_COUNT];
+        return coilCurrents;
+    }
 
     @Override
     public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
@@ -260,9 +274,9 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
             }
         }
         for (int i = 0; i < SLOT_COUNT; i++) {
-            coilCurrents[i] = tag.getFloat("CoilCurrent" + i);
+            coilCurrents()[i] = tag.getFloat("CoilCurrent" + i);
             if (wires != null && wires[i * 3] instanceof LRSeriesWire coil)
-                coil.setCurrent(coilCurrents[i]);
+                coil.setCurrent(coilCurrents()[i]);
         }
     }
 
@@ -385,8 +399,8 @@ public class ModularDisplayBlockEntity extends ElectricBlockEntity{
             var coilNode = builder.addInternalNode();
 
             var coil = builder.connectCoil(25, builder.terminalNode(p), coilNode);
-            coil.setCurrent(coilCurrents[s]);
-            coilCurrents[s] = 0;
+            coil.setCurrent(coilCurrents()[s]);
+            coilCurrents()[s] = 0;
             wires[w1] = coil;
             wires[w2] = builder.connectSwitch(0.1f, negative, coilNode, false);
             wires[w3] = builder.connectSwitch(0.1f, builder.terminalNode(r), coilNode, false);
