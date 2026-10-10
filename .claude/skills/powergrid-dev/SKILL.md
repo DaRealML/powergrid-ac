@@ -44,6 +44,8 @@ Each row was found by a player in game, not by a test. **Add a row when a new on
 | Two value boxes on one face | A side face is 10x12 px and Create hit-tests a box as a sphere of `scale/2` = 4 px radius, so they overlap | One box per face (`getClockWise()` / `getCounterClockWise()`) |
 | `git add -A` | `cs_CZ.json` and `cs_cz.json` collide on Windows and leave a permanently dirty file | Stage files by name, always |
 | A coil built with `connectCoil()`/`new LRSeriesWire(...)`, or a capacitor/inductor outside the circuit-board component system | The wire itself models stored energy correctly (current or voltage persists between sub-ticks), but nothing saves that state to NBT by default — it silently resets to zero on every chunk reload unless the owning block entity's `read`/`write` explicitly round-trips it | Add a field, load it in `read`, apply it with `wire.setCurrent(...)` in `buildCircuit` then zero the field (so a later rebuild with no fresh `read` cannot clobber live state), and save `wire.current()` in `write`. `WindingBlockEntity` already does the full version (`setCurrent(I, Vprev)` + `getVprev()`, preserving the theta-method history term too); every other coil-having block entity was missing this until it was audited and fixed for all 13 of them at once |
+| A packet handler (or any class a server links) reading `mc.level` / `mc.player`, or any other client-typed field or method | The JVM verifier loads `ClientLevel` to check it is assignable to `Level`, and does so while the packet is *linked* -- when `ModPackets` registers it -- so a dedicated server refuses (`Attempted to load class ... ClientLevel for invalid dist DEDICATED_SERVER` at `ModPackets.<clinit>`) and the whole mod fails to construct. Singleplayer never shows it | Go through `ClientSideAccess.world()` / `.player()`, a class a server never loads. `PacketsStayServerSafeTest` pins this for `network.packets`; anywhere else, boot the dev server (see Testing) |
+| A field read in `buildCircuit()` that is set after `super.addBehaviours()`, or declared with an initialiser | `ElectricBehaviour`'s constructor calls `buildCircuit()` from inside `super(...)`, before this class's field initialisers run. A field assigned after `super.addBehaviours()` is still null, an initialiser-declared array/object is null, and placing the block throws a `NullPointerException` (spark gap since `466abad5`, modular display since ac.11) | Build the behaviour *before* `super.addBehaviours()` and add it to the list after; leave state `buildCircuit` reads without an initialiser and reach it through a lazy accessor. `/setblock` every block on the dev server to find these |
 
 Live config knobs are read per tick (`multiTicks`, `integrationTheta`, `parallelIslands`/
 `parallelIslandsMinCount`/`parallelIslandsThreads` in `WorldNetworks.preTick`), on reload
@@ -82,6 +84,13 @@ real solver island; `PhasorFit` fits magnitude and phase without using the meter
 - **What no test can reach:** block entities, behaviours, sliders, rendering, the config screen,
   networking. Anything there is unverified until a player says otherwise, and commit messages and
   release notes must say so.
+- **The dedicated server is a test target the headless suite cannot be.** `./gradlew :forge:runServer` boots a real
+  NeoForge dedicated server (working directory `forge/run`, gitignored). It is what found both server-only and
+  construction-order crashes that 460 green tests had missed. Feed console commands through stdin with
+  `tail -f cmds.txt | ./gradlew :forge:runServer --console=plain`, `setblock` every id in
+  `forge/src/main/generated/assets/powergrid/blockstates`, `save-all`, restart, and read the log. Commands run
+  from the console, so they must not call `getPlayerOrException()`. The JVM may not exit after `stop` because
+  other mods in the dev environment leave non-daemon `pool-N-thread-M` threads; kill it by hand.
 - Throwaway probes are fine — write one, run it, read the numbers, **delete it**. Keep the test
   only if it pins something.
 

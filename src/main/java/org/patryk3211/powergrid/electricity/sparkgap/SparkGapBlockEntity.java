@@ -63,9 +63,14 @@ public class SparkGapBlockEntity extends ElectricBlockEntity implements SparkSou
 
     @Override
     public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
-        super.addBehaviours(behaviours);
-
+        // Made before super.addBehaviours, not after: that call builds the ElectricBehaviour, whose
+        // constructor runs buildCircuit() immediately, and buildCircuit reads setting.getVoltage()
+        // for the arc's gap. Created afterwards it was still null there and placing a spark gap threw
+        // a NullPointerException, a bug present since the gap became an arc (466abad5). It is still
+        // added to the list after the electric behaviours, so the order behaviours tick and sync in
+        // is unchanged.
         setting = new SparkGapValueBehaviour(Lang.translateDirect("devices.spark_gap.voltage"), this, new BoxTransform());
+        super.addBehaviours(behaviours);
         behaviours.add(setting);
     }
 

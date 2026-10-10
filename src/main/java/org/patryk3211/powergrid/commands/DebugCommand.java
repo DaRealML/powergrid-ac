@@ -81,8 +81,7 @@ public class DebugCommand {
                 }))
                 .then(literal("status").executes(ctx -> {
                     var source = ctx.getSource();
-                    var player = source.getPlayerOrException();
-                    var global = GlobalElectricNetworks.getWorldNetworks((LevelAccessor) player.level());
+                    var global = GlobalElectricNetworks.getWorldNetworks((LevelAccessor) source.getLevel());
                     if(global == null) {
                         source.sendSystemMessage(Component.literal("Current level doesn't have any electrical networks"));
                     } else {

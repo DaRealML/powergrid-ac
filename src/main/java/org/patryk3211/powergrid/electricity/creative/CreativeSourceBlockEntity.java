@@ -177,13 +177,17 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
         super.write(tag, registries, clientPacket);
         if(overwrite)
             tag.putBoolean("Overwrite", true);
+        // The configured DC value, not getValue(): that is the live simulated voltage, which is zero
+        // until the island has been solved at least once. A source nobody has wired up yet, or one
+        // saved by an autosave in the first moments after a server restart, would write 0 and lose
+        // the setting for good.
         if(frequency != 0) {
             tag.putFloat("NodeValue", amplitude);
             tag.putFloat("Freq", frequency);
             tag.putFloat("DC", dc);
             tag.putFloat("Phase", phaseDegrees);
         } else {
-            tag.putFloat("NodeValue", getValue());
+            tag.putFloat("NodeValue", dc);
         }
     }
 
@@ -198,7 +202,7 @@ public class CreativeSourceBlockEntity extends ElectricBlockEntity implements IH
             tag.putFloat("DC", dc);
             tag.putFloat("Phase", phaseDegrees);
         } else {
-            tag.putFloat("NodeValue", getValue());
+            tag.putFloat("NodeValue", dc);
         }
     }
 
