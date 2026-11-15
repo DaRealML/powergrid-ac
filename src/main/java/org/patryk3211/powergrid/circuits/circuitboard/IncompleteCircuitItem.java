@@ -92,6 +92,7 @@ public class IncompleteCircuitItem extends Item {
         if(!tag.contains("Assembly")) {
             tag.put("Assembly", makeAssemblyTag(level.registryAccess(), tag.getCompound("Schematic")));
         }
+        AssemblyTag.migrate(tag.getCompound("Assembly"));
         if(!insertComponent(level, tag.getCompound("Assembly"), component))
             return null;
         var missing = tag.getCompound("Assembly").getCompound("Missing");
@@ -141,6 +142,8 @@ public class IncompleteCircuitItem extends Item {
             assemblyTag = makeAssemblyTag(level.registryAccess(), stack.get(DataComponents.CUSTOM_DATA).copyTag().getCompound("Schematic"));
         } else {
             assemblyTag = stack.get(DataComponents.CUSTOM_DATA).copyTag().getCompound("Assembly");
+            // An assembly saved before a component was renamed would throw from ComponentRegistry.get below.
+            AssemblyTag.migrate(assemblyTag);
         }
         tooltip.add(Component.empty());
         tooltip.add(Lang.translate("tooltip.circuit_assembly")
