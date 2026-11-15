@@ -341,8 +341,10 @@ public class WindingBlockEntity extends ElectricBlockEntity implements IMultipar
         assert !level.isClientSide || isVirtual() : "Parallel block entity collection can only occur on server";
         if(otherMain == this)
             return;
-        if(adding && ModdedConfigs.logsEnabled())
-            PowerGrid.LOGGER.warn("Prevented recursive add");
+        if(adding && ModdedConfigs.logsEnabled()) {
+            PowerGrid.LOGGER.warn("Prevented recursive add at {}", getBlockPos());
+            return;
+        }
         adding = true;
         if(ownerPosition != null) {
             var ownerWinding = level.getBlockEntity(ownerPosition, ModdedBlockEntities.WINDING.get());

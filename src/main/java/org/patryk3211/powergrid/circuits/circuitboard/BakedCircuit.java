@@ -16,6 +16,7 @@
 package org.patryk3211.powergrid.circuits.circuitboard;
 
 import net.minecraft.core.Direction;
+import net.minecraft.core.HolderLookup;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.Tag;
@@ -65,26 +66,28 @@ public class BakedCircuit {
         var pos = be.getBlockPos();
         var offset = Vec3.atLowerCornerOf(pos);
         for(var placed : schematic.components()) {
-            var nodeIndexSet = new HashSet<Integer>();
+            int maxIndex = -1;
             for(var pad : placed.footprint().getPads().values()) {
                 if(pad.nodeIndex() >= 0)
-                    nodeIndexSet.add(pad.nodeIndex());
+                    maxIndex = Math.max(maxIndex, pad.nodeIndex());
             }
-            var external = placed.component.emitExternalTerminals();
-            int nodeOffset = external ? result.externalNodes.size() : result.internalNodes.size();
-            for(var i = 0; i < nodeIndexSet.size(); ++i) {
-                if(external) {
-                    var node = new OwnedFloatingNode(new BlockWireEndpoint(pos, nodeOffset + i));
+            int nodeCount = maxIndex + 1;
+            var nodes = new FloatingNode[Math.max(nodeCount, 0)];
+            boolean anyExternal = false;
+            for(var i = 0; i < nodeCount; ++i) {
+                if(placed.component.isExternalNode(i)) {
+                    var node = new OwnedFloatingNode(new BlockWireEndpoint(pos, result.externalNodes.size()));
                     result.externalNodes.add(node);
+                    nodes[i] = node;
+                    anyExternal = true;
                 } else {
                     var node = new FloatingNode();
                     result.internalNodes.add(node);
+                    nodes[i] = node;
                 }
             }
-            // Turns pad index into the corresponding component node.
-            Function<Integer, FloatingNode> provider = external ?
-                    index -> (FloatingNode) result.externalNodes.get(index + nodeOffset) :
-                    index -> (FloatingNode) result.internalNodes.get(index + nodeOffset);
+            // Turns local node index into the corresponding component node.
+            Function<Integer, FloatingNode> provider = index -> nodes[index];
             result.padNodeProviderMap.put(placed, provider);
 
             var builder = new ComponentCircuitBuilder(pos, provider, result.internalNodes, result.wires);
@@ -113,7 +116,7 @@ public class BakedCircuit {
                     .forEach(result.thermalUnits::add);
             result.tickedComponents.add(placed);
 
-            if(external) {
+            if(anyExternal) {
                 var bbs = placed.component.terminals(placed);
                 bbs.stream().map(bb -> bb.offset(placed.x / 16f, 2 / 16f, placed.y / 16f)).forEach(result.terminals::add);
             }
@@ -163,7 +166,7 @@ public class BakedCircuit {
         tag.put("Thermal", thermalTag);
     }
 
-    public void read(CompoundTag tag, boolean clientPacket) {
+    public void read(HolderLookup.Provider registries, CompoundTag tag, boolean clientPacket) {
         if(tag.contains("Thermal")) {
             var thermalTag = tag.getCompound("Thermal");
             for(var unit : thermalUnits) {
@@ -215,7 +218,7 @@ public class BakedCircuit {
                     var tagProperties = compound.getCompound("Properties");
                     for(var property : placed.component.getProperties()) {
                         var tagEntry = tagProperties.get(property.id().toString());
-                        var readValue = property.read(tagEntry);
+                        var readValue = property.read(registries, tagEntry);
                         if(tagEntry != null && !placed.get(property).equals(readValue)) {
                             // Value changed
                             placed.getEntry(property).setValueRaw(readValue);

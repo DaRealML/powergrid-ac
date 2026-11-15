@@ -31,6 +31,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import org.patryk3211.powergrid.advancements.PGAdvancementBehaviour;
 import org.patryk3211.powergrid.collections.ModdedAdvancements;
 import org.patryk3211.powergrid.collections.ModdedBlocks;
 import org.patryk3211.powergrid.utility.Lang;
@@ -117,6 +118,7 @@ public class TransformerCoreBlock extends Block implements IWrenchable {
                             level.setBlockAndUpdate(pos.relative(dir, x + 1).relative(Direction.UP, y), state.setValue(PART, 1));
                             level.setBlockAndUpdate(pos.relative(dir, x).relative(Direction.UP, y + 1), state.setValue(PART, 2));
                             level.setBlockAndUpdate(pos.relative(dir, x + 1).relative(Direction.UP, y + 1), state.setValue(PART, 3));
+                            PGAdvancementBehaviour.setPlacedBy(level, pos.relative(dir, x).above(y), player);
                         }
                     }
                     return true;
@@ -193,6 +195,7 @@ public class TransformerCoreBlock extends Block implements IWrenchable {
             if(!world.isClientSide) {
                 world.setBlockAndUpdate(pos, ModdedBlocks.TRANSFORMER_SMALL.getDefaultState()
                         .setValue(TransformerSmallBlock.HORIZONTAL_AXIS, context.getHorizontalDirection().getClockWise().getAxis()));
+                PGAdvancementBehaviour.setPlacedBy(world, pos, context.getPlayer());
             }
         }
         IWrenchable.playRotateSound(world, pos);

@@ -96,7 +96,10 @@ public abstract class TransformerBlockEntity extends ElectricBlockEntity impleme
             var I1 = primaryStray.rmsCurrent();
             var P1 = I1 * I1 * primaryStray.getResistance();
             power += P1;
-            lastCurrent += I1;
+            lastCurrent += Math.abs(I1);
+            if(Math.abs(I1) > 0.001) {
+                award(ModdedAdvancements.TRANSFORMER);
+            }
         }
         if(mutualInductance != null && mutualInductance.isConverged()) {
             var I3 = mutualInductance.rmsCurrent();

@@ -38,16 +38,24 @@ dependencies {
 //    modCompileOnly "me.shedaniel:RoughlyEnoughItems-api-forge:$rei_version"
 
     // Create: The Factory Must Grow
-    modCompileOnly "curse.maven:tfmg-community-edition-1653026:8665896"
+    modCompileOnly "curse.maven:tfmg-community-edition-1653026:8874829"
 
     // TIS-3D
     modCompileOnly("maven.modrinth:tis3d-renewed:${tis3d_version}")
+
+    // Farmer's Delight
+    //modLocalRuntime("maven.modrinth:farmers-delight:${project.minecraft_version}-1.3.4")
+    modCompileOnly("maven.modrinth:farmers-delight:${project.minecraft_version}-${farmers_delight_version}")
 
     // CC: Tweaked
     modCompileOnly("cc.tweaked:cc-tweaked-${project.minecraft_version}-core-api:${cc_tweaked_version}")
     modCompileOnly("cc.tweaked:cc-tweaked-${project.minecraft_version}-forge-api:${cc_tweaked_version}")
     forgeRuntimeLibrary "cc.tweaked:cobalt:0.9.7"
     modLocalRuntime("cc.tweaked:cc-tweaked-${project.minecraft_version}-forge:${cc_tweaked_version}")
+
+    // Farmer's Delight
+    //modLocalRuntime("maven.modrinth:farmers-delight:${project.minecraft_version}-1.3.4")
+    modCompileOnly("maven.modrinth:farmers-delight:${project.minecraft_version}-${farmers_delight_version}")
 
     // CC: Tweaked
     modCompileOnly("cc.tweaked:cc-tweaked-${project.minecraft_version}-core-api:${cc_tweaked_version}")
@@ -90,7 +98,7 @@ dependencies {
 	forgeRuntimeLibrary("io.github.spair:imgui-java-binding:1.88.0")
 	forgeRuntimeLibrary("io.github.spair:imgui-java-lwjgl3:1.88.0")
 
-//    modLocalRuntime("curse.maven:tfmg-community-edition-1653026:8665896")
+//    modLocalRuntime("curse.maven:tfmg-community-edition-1653026:8874829")
 //    modLocalRuntime("me.shedaniel:RoughlyEnoughItems-forge:$rei_version")
 //    modLocalRuntime("maven.modrinth:tis3d-renewed:${tis3d_version}")
 //    modLocalRuntime("maven.modrinth:markdown-manual-renewed:1.3.1")

@@ -30,6 +30,7 @@ public class CElectricity extends ConfigBase {
     public final ConfigBool motorDynamicResistance = b(true, "motorDynamicResistance", Comments.motorDynamicResistance);
     public final ConfigFloat motorTimeConstant = f(0.01f, 0, "motorTimeConstant", Comments.motorTimeConstant);
     public final ConfigFloat coilTimeConstant = f(0.01f, 0, "coilTimeConstant", Comments.coilTimeConstant);
+    public final ConfigFloat motorMinimumLoad = f(0.05f, 0, 1, "motorMinimumLoad", Comments.motorMinimumLoad);
 
     public final ConfigFloat forgeEnergyPerVolt = f(2, 0, "forgeEnergyPerVolt", Comments.forgeEnergyPerVolt);
     public final ConfigFloat forgeEnergyPerWatt = f(10, 0, "forgeEnergyPerWatt", Comments.forgeEnergyPerWatt);
@@ -120,6 +121,7 @@ public class CElectricity extends ConfigBase {
         public static final String motorDynamicResistance = "Vary motor resistance based on stress consumption";
         public static final String coilTimeConstant = "Electrical time constant L/R of a coil winding, in seconds - electromagnets, contactor and relay coils, deflection coils and the like. This is what gives them inductive reactance and inrush rather than behaving as plain resistors. Set to 0 for purely resistive coils, which is how they behaved before this was added.";
         public static final String motorTimeConstant = "Electrical time constant L/R of a motor coil, in seconds. This is what gives a motor inductive reactance (X = 2*pi*f*L) and therefore a lagging power factor on alternating supplies; 0.01 matches the generator winding. Set to 0 for a purely resistive motor, which is how motors behaved before this was added. ACCURACY: the reactance is only as good as the solver's sampling. With the default acSamplesPerCycle and acMaxSubTicks an alternator at 16 pole pairs is solved at about 9 samples per electrical cycle, where the coil reads 76.1 degrees of lag against a true 77.6 and takes 1.07 times the correct real power. That is the solver.integrationTheta default of 0.55 doing its job; at 1.0, which is plain backward Euler and what this mod used to run, the same coil reads 40 degrees and takes 3.4 times the real power. Raise acMaxSubTicks if you want better than that, or lower it toward 16 to save the cycles - at 16 the phase is still good but the impedance magnitude reads about 22% high.";
+        public static final String motorMinimumLoad = "Minimum load percentage for the dynamic motor resistance";
 
         public static final String forgeEnergyPerVolt = "Conversion rate of volts to Forge Energy (controls buffer size and max transfer rate)";
         public static final String forgeEnergyPerWatt = "Conversion rate of watts to Forge Energy (controls the actual energy cost of a unit of FE)";
