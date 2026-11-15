@@ -177,11 +177,14 @@ public class ThyratronComponent extends MirrorableComponent implements IRendered
             tickConductionSound(placed, data, lit);
         });
         placed.onServerWorld(() -> world -> {
-            if (wire.isLit() != placed.get(LIT)) {
-                if (wire.isLit()) {
+            // pollLit(), not isLit(): one sample at the end of the tick aliases against an
+            // alternating supply (see ThyratronWire.pollLit). Called exactly once per tick here.
+            boolean lit = wire.pollLit();
+            if (lit != placed.get(LIT)) {
+                if (lit) {
                     ModdedSoundEvents.THYRATRON_FIRE.playOnServer(world, placed.getPos(), 0.8f, 0.95f + world.random.nextFloat() * 0.2f);
                 }
-                placed.set(LIT, wire.isLit());
+                placed.set(LIT, lit);
                 placed.notifyClients(LIT);
             }
         });

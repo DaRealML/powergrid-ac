@@ -104,10 +104,14 @@ public class ThyratronAcTest extends TestHelper {
         final ThyratronWire tube;
 
         Rig(double gridVolts) {
+            this(gridVolts, FREQUENCY);
+        }
+
+        Rig(double gridVolts, double frequency) {
             var ground = net.N();
             net.network.addNode(new VoltageSourceCoupling(ground, null, 0f, 0f));
             var hot = net.N();
-            net.network.addNode(new ACVoltageSourceCoupling(hot, null, 0.001f, PEAK, FREQUENCY));
+            net.network.addNode(new ACVoltageSourceCoupling(hot, null, 0.001f, PEAK, frequency));
             var anode = net.N();
             net.W((float) LOAD, hot, anode);
             var grid = net.V((float) gridVolts);
@@ -230,5 +234,85 @@ public class ThyratronAcTest extends TestHelper {
         Assertions.assertTrue(tube.isLit(), "One call after the current collapsed the tube should still be held lit");
         net.calculate();
         Assertions.assertFalse(tube.isLit(), "A second call below the holding current should put it out");
+    }
+
+    /**
+     * ThyratronComponent ticks once per world tick and used to read {@code isLit()} there, which is
+     * one sample of a tube that strikes and goes out many times inside the tick. This is the case the
+     * component hands to {@code pollLit()}.
+     * <p>
+     * The premise is asserted too: the single sample really does miss the tube. At 20, 40 and 60 Hz a
+     * tube conducting about 41 percent of the time read unlit on every tick; at 50 Hz it alternated.
+     */
+    @Test
+    void aTubeThatConductsOnEveryCycleIsPolledLitOnEveryWorldTick() {
+        var subTicks = 64;
+        for(var frequency : new double[]{20, 40, 50, 60}) {
+            var rig = new Rig(0, frequency);
+            var ticks = 0;
+            var polledLit = 0;
+            var sampledLit = 0;
+            for(int t = 0; t < SETTLE_TICKS + MEASURE_TICKS; ++t) {
+                rig.net.network.prepare(subTicks);
+                for(int s = 0; s < subTicks; ++s)
+                    rig.net.network.singleTick();
+                var sample = rig.tube.isLit();
+                var polled = rig.tube.pollLit();
+                if(t < SETTLE_TICKS)
+                    continue;
+                ++ticks;
+                if(polled)
+                    ++polledLit;
+                if(sample)
+                    ++sampledLit;
+            }
+            Assertions.assertEquals(ticks, polledLit,
+                    "pollLit() should be true on every world tick at " + frequency + " Hz");
+            Assertions.assertTrue(sampledLit < ticks,
+                    "The end-of-tick sample was lit on all " + ticks + " ticks at " + frequency
+                            + " Hz, so this test no longer shows the aliasing it exists to fix");
+        }
+    }
+
+    @Test
+    void aTubeThatNeverStrikesIsNeverPolledLit() {
+        // Grid at -10 V: the strike voltage is 60 + 20 * 10 = 260 V and the supply peaks at 150 V.
+        // An unlit tube still leaks OFF_CONDUCTANCE times its anode voltage, so this also checks
+        // that the leakage is not mistaken for conduction.
+        var subTicks = 64;
+        var rig = new Rig(-10, FREQUENCY);
+        for(int t = 0; t < SETTLE_TICKS + MEASURE_TICKS; ++t) {
+            rig.net.network.prepare(subTicks);
+            for(int s = 0; s < subTicks; ++s)
+                rig.net.network.singleTick();
+            Assertions.assertFalse(rig.tube.pollLit(), "An unstruck tube polled lit on world tick " + t);
+        }
+    }
+
+    @Test
+    void onAnIslandSteppedOncePerWorldTickPollLitIsExactlyIsLit() {
+        // The direct-current case, where upstream's behaviour must not move: one sub-tick per world
+        // tick, so the end-of-tick sample is the whole story, on the way in and on the way out.
+        var net = new Network();
+        var supply = net.V(50f);
+        var ground = net.V(0);
+        var anode = net.N();
+        var grid = net.V(1f);
+        var tube = new ThyratronWire(MU, VB, VH, IH, G_ON, ground, anode, grid);
+        net.network.addWire(tube);
+        net.W(10f, supply, anode);
+
+        var sawLit = false;
+        var sawUnlit = false;
+        for(int i = 0; i < 12; ++i) {
+            if(i == 5)
+                supply.setVoltage(VH);
+            net.calculate();
+            var sample = tube.isLit();
+            Assertions.assertEquals(sample, tube.pollLit(), "pollLit() against isLit() at step " + i);
+            sawLit |= sample;
+            sawUnlit |= !sample;
+        }
+        Assertions.assertTrue(sawLit && sawUnlit, "The run should have struck and gone out, or it proves nothing");
     }
 }

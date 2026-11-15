@@ -23,6 +23,8 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
     private final IElectricNode grid;
     private final float controlRatio;
     private float emission = 1f;
+    // Set whenever a sub-tick starts with the tube lit, cleared by pollLit(); see there.
+    private boolean litSincePolled;
 
     public ThyratronWire(float controlRatio, float breakdownVoltage, float holdingVoltage, float holdingCurrent, float dischargeConductance,
                          IElectricNode cathode, IElectricNode anode, IElectricNode grid) {
@@ -37,6 +39,28 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
 
     public float getEmission() {
         return emission;
+    }
+
+    /**
+     * Whether the tube was lit at any point since this was last called, which is what a block
+     * entity ticking once per world tick wants to know.
+     * <p>
+     * {@link #isLit()} is one sample, taken wherever the last sub-tick ended, and an alternating
+     * island is stepped many times per world tick with the tube striking and going out inside it.
+     * Read once per tick it lands on the same point of the cycle every time at 20, 40 and 60 Hz (a
+     * tube that conducts 41 percent of the time reads unlit on every one of 360 ticks) and flips
+     * every other tick at 50 Hz, so the glow, the hum and the strike sound followed the sampling
+     * and not the tube. An island stepped once per world tick has one sub-tick, so there this is
+     * exactly {@link #isLit()}.
+     * <p>
+     * Deliberately not "the RMS current is above the holding current": an unlit tube still leaks
+     * {@code OFF_CONDUCTANCE} times its anode voltage, which at the top of the voltage range is
+     * more than the holding current.
+     */
+    public boolean pollLit() {
+        var lit = litSincePolled || isLit();
+        litSincePolled = false;
+        return lit;
     }
 
     public double gridVoltage() {
@@ -68,6 +92,14 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
 
     @Override
     public void preSolve() {
+        advance();
+        // After the update, so it records the state this sub-tick is solved in. For an island
+        // stepped once per world tick that is the state isLit() reports at the end of the tick.
+        if (isLit())
+            litSincePolled = true;
+    }
+
+    private void advance() {
         if (!isConverged())
             return;
 
