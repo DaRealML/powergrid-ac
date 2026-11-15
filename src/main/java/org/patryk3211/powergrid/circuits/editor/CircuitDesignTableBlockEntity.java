@@ -86,13 +86,16 @@ public class CircuitDesignTableBlockEntity extends ElectricBlockEntity implement
     @Override
     protected void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.write(tag, registries, clientPacket);
-        tag.put("Schematic", schematic.serializeNbt(level.registryAccess()));
+        tag.put("Schematic", schematic.serializeNbt(registries));
     }
 
     @Override
     protected void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
         super.read(tag, registries, clientPacket);
-        schematic.deserializeNbt(level.registryAccess(), tag.getCompound("Schematic"));
+        // The registries argument, not level.registryAccess(): on a chunk load vanilla builds the
+        // block entity and calls loadAdditional before setLevel, so level is still null here and the
+        // whole block entity was being dropped on every world reload.
+        schematic.deserializeNbt(registries, tag.getCompound("Schematic"));
         if(clientPacket)
             schematicChanged = true;
     }
