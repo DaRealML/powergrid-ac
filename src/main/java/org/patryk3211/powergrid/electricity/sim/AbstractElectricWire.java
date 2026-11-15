@@ -275,7 +275,11 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
         var voltage = potentialDifference();
         var current = current();
 
-        aggregatePower += voltage * current / tickCount;
+        // internalPower(), not voltage * current: tubes, BJTs and VFETs override it because their
+        // terminals are not wired the way the product assumes (a tube's node1 is the cathode while
+        // its current is the positive anode current, so the product is negative). It is the same
+        // product for every wire that does not override it.
+        aggregatePower += internalPower() / tickCount;
         sumSquaredVoltage += voltage * voltage;
         sumSquaredCurrent += current * current;
         sumCurrent += current;

@@ -218,4 +218,50 @@ public class PentodeAcTest extends TestHelper {
                     "The last sub-tick of the first world tick should have converged at " + subTicks + " sub-ticks");
         }
     }
+
+    /**
+     * A tube's {@code power()} is what it dissipates, so it must be positive and equal the mean of
+     * what the circuit actually puts into it over the world tick.
+     * <p>
+     * Tubes keep the cathode on {@code node1} and the anode on {@code node2}, so
+     * {@code potentialDifference()} is cathode minus anode while the plate current is positive: the
+     * product {@code AbstractElectricWire.postMicroTick} used to sample was negative, and a sub-stepped
+     * (alternating) island aggregated that instead of the tube's own {@code internalPower()}. The heat
+     * a tube, a transistor or a VFET puts into its thermal unit comes from this number, so on an AC
+     * island they cooled instead of warming. A single-step island reads {@code internalPower()}
+     * directly, which is why the DC tests never saw it.
+     * <p>
+     * The reference is computed here from the circuit, not from the wire: plate voltage times the
+     * current through the load, plus the screen's voltage times the screen current from the model.
+     */
+    @Test
+    void aTubesPowerIsItsPositiveDissipationAtEverySubTickRate() {
+        for(var kind : new Kind[]{Kind.TRIODE, Kind.PENTODE_DROPPED_SCREEN, Kind.PENTODE_HELD_SCREEN}) {
+            for(var subTicks : new int[]{2, 16, 64}) {
+                var rig = new Rig(kind, kind == Kind.TRIODE ? 5 : 4, kind == Kind.TRIODE ? -2 : -5);
+                var label = kind + " at " + subTicks + " sub-ticks";
+                for(int t = 0; t < 40 + 10; ++t) {
+                    rig.net.network.prepare(subTicks);
+                    var sum = 0.0;
+                    for(int s = 0; s < subTicks; ++s) {
+                        rig.net.network.singleTick();
+                        var va = rig.plate.getVoltage();
+                        var power = va * (B_PLUS - va) / LOAD;
+                        if(kind != Kind.TRIODE) {
+                            var vs = rig.screen.getVoltage();
+                            power += vs * pentodeScreen(rig.grid.getVoltage(), vs);
+                        }
+                        sum += power;
+                    }
+                    if(t < 40)
+                        continue;
+                    var expected = sum / subTicks;
+                    var actual = rig.tube.power();
+                    Assertions.assertTrue(actual > 0, "power() should be positive dissipation, was " + actual + " W: " + label);
+                    Assertions.assertEquals(expected, actual, 0.03 * expected,
+                            "power() against the circuit's own dissipation, world tick " + t + ": " + label);
+                }
+            }
+        }
+    }
 }
