@@ -20,6 +20,8 @@ import net.minecraft.nbt.FloatTag;
 import net.minecraft.nbt.Tag;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Locale;
+
 public class FloatProperty extends ComponentProperty<Float> {
     private final float defaultValue;
     private final float min;
@@ -85,7 +87,8 @@ public class FloatProperty extends ComponentProperty<Float> {
             value *= 1e-6f;
             suffix = "M";
         }
-        return String.format("%.2f%s", value, suffix);
+        // Locale.ROOT: the text is handed back to parse(), which only understands a decimal point.
+        return String.format(Locale.ROOT, "%.2f%s", value, suffix);
     }
 
     @Override
