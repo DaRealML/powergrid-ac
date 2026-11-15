@@ -12,7 +12,7 @@ AI-written; no human has reviewed it.
 | | |
 |---|---|
 | Path | `G:\Claude\power-grid-ac\PowerGrid` (Git Bash: `/g/Claude/power-grid-ac/PowerGrid`) |
-| Branch | `ac-implementation`, base `4acf0805` |
+| Branch | `ac-implementation`. Original fork base `4acf0805`; merged with upstream's 1.21.1 build of 0.6.2 (`origin/architectury-1.21.1/dev` at `0938be06`) |
 | Publish to | remote **`private`** = `DaRealML/powergrid-ac` (public repo). **Never push `origin`** — that is upstream |
 | Stack | Minecraft 1.21.1, NeoForge, Create `[6.0.9,6.1.0)`, Architectury 13.0.8+. Java 21. Fabric is not built |
 | Design doc | `docs/AC.md` — every decision with the measurement behind it. **Read the section you are about to touch, and update it when you change behaviour** |
@@ -42,7 +42,7 @@ Each row was found by a player in game, not by a test. **Add a row when a new on
 | New translation key | `lang/default/*.json` is **not** what ships. The jar carries the datagen output | Add the key to `forge/src/main/generated/assets/powergrid/lang/en_us.json` **and** `en_ud.json` (upside-down; copy glyphs from an existing entry) |
 | Config read in `buildCircuit` | The component keeps the copy, so changing the setting in game does nothing until the block is replaced or the world reloads | Read config **at the point of use**, null-guarded like `AcSampling.configuredMaxSubTicks()` |
 | Two value boxes on one face | A side face is 10x12 px and Create hit-tests a box as a sphere of `scale/2` = 4 px radius, so they overlap | One box per face (`getClockWise()` / `getCounterClockWise()`) |
-| `git add -A` | `cs_CZ.json` and `cs_cz.json` collide on Windows and leave a permanently dirty file | Stage files by name, always |
+| `git add -A` | Sweeps in whatever else is dirty: untracked `forge/src/main/generated/.cache/`, and in any worktree older than the 0.6.2 merge the `cs_CZ.json`/`cs_cz.json` pair that collides on Windows (upstream deleted the duplicate, so a tree at or after the merge no longer has it) | Stage files by name, always |
 | A coil built with `connectCoil()`/`new LRSeriesWire(...)`, or a capacitor/inductor outside the circuit-board component system | The wire itself models stored energy correctly (current or voltage persists between sub-ticks), but nothing saves that state to NBT by default — it silently resets to zero on every chunk reload unless the owning block entity's `read`/`write` explicitly round-trips it | Add a field, load it in `read`, apply it with `wire.setCurrent(...)` in `buildCircuit` then zero the field (so a later rebuild with no fresh `read` cannot clobber live state), and save `wire.current()` in `write`. `WindingBlockEntity` already does the full version (`setCurrent(I, Vprev)` + `getVprev()`, preserving the theta-method history term too); every other coil-having block entity was missing this until it was audited and fixed for all 13 of them at once |
 | A packet handler (or any class a server links) reading `mc.level` / `mc.player`, or any other client-typed field or method | The JVM verifier loads `ClientLevel` to check it is assignable to `Level`, and does so while the packet is *linked* -- when `ModPackets` registers it -- so a dedicated server refuses (`Attempted to load class ... ClientLevel for invalid dist DEDICATED_SERVER` at `ModPackets.<clinit>`) and the whole mod fails to construct. Singleplayer never shows it | Go through `ClientSideAccess.world()` / `.player()`, a class a server never loads. `PacketsStayServerSafeTest` pins this for `network.packets`; anywhere else, boot the dev server (see Testing) |
 | A field read in `buildCircuit()` that is set after `super.addBehaviours()`, or declared with an initialiser | `ElectricBehaviour`'s constructor calls `buildCircuit()` from inside `super(...)`, before this class's field initialisers run. A field assigned after `super.addBehaviours()` is still null, an initialiser-declared array/object is null, and placing the block throws a `NullPointerException` (spark gap since `466abad5`, modular display since ac.11) | Build the behaviour *before* `super.addBehaviours()` and add it to the list after; leave state `buildCircuit` reads without an initialiser and reach it through a lazy accessor. `/setblock` every block on the dev server to find these |
@@ -76,7 +76,7 @@ real solver island; `PhasorFit` fits magnitude and phase without using the meter
 ```bash
 ./gradlew test --rerun          # whole suite, forced
 ./gradlew compileJava           # includes the forge subproject
-./gradlew :forge:remapJar       # jar at forge/build/libs/powergrid-mc1.21.1-0.6.1.jar
+./gradlew :forge:remapJar       # jar at forge/build/libs/powergrid-mc1.21.1-0.6.2.jar
 ```
 
 - **A passing new test proves nothing until you have seen it fail.** Break the thing it guards —
@@ -110,19 +110,45 @@ Standing authorisation: push, build and publish without asking. Never to `origin
 
 ```bash
 ./gradlew test --rerun && ./gradlew :forge:remapJar
-cp forge/build/libs/powergrid-mc1.21.1-0.6.1.jar /tmp/powergrid-mc1.21.1-0.6.1-ac.N.jar
+cp forge/build/libs/powergrid-mc1.21.1-0.6.2.jar /tmp/powergrid-mc1.21.1-0.6.2-ac.N.jar
 git push private ac-implementation
-"/c/Program Files/GitHub CLI/gh.exe" release create v0.6.1-ac.N \
-  "/tmp/powergrid-mc1.21.1-0.6.1-ac.N.jar#powergrid-mc1.21.1-0.6.1-ac.N.jar (NeoForge)" \
+"/c/Program Files/GitHub CLI/gh.exe" release create v0.6.2-ac.N \
+  "/tmp/powergrid-mc1.21.1-0.6.2-ac.N.jar#powergrid-mc1.21.1-0.6.2-ac.N.jar (NeoForge)" \
   -R DaRealML/powergrid-ac --target "$(git rev-parse HEAD)" \
   --title "..." --notes-file notes.md --prerelease
 ```
 
-- Tags are `v0.6.1-ac.N`, N incrementing, always `--prerelease`. `--target` needs the **full** sha.
+- Tags are `v<mod_version>-ac.N`, always `--prerelease`. `--target` needs the **full** sha. N counts up
+  within one `mod_version` and restarts at 1 when merging an upstream release moves it
+  (`v0.6.1-ac.1` to `-ac.16`, then `v0.6.2-ac.1`).
 - `mod_version` in `gradle.properties` stays at upstream's value so addon version ranges match.
 - Release notes: what changed, what a player must re-check after updating, and **what is not
   verified in game**. Tell them the native solver is not bundled and the log line
   `Selected backend 'NATIVE' is not supported` is expected.
+
+## Updating to a new upstream release
+
+Upstream's tags (`v0.6.2`) mark the **1.20.1** build. The 1.21.1 build is a separate branch,
+`origin/architectury-1.21.1/dev`, that periodically merges `architectury-1.20.1/dev` and is never
+tagged, so `git tag` alone makes it look as if only 1.20.1 exists. GitHub has no releases either.
+What is actually published is on Modrinth (project `power-grid`):
+
+```bash
+curl -s -A "powergrid-fork-check" https://api.modrinth.com/v2/project/power-grid/version | python -c \
+  "import sys,json; [print(v['date_published'][:10], v['version_number'], v['game_versions'], v['loaders']) for v in json.load(sys.stdin)[:8]]"
+```
+
+1. `git fetch origin --tags`. Check `git show origin/architectury-1.21.1/dev:gradle.properties | grep mod_version`, and that
+   the tag adds nothing the branch lacks: `git log --no-merges origin/architectury-1.21.1/dev..<tag>` is empty.
+2. Dry-run the conflicts without touching a file: `git merge-tree --write-tree --name-only --messages ac-implementation origin/architectury-1.21.1/dev`.
+3. Merge in its own worktree on a `ws/` branch, because the main checkout may carry uncommitted hunks
+   (`docs/AC.md`) that a merge refuses to overwrite, then fast-forward `ac-implementation` over a stash
+   taken under a unique tag.
+4. A clean text merge is not a clean merge. Compile, run the whole suite, then audit by area: new
+   solver elements under the sub-tick loop, save compatibility, dedicated-server boot plus datagen plus
+   the built jar, and every upstream line that calls something whose meaning the fork changed
+   (`current()` versus `rmsCurrent()`). The 0.6.2 merge was verified that way.
+5. Say in the release notes if a dependency range moved (0.6.2 moved TFMG to `[1.3.0,1.4.0)`).
 
 ## Honesty
 
@@ -143,7 +169,7 @@ short and near the repo: `git worktree add -b ws/<name> /g/Claude/power-grid-ac/
 ` inside a JS string written from a python heredoc | Becomes a real newline and the script will not parse | Build the backslash with `chr(92)`, or use the Write tool |
 | A usage limit mid-run | Agents fail with "session limit"; work is lost unless committed | Tell every agent to commit each unit the moment its tests pass, and put what was left behind in a RESUME notice when retrying |
 | Two agents editing `docs/AC.md` | Merge conflicts | Give each a different anchor section, then integrate with `git cherry-pick <base>..<branch>` (a fast-forward merge for the first) |
-| `git status` in any worktree | `lang/cs_CZ.json` is always modified (case collision) | Never stage it; it blocks `git rebase`, so cherry-pick instead |
+| `git status` in a worktree cut before the 0.6.2 merge | `lang/cs_CZ.json` is always modified (case collision), and it makes `git merge` refuse because the merge deletes that file | Never stage it; it blocks `git rebase`, so cherry-pick instead. For the one merge that removes it, `git update-index --skip-worktree` on `cs_CZ.json` lets the merge run, then `git checkout -- cs_cz.json` restores the file the delete took with it. Trees at or after the merge are clean |
 | Timing on a busy machine | Other agents are compiling | Trust counters (Newton iterations, refactorisations) and ratios inside one JVM run, not absolute milliseconds |
 | A Workflow agent's starting shell directory | It can inherit the coordinator's last-used cwd (e.g. still sitting in a sibling worktree), and an agent may mistake that for an assigned identity and refuse to work, believing another agent already owns the directory it woke up in | Tell it explicitly: the starting directory is an artifact of how it was launched, not a signal; its FIRST command should `cd` into its actual assigned worktree and verify the branch, then proceed — nothing else is using that worktree unless the brief says so |
 
