@@ -51,6 +51,21 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
         return Math.max(holdingVoltage, breakdownVoltage - controlRatio * vg);
     }
 
+    /**
+     * Consecutive calls to {@link #preSolve()} below the holding current that put the tube out.
+     * <p>
+     * preSolve runs once per sub-tick, so the two calls that hold a direct-current tube for a
+     * world tick or two hold a sub-stepped one for two sub-ticks: the extinction then lags the
+     * current zero by two sub-ticks while the strike lags its threshold by one, which both widens
+     * the conduction angle by a sub-tick and leaves the lit tube, a source behind a conductance,
+     * pushing current backwards for the extra sub-tick. One call makes the two delays equal and
+     * the angle independent of the sub-tick count. An island stepped once per world tick is a DC
+     * island and keeps the original two.
+     */
+    private int holdCalls() {
+        return network != null && network.getMultiTick() > 1 ? 1 : 2;
+    }
+
     @Override
     public void preSolve() {
         if (!isConverged())
@@ -61,7 +76,7 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
         if (litTicks <= 0) {
             if (emission > EMISSION_FIRE_THRESHOLD && V > strikeVoltage()) {
                 updateConductance(dischargeConductance);
-                litTicks = 2;
+                litTicks = holdCalls();
             }
         } else if (I < holdingCurrent || V <= 0) {
             if (--litTicks <= 0) {
@@ -69,7 +84,7 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
                 litTicks = 0;
             }
         } else {
-            litTicks = 2;
+            litTicks = holdCalls();
         }
     }
 
