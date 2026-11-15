@@ -10,7 +10,9 @@
 **This is not the upstream mod.** It is a prototype fork of
 [patryk3211/PowerGrid](https://github.com/patryk3211/PowerGrid) whose purpose is to find out whether
 that mod's direct-current electrical simulation could be made to do **alternating current**
-properly — and every line of the change was written by an AI assistant.
+properly — and every line of the fork's own change was written by an AI assistant. It currently tracks
+upstream's 1.21.1 / NeoForge build of **0.6.2** (see `docs/AC.md` §12 for what that merge brought and
+what was found in it).
 
 ### What it adds
 
@@ -41,11 +43,12 @@ things that are still wrong.
 
 ### It is entirely AI-edited
 
-Every commit on this branch was written by an AI assistant (Claude), and each one carries an
+Every commit this fork added was written by an AI assistant (Claude), and each one carries an
 `Assisted-by: LLM` trailer following the Linux kernel's
 [coding-assistants guidance](https://docs.kernel.org/process/coding-assistants.html). Per that
 guidance no commit carries a `Signed-off-by`, because only a human can certify the Developer
-Certificate of Origin. **Nothing here has been reviewed or signed off by a human.**
+Certificate of Origin. **Nothing the fork added has been reviewed or signed off by a human.** The
+history merged in from upstream is human-written and carries no such trailer.
 
 ### What state it is in
 
@@ -53,8 +56,8 @@ Treat this as a demo, not a release.
 
 - **None of it has been verified in a running game.** The test suite is headless; block entities,
   rendering, networking and anything needing Minecraft loaded cannot be covered by it.
-- 251 automated tests pass, covering the solver, the companion models, the arc, three-phase
-  machines and transformer banks, and the measurement maths.
+- 506 automated tests pass (`./gradlew test --rerun`, 2026-11-15), covering the solver, the companion models, the arc, three-phase
+  machines and transformer banks, the tubes under sub-ticking, and the measurement maths.
 - Several known defects are documented rather than fixed, because fixing them is a balance decision
   rather than a correctness one — most notably that **the transformer has no frequency dependence at
   all** and passes DC at full turns ratio.

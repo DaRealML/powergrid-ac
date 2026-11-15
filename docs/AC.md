@@ -2,9 +2,12 @@
 
 Design and review notes for the AC implementation, written for the mod's maintainers.
 
-**Base commit:** `4acf0805` (`architectury-1.21.1/dev`)
-**Scope:** additive. No existing class changes meaning, no existing world breaks, and with the
-shipped defaults every DC network is solved exactly as it was before.
+**Base commit:** `4acf0805` (`architectury-1.21.1/dev`); merged with upstream's 1.21.1 build of
+0.6.2 at `0938be06` (§12)
+**Scope:** additive to the DC mod it was cut from. No existing class changes meaning, no existing
+world breaks, and with the shipped defaults every DC network is solved exactly as it was before.
+Since the 0.6.2 merge the fork also carries a few deliberate deviations from upstream's *new* code,
+listed in §12 (the thyratron hold, float text in the property edit box, and others).
 
 ---
 
@@ -30,6 +33,7 @@ shipped defaults every DC network is solved exactly as it was before.
    - [3.15 Three-phase](#315-three-phase)
    - [3.16 Why a generator's reading moves](#316-why-a-generators-reading-moves-and-how-much-of-it-is-real)
    - [3.17 Reading AC through the multimeter and the creative source](#317-reading-ac-through-the-multimeter-and-the-creative-source)
+   - [3.18 Tubes under sub-ticking](#318-tubes-under-sub-ticking)
 4. [The linear fast path](#4-the-linear-fast-path)
 5. [Player-facing controls](#5-player-facing-controls)
    - [5.1 Pole-pair slider on the alternator](#51-pole-pair-slider-on-the-alternator)
@@ -42,6 +46,7 @@ shipped defaults every DC network is solved exactly as it was before.
 9. [Deliberate omissions](#9-deliberate-omissions)
 10. [Corrections to the feasibility assessment](#10-corrections-to-the-feasibility-assessment)
 11. [Open questions for the maintainer](#11-open-questions-for-the-maintainer)
+12. [Upstream 0.6.2 merge](#12-upstream-062-merge)
 
 **Reading this cold?** §1 and §6 are the two-minute version — what was added and where. §3 is the
 physics; read it in order the first time. §3.15, §3.16 and §5.2 are post-release incident reports —
@@ -185,7 +190,9 @@ two sums, at a cost of two multiply-accumulates per component per sub-tick:
 ```
 V_rms = sqrt( (1/N) * sum(v_k^2) )
 I_rms = sqrt( (1/N) * sum(i_k^2) )
-P     = (1/N) * sum(v_k * i_k)      <- this is the pre-existing aggregatePower
+P     = (1/N) * sum(p_k)            <- the pre-existing aggregatePower; p_k is internalPower()
+                                       (v_k * i_k for an ordinary wire, the dissipation for a
+                                       tube, BJT or VFET, §3.18)
 S     = V_rms * I_rms
 PF    = P / S
 ```
@@ -479,7 +486,8 @@ towards a resistor's and the figure handed to `ThermalBehaviour` is not trustwor
 `reactanceDegradesAtTheShippedSubTickCeiling` pins this rather than leaving it to be discovered.
 
 **The load/power-factor relationship is inverted relative to a real machine.** L is fixed while
-`motorDynamicResistance` scales R from 25.6 Ω at full load to 512 Ω at idle, so power factor
+`motorDynamicResistance` scales R from 25.6 Ω at full load to 512 Ω at idle (the idle floor is
+`electricity.motorMinimumLoad`, default 0.05, so 25.6 / 0.05; see §12), so power factor
 *improves* as the motor unloads (0.21 loaded, 0.98 idle at 72.5 Hz). Real induction machines are
 the opposite. The cause is that R here stands for the whole machine load rather than winding
 copper, so holding L fixed against it — correct for a winding — inverts the relationship. Fixing
@@ -1383,6 +1391,94 @@ behavior the whole of §3.17 depends on (verified earlier in this section), and 
 whether the needle and tooltip really do read correctly the moment the graph is closed -- needs a
 live client and has not been run.
 
+### 3.18 Tubes under sub-ticking
+
+Upstream 0.6.2 added a thyratron and a pentode and gave the triode its own item. They were written
+for a world that steps once per tick, and this fork steps an alternating island many times inside
+it, so the question was whether they still behave. `ThyratronAcTest` and `PentodeAcTest` hold the
+answers; the numbers below are what they measured.
+
+**The thyratron's hold was counted in sub-ticks.** `ThyratronWire.preSolve()` kept the tube lit for
+two calls below the holding current, and `preSolve()` runs once per *sub-tick*, so on an alternating
+island two calls are two sub-ticks, not two ticks. The tube went out two sub-ticks after its
+current reached the holding current while it had struck one late, so the conduction angle was one
+sub-tick too wide at every rate, and the lit tube — a source behind a conductance — pushed current
+backwards for the extra one. On 50 Hz behind 10 Ω with the grid at 0 V, against 151.8° from the
+lit-state model:
+
+| sub-ticks | 16 | 32 | 64 | 128 | 256 |
+|---|---|---|---|---|---|
+| conduction angle before | 202.5° | 180.0° | 165.9° | 158.9° | 155.4° |
+| conduction angle after | 146.3° | 151.9° | 151.9° | 151.9° | 151.9° |
+
+Reverse current while lit, at 64 sub-ticks, fell from 0.29 A mean and 6.9 A peak to 0.075 A and
+3.4 A. An island stepped more than once per tick now needs one call below the holding current; a
+direct-current island keeps the original two, so upstream's behaviour there is unchanged. The angle
+now rises monotonically with the grid (106.9°, 135.0°, 151.9°, 171.6° for −4, −2, 0 and +3 V at 64
+sub-ticks) and is within 3.6° of the model at 32–256 sub-ticks. What remains: the whole conduction
+window sits 1.5 sub-ticks late (21° at 64 sub-ticks), one reversed sub-tick is left, and 16
+sub-ticks reads 5.6° narrow. A predictive extinction removes the reversed sub-tick but makes the
+angle depend on the rate again (−14° at 64), so it was not taken. Verified for a resistive load
+only: a reactive load moves the current zero off the voltage zero and was not run. At 8 sub-ticks
+and below a 50 Hz tube has 3.2 samples a cycle and misses most strikes, so those readings mean
+nothing.
+
+The test is whether the island is sub-stepped, not whether it alternates, so a direct-current
+island that is sub-stepped anyway (a lockstep island, or `multiTicks` raised) gets the one-call hold
+too and loses the original 100 ms hysteresis. At the default settings a DC island is stepped once
+per tick and is unchanged.
+
+`ColdCathodeRegulatorTubeWire`, which the thyratron extends, and `NeonBulbWire` keep the two-call
+hold with the same dependence on the sub-tick count. Both are unchanged from the merge base, and
+the neon relaxation-oscillator circuits may rely on the hold, so changing them is a separate
+decision.
+
+**The component read one sample.** `ThyratronComponent.tick()` set `LIT` — the glow, the hum and
+the strike sound — from `isLit()` once per world tick. With the tube conducting about 41 % of the
+time at 64 sub-ticks, over 360 ticks that read unlit on every tick at 20, 40 and 60 Hz, and
+alternated every other tick at 50 Hz, which would also have fired the strike sound ten times a
+second. `ThyratronWire.pollLit()` reports whether the tube was lit at *any* sub-tick since it was
+last asked, and on an island stepped once per tick it is exactly `isLit()`. It is deliberately not
+"RMS current above the holding current": an unlit tube leaks `OFF_CONDUCTANCE` × its anode voltage,
+which at 2 kV is more than a high-voltage tube's 0.25 mA holding current. `NeonBulbComponent` and
+`RegulatorTubeComponent` read `isLit()` the same way and were left alone. Only the wire is tested;
+the glow, the hum and the sound were not seen or heard.
+
+One cost, found by review and not fixed: `LIT` is also saved and read back into the wire on load
+(`stateUpdated()` calls `setLit()`), and it can now be true while the wire is momentarily unlit, so a
+thyratron saved in the middle of an alternating cycle is forced lit for a couple of sub-ticks on
+reload whatever its anode voltage. Measured on 50 Hz behind 10 Ω with the strike voltage above the
+supply peak: 2 of the first 8 sub-ticks lit (one with reverse current) at 8 sub-ticks and 7 of 32 at
+32, then never again. A tube saved lit could always do this; the change makes it reachable on
+alternating islands. It is a blip at world load, and the aliasing it replaced was visible all the
+time.
+
+**`power()` was negative for tubes, BJTs and VFETs on alternating islands.** This one is the
+fork's own, from `df9f9c0b`. `AbstractElectricWire.postMicroTick()` summed `voltage * current`, but
+those wires override `internalPower()`: a tube's `node1` is the cathode while its current is the
+positive anode current, so the product is minus the dissipation. A single-step island returns
+`internalPower()` directly, so DC never showed it. A triode read −4.51 W at 2 sub-ticks where the
+circuit dissipates about +4.4 W, and `ThermalUnit` sums `wire.power()`, so on an AC island those
+parts cooled instead of warming. It aggregates `internalPower()` again, as the merge base did, and
+`PentodeAcTest` pins it for the triode and both pentode variants at 2, 16 and 64 sub-ticks against
+a dissipation computed from the circuit. The heating of a real part was not seen in game.
+
+**The pentode tracks its model, within a limit.** Driven from a 50 Hz grid at 8–128 sub-ticks with
+the *shipped* limiter (`triodeLim* = 0.5`; the rest of the suite runs the class default 0.8, which
+hides how slowly the limiter walks), it converged on every sub-tick with no NaN and its plate
+current stayed within 7.6 × 10⁻⁶ A of an independent solution of the Koren equations written in the
+test (tolerance 2 × 10⁻⁵ A). The triode behaves the same. The limiter moves a node 0.25 V per call,
+about three iterations per volt of per-sub-tick node step against a cap of 200, so a swing of
+roughly 55 V between two sub-ticks does not converge, and some of those solves report converged
+with the plate current wrong, because convergence is judged against a linearisation at the limited
+point. The pentode failed at 16 V of grid drive at 16 sub-ticks, 25 V at 32 and 40 V at 64; the
+triode in the same harness failed at 30 V and 16 sub-ticks. This is upstream's limiter, shared with
+the triode, and was not changed.
+
+No tube requests sub-ticks, and none of the existing ones did: an island's rate comes from its
+sources (`ISubTickRate` is implemented only by the AC sources, the alternator and the transmission
+line port).
+
 ---
 
 ## 4. The linear fast path
@@ -1911,7 +2007,7 @@ block still read 0.
 | `sim/solver/JavaMNA.java` | Added `singleTickLinear()`; `singleTick()` dispatches to it when `innerHooks` is empty. |
 | `sim/ElectricalNetwork.java` | Added `subTickRates` set (populated/removed alongside the existing hook sets), `computeSubTicks(int)`, `requiresLockstep()`, `getSubTicks()/setSubTicks()`. |
 | `electricity/WorldNetworks.java` | `preTick()` now computes a per-island rate, applies the lockstep rule, and uses the fractional stepping schedule. |
-| `sim/AbstractElectricWire.java` | Two new accumulators; `rmsVoltage()`, `rmsCurrent()`, `apparentPower()`, `powerFactor()`. `postMicroTick()` now samples via `current()`. |
+| `sim/AbstractElectricWire.java` | Two new accumulators; `rmsVoltage()`, `rmsCurrent()`, `apparentPower()`, `powerFactor()`. `postMicroTick()` now samples via `current()`, and since 0.6.2 aggregates `internalPower()` again for the power term (§3.18). |
 | `sim/special/TransmissionLinePort.java` | Implements `ISubTickRate`, returns `requiresLockstep() == true`. |
 | `sim/node/ITimeAwareWire.java` | Rate-independent `leakageFactor()`; `getTheta()`/`thetaRatio()` replace `TRAPEZOID_APPROX`, §3.14. |
 | `sim/special/{Capacitor,Inductor,CRSeries,LRSeries}Wire.java` | Corrected trapezoidal expressions; rate-independent leakage, §3.9. |
@@ -1941,6 +2037,9 @@ block still read 0.
 | `test/.../WyeDeltaSystemTest.java` | Wye and delta on a G_MIN network with nothing grounded; 24 tests, §3.15. |
 | `equipment/multimeter/MultimeterTrace.java` | Client-side ring buffer of readings, §5.2. |
 | `equipment/multimeter/MultimeterScreen.java` | The plot itself; plain `Screen`, no menu. |
+| `circuits/circuitboard/AssemblyTag.java`, `test/.../AssemblyTagTest.java` | Migrates a renamed component id in a half-built circuit's assembly list; 5 tests, §12. |
+| `test/.../ThyratronAcTest.java`, `PentodeAcTest.java` | Tubes under sub-ticking: conduction angle, `pollLit()`, plate current against an independent oracle, `power()`; 8 + 5 tests, §3.18. |
+| `test/.../BoardSaveCompatTest.java`, `FloatPropertyLocaleTest.java` | ac.16 circuit-board property NBT decodes unchanged (fixture written by the ac.16 classes); float text round-trips in any locale; 5 + 3 tests, §12. |
 | `test/.../AlternatorTest.java`, `LinearFastPathTest.java`, `ReactiveAcTest.java`, `AcSourceTest.java`, `PhasorTest.java`, `ProbeSamplerTest.java`, `MotorReactanceTest.java`, `ReactivePhaseTest.java` | 54 tests, §7. |
 
 ### Why `AlternatorCoupling extends GeneratorCoupling`
@@ -2199,3 +2298,99 @@ sub-tick electromechanical transients should know this before relying on them.
 5. **Usage complexity.** The maintainer's stated objection in issue #936 is a design position
    about the mod's audience, not a technical one, and nothing here answers it. AC introduces
    synchronisation, power factor and rectification as things players must understand.
+
+
+---
+
+## 12. Upstream 0.6.2 merge
+
+This fork was cut from upstream's `architectury-1.21.1/dev` at `4acf0805` and has since been merged
+with the same branch at `0938be06`, the 1.21.1 build of Create: Power Grid **0.6.2** (published to
+Modrinth on 2026-09-14; the jar itself was not downloaded or compared with the branch). Upstream
+tags only the 1.20.1 build — `v0.6.2` at `d681ac98` — and that tag holds nothing the 1.21.1 branch
+lacks. Eight later commits on the 1.20.1 line (rotor placement, vertical vias, a contactor
+refactor, `zh_tw`, a startup-crash fix; through 2026-11-02) are not in this tree.
+
+**What it brought:** the thyratron and pentode tubes and a separate triode item, through-board
+vias, datapack biome overrides for solar panels, Farmer's Delight basin-heater support, a
+configurable motor minimum load, a circuit-board component lookup, a winding stack-overflow fix, the
+transformer advancement fix, float property formatting, and a TFMG dependency range moved from
+`[1.2.3,1.3.0)` to `[1.3.0,1.4.0)`. `cs_CZ.json`, a near-duplicate of `cs_cz.json` that collided
+with it on Windows, was deleted upstream (with two empty files, `ar_SA.json` and `cy_GB.json`), so a
+checkout no longer has a permanently modified file. It was not a pure duplicate: it held 14 keys
+that `cs_cz.json` lacks, 9 of them still in use, which are now untranslated in Czech.
+
+**Two textual conflicts, both adjacent additions.** `CElectricity` keeps `motorTimeConstant` and
+`coilTimeConstant` beside upstream's `motorMinimumLoad`. In `TransformerBlockEntity` the fork's
+`rmsCurrent()` is never negative, so upstream's `Math.abs` is a no-op here, and its advancement
+award now fires on the whole-tick RMS rather than on one sample. `motorMinimumLoad` is read per
+`updateFromNetwork` call, so it is a live setting. It is the idle floor of the dynamic motor
+resistance and the load is now clamped to at most 1, so a motor over capacity no longer drops below
+its nominal resistance. The config range allows 0, which makes the idle resistance infinite;
+`LRSeriesWire.setResistance` rejects that with `IllegalArgumentException` (reproduced on the wire
+half; the motor path is reasoned).
+
+**Found by auditing the merge and fixed here:**
+
+| Defect | Where it came from | Commit subject |
+|---|---|---|
+| Thyratron conduction angle depended on the sub-tick count, §3.18 | upstream, never run under sub-ticks | `thyratron: put the tube out after one sub-tick below the holding current` |
+| `FloatProperty` text used the JVM locale, so on a comma-decimal system the edit box showed `7,50`, failed to parse, and reset the property to its default when the field lost focus | upstream 0.6.2 | `properties: format floats with Locale.ROOT so the edit box round-trips` |
+| `power()` negative for tubes, BJTs and VFETs on AC islands, §3.18 | this fork, `df9f9c0b` | `wire: aggregate internalPower() so tubes and transistors heat on AC` |
+| `CircuitDesignTableBlockEntity.read` used `level`, null during chunk load, so the block entity was dropped on every world reload | upstream 0.6.2 | `circuits: read the design table's schematic with the registries argument` |
+| A half-built circuit that still needed a tube kept the renamed `electron_tube` id: it could never be finished and hovering it threw in the tooltip | upstream 0.6.2 | `circuits: migrate the old tube id in a half-built circuit's assembly list` |
+| `ThyratronComponent` read `isLit()` once per tick, §3.18 | upstream, never run under sub-ticks | `thyratron: tell the component whether the tube was lit during the tick` |
+| The NeoForge data had no recipe or advancement for the three tubes (upstream committed them under `fabric/` only), so a jar built from the tree could not craft them | upstream 0.6.2 | `datagen: commit the forge recipes for the three tubes` |
+| `death.attack.arc_flash` was never generated into `en_us`/`en_ud`, so an arc-flash death showed a raw key | this fork, before 0.6.2 | `lang: regenerate en_us and en_ud from datagen` |
+
+**Found and left alone**, because it is upstream's behaviour and nothing here changes how the AC
+work depends on it. Reproduced where it says so; everything else was read, not run.
+
+- The winding recursion guard returns only when `lotsOfLogs` is on, so by default the upstream
+  "fix" for the stack overflow does nothing. The code is identical at the merge base, so default
+  behaviour has not changed.
+- `SolarBiomeRegistry.forBiome` overwrites its result on every iteration, so only the last registry
+  entry can ever match, and `solarConstant` is not reset after a panel leaves an override biome.
+- `ViaComponent.footprint` binds `EDGE_CONNECTIONS` only to the `y == 15` term by operator
+  precedence; `CircuitBoardBlockEntity.getComponent(Class, x, y)` matches on x *or* y where x *and*
+  y is meant (no caller in this tree); and through-board via wires are skipped by `paused()` and
+  `unpaused()`.
+- `CookingPotBlockEntityMixin` and `SkilletBlockEntityMixin` exist but are in no mixin config; only
+  `HeatableBlockEntityMixin` is registered. Farmer's Delight is absent from the dev environment, so
+  the path with it present was not run.
+- `create:electron_tube` is no longer a circuit component item (the tag now lists the three new
+  tubes), and the terminal-label keys for the tubes exist only in the Fabric-generated lang, so the
+  NeoForge jar probably shows raw keys for them. The second is inferred from the files, not seen.
+- The tube limiter's limit on large per-sub-tick swings, §3.18, and a tube's `power()` follows
+  `reportedPower`, which can disagree with the solved circuit when a plate swings tens of volts per
+  sub-tick (a VFET outside the validated range read 0.57 W where the circuit dissipated 0.02 W).
+- `SwitchBlockEntity` and `LightBulbState` read a persisted one-shot `Effect` flag through `level`,
+  which is null during chunk load, so a block entity saved at the wrong moment may be dropped on
+  load. Identical at the merge base; reasoned, not run.
+- `HeatableBlockEntityMixin` logs `@Mixin target ... HeatableBlockEntity was not found` at boot when
+  Farmer's Delight is not installed; the server still reaches Done. New since ac.16.
+- Datagen deletes `forge/src/main/generated/data/powergrid/powergrid/solar_biome_override/example.txt`,
+  a hand-written file upstream committed there as well as under `src/main/resources` (blob-identical;
+  the jar carries it either way). `git checkout` it after a datagen run and never commit the deletion.
+
+**Saves.** Property NBT is unchanged: floats, ints, booleans, enums and strings round-trip
+byte-for-byte against fixtures produced by the ac.16 classes (`BoardSaveCompatTest`). The old
+`powergrid:electron_tube` id is remapped to `powergrid:triode` when a schematic is read, but that
+path could not be run headless (`ComponentFootprint`'s static initialiser reaches Create and
+Registrate, which cannot be defined on the test classpath), so it is verified by reading only.
+**Compatibility is forward only**: a board saved by this build stores `powergrid:triode`, which
+ac.16 cannot load.
+
+**Verification at this merge.** The whole suite passes: 506 tests, 0 failures, 1 skipped (the
+golden-file regenerator). That is ac.16's 467, upstream's 13 (`PentodeTest`, `ThyratronTest`) and 26
+added by the audit (`ThyratronAcTest`, `PentodeAcTest`, `AssemblyTagTest`, `BoardSaveCompatTest`,
+`FloatPropertyLocaleTest`). What no test reaches is as before: block entities, rendering,
+networking, the config screen, the tubes' glow and sound, and anything on a client.
+
+Two dedicated-server boots of one world on the merged tree placed all 78 blockstates with
+`/setblock`, saved, restarted and reloaded them (74 persisted; the other four remove themselves when
+placed alone, as at ac.16), re-read the design table's block entity from disk, and logged no `Failed to
+load data for block entity` and no `NullPointerException`. They ran the dev classes, not the remapped
+jar, which was inspected (metadata, assets, mixin configs) and never booted; no island was formed, so
+the solver fixes rest on the unit tests; and Farmer's Delight and TFMG were absent. Datagen, run
+against an empty cache, reproduces the committed tree apart from the `example.txt` deletion above.

@@ -6,8 +6,9 @@ description: Develop the PowerGrid AC fork - a Minecraft 1.21.1 NeoForge mod bui
 # powergrid-dev
 
 A prototype fork of [patryk3211/PowerGrid](https://github.com/patryk3211/PowerGrid) that adds
-alternating current to a mod whose simulation was entirely direct-current. Every commit is
-AI-written; no human has reviewed it.
+alternating current to a mod whose simulation was entirely direct-current. Every commit the fork
+added is AI-written and no human has reviewed it; commits merged from upstream are human-written and
+carry no trailer.
 
 | | |
 |---|---|
@@ -39,16 +40,24 @@ Each row was found by a player in game, not by a test. **Add a row when a new on
 | Two `ScrollValueBehaviour`s on one block entity | Both write NBT key `"ScrollValue"`; each reads the other's value back, live, because the same compound is synced to the client | Override `read`/`write` with a distinct key per behaviour |
 | `ValueSettingsBehaviour.netId()` | Defaults to `0`; the server applies an incoming setting to the **first** behaviour whose id matches, so every click lands on one slider | Override `netId()` per behaviour |
 | `getClipboardKey()` | Defaults to `"Settings"` for all of them | Override per behaviour |
-| New translation key | `lang/default/*.json` is **not** what ships. The jar carries the datagen output | Add the key to `forge/src/main/generated/assets/powergrid/lang/en_us.json` **and** `en_ud.json` (upside-down; copy glyphs from an existing entry) |
+| New translation key | `lang/default/*.json` is the source, but it is **not** what ships: the jar carries `forge/src/main/generated/assets/powergrid/lang/en_us.json` and `en_ud.json`, which the data generator writes from it | Add the key to the default JSON, run `./gradlew :forge:runData` and commit the regenerated files. Hand-editing them is how they drifted before 0.6.2: `death.attack.arc_flash` never generated (a raw key on screen), five keys out of order, nine wrong upside-down glyphs |
 | Config read in `buildCircuit` | The component keeps the copy, so changing the setting in game does nothing until the block is replaced or the world reloads | Read config **at the point of use**, null-guarded like `AcSampling.configuredMaxSubTicks()` |
 | Two value boxes on one face | A side face is 10x12 px and Create hit-tests a box as a sphere of `scale/2` = 4 px radius, so they overlap | One box per face (`getClockWise()` / `getCounterClockWise()`) |
 | `git add -A` | Sweeps in whatever else is dirty: untracked `forge/src/main/generated/.cache/`, and in any worktree older than the 0.6.2 merge the `cs_CZ.json`/`cs_cz.json` pair that collides on Windows (upstream deleted the duplicate, so a tree at or after the merge no longer has it) | Stage files by name, always |
 | A coil built with `connectCoil()`/`new LRSeriesWire(...)`, or a capacitor/inductor outside the circuit-board component system | The wire itself models stored energy correctly (current or voltage persists between sub-ticks), but nothing saves that state to NBT by default — it silently resets to zero on every chunk reload unless the owning block entity's `read`/`write` explicitly round-trips it | Add a field, load it in `read`, apply it with `wire.setCurrent(...)` in `buildCircuit` then zero the field (so a later rebuild with no fresh `read` cannot clobber live state), and save `wire.current()` in `write`. `WindingBlockEntity` already does the full version (`setCurrent(I, Vprev)` + `getVprev()`, preserving the theta-method history term too); every other coil-having block entity was missing this until it was audited and fixed for all 13 of them at once |
 | A packet handler (or any class a server links) reading `mc.level` / `mc.player`, or any other client-typed field or method | The JVM verifier loads `ClientLevel` to check it is assignable to `Level`, and does so while the packet is *linked* -- when `ModPackets` registers it -- so a dedicated server refuses (`Attempted to load class ... ClientLevel for invalid dist DEDICATED_SERVER` at `ModPackets.<clinit>`) and the whole mod fails to construct. Singleplayer never shows it | Go through `ClientSideAccess.world()` / `.player()`, a class a server never loads. `PacketsStayServerSafeTest` pins this for `network.packets`; anywhere else, boot the dev server (see Testing) |
 | A field read in `buildCircuit()` that is set after `super.addBehaviours()`, or declared with an initialiser | `ElectricBehaviour`'s constructor calls `buildCircuit()` from inside `super(...)`, before this class's field initialisers run. A field assigned after `super.addBehaviours()` is still null, an initialiser-declared array/object is null, and placing the block throws a `NullPointerException` (spark gap since `466abad5`, modular display since ac.11) | Build the behaviour *before* `super.addBehaviours()` and add it to the list after; leave state `buildCircuit` reads without an initialiser and reach it through a lazy accessor. `/setblock` every block on the dev server to find these |
+| `String.format` (or any locale-sensitive call) producing text that is parsed back | The JVM's default locale follows the operating system, not Minecraft's language. On a comma-decimal system `%.2f` prints `7,50`, `Float.parseFloat` rejects it, and `PropertyEntry.setValue` answers a parse failure by resetting the property to its default, so clicking into a field and out again lost the value (`FloatProperty`, 0.6.2) | `Locale.ROOT` for anything that round-trips. Test under a comma-decimal `Locale.setDefault`, and restore it |
+| A `BlockEntity.read()` override that touches `level` | On a chunk load vanilla builds the block entity and calls `loadAdditional` (which reaches `read`) **before** `setLevel`, so `level` is null; `BlockEntity.loadStatic` swallows the exception ("Failed to load data for block entity") and the block entity is dropped on every world reload. Placing it works, so singleplayer never shows it (`CircuitDesignTableBlockEntity`, 0.6.2) | Use the `registries` argument. `/setblock` the block, `save-all`, restart the dev server, grep the log for `Failed to load data` |
+| Renaming a component id between releases | Saved items name ids as text. Schematics are remapped on read, but anything else that stores the id keeps the dead one: the `Assembly` list of a half-built circuit could never be finished, and `ComponentRegistry.get` throws for an unknown id while drawing the tooltip | Remap wherever the id is *read* (`AssemblyTag.migrate`), and keep that map in step with `ComponentRegistry.remapId` |
+| A wire that overrides `internalPower()` | `power()` on a sub-stepped island sums in `AbstractElectricWire.postMicroTick`, and that must sum `internalPower()`. `voltage * current` is minus the dissipation for any wire whose node order is not "positive current flows node1 to node2" (a tube's node1 is its cathode), and every thermal unit reads `power()`: on an AC island tubes, BJTs and VFETs cooled instead of warming from `df9f9c0b` until 0.6.2 | Compare `power()` with a dissipation computed from the circuit at 2, 16 and 64 sub-ticks (`PentodeAcTest`) |
+| Counting hysteresis in `preSolve()` calls | `preSolve()` runs once per **sub-tick**, so "two calls" is two sub-ticks and the behaviour moves with `acMaxSubTicks`: a thyratron's conduction angle read 202.5, 180.0, 165.9 degrees at 16, 32, 64 sub-ticks against 151.8 true. `ColdCathodeRegulatorTubeWire` and `NeonBulbWire` still count this way | Make the count depend on whether the island is sub-stepped (`ThyratronWire.holdCalls()`), or count time |
+| A block entity reading `isLit()`, `current()` or any single wire state once per world tick | It aliases exactly like sampling a waveform: a tube conducting 41 percent of the time read unlit on all 360 ticks at 20, 40 and 60 Hz | A "since last asked" flag (`ThyratronWire.pollLit()`) or a whole-tick RMS. `NeonBulbComponent` and `RegulatorTubeComponent` still read `isLit()` |
+| New items or recipes | The jar ships `forge/src/main/generated`, and upstream committed the tubes' recipes under `fabric/` only, so a jar built from the tree could not craft them | Run the forge datagen task and commit what changes. It writes LF into a CRLF checkout, so compare with `git diff --ignore-cr-at-eol` and stage only real differences. Check a fixed point against an **empty** `forge/src/main/generated/.cache`: with a warm cache every unchanged file is skipped and "written: 0" proves nothing. Datagen also deletes the tracked, hand-written `data/powergrid/powergrid/solar_biome_override/example.txt`: `git checkout` it, never commit that deletion |
 
 Live config knobs are read per tick (`multiTicks`, `integrationTheta`, `parallelIslands`/
-`parallelIslandsMinCount`/`parallelIslandsThreads` in `WorldNetworks.preTick`), on reload
+`parallelIslandsMinCount`/`parallelIslandsThreads` in `WorldNetworks.preTick`, `motorMinimumLoad` in each
+motor's `updateFromNetwork`), on reload
 (precisions, smoothing alphas) or per query (`seriesWireOptimization`). If you add one, say where
 it is read.
 
@@ -66,7 +75,11 @@ it is read.
 - **One shaft, one angle.** `RotorBehaviour` owns the shaft angle; every alternator winding reads
   it through `IRotor.getShaftAngle()` and adds its own elapsed time. Private integrators drift.
 - Sampling a waveform once per world tick aliases at 20, 40 and 60 Hz exactly. That bug class has
-  been fixed in wires, gauges, motors, transformers and the variac — check it in anything new.
+  been fixed in wires, gauges, motors, transformers, the variac and the thyratron's `LIT` flag — check it in anything new.
+- **`preSolve()` runs once per sub-tick**, so a hysteresis counted in calls is counted in sub-ticks
+  (`ThyratronWire.holdCalls()`). A block entity that ticks once per world tick should read an accumulator
+  (`pollLit()`, `rmsCurrent()`, `power()`), never `isLit()` or `current()`. `power()` on a sub-stepped
+  island is the mean of `internalPower()`.
 
 ## Testing
 
@@ -83,14 +96,20 @@ real solver island; `PhasorFit` fits magnitude and phase without using the meter
   make the mock return the old value — run it, confirm it fails, restore. Do this every time.
 - **What no test can reach:** block entities, behaviours, sliders, rendering, the config screen,
   networking. Anything there is unverified until a player says otherwise, and commit messages and
-  release notes must say so.
+  release notes must say so. `ComponentFootprint`'s static initialiser reaches `PowerGrid`, then Create and
+  Registrate, which cannot be defined on the test classpath (`IncompatibleClassChangeError`), so
+  `PlacedComponent`, `CircuitSchematic` and `ViaComponent` are unreachable too. Property classes and the
+  tube components' static properties are reachable. A fixture that must match an older release's bytes can
+  be made by compiling that revision's classes into a scratch directory ahead of the merged ones
+  (`BoardSaveCompatTest`, `ac16_properties.nbt`).
 - **The dedicated server is a test target the headless suite cannot be.** `./gradlew :forge:runServer` boots a real
   NeoForge dedicated server (working directory `forge/run`, gitignored). It is what found both server-only and
   construction-order crashes that 460 green tests had missed. Feed console commands through stdin with
   `tail -f cmds.txt | ./gradlew :forge:runServer --console=plain`, `setblock` every id in
   `forge/src/main/generated/assets/powergrid/blockstates`, `save-all`, restart, and read the log. Commands run
   from the console, so they must not call `getPlayerOrException()`. The JVM may not exit after `stop` because
-  other mods in the dev environment leave non-daemon `pool-N-thread-M` threads; kill it by hand.
+  other mods in the dev environment leave non-daemon `pool-N-thread-M` threads; kill it by hand. The dev
+  server neither needs nor creates an `eula.txt`; do not make one.
 - Throwaway probes are fine — write one, run it, read the numbers, **delete it**. Keep the test
   only if it pins something.
 
@@ -139,7 +158,9 @@ curl -s -A "powergrid-fork-check" https://api.modrinth.com/v2/project/power-grid
 ```
 
 1. `git fetch origin --tags`. Check `git show origin/architectury-1.21.1/dev:gradle.properties | grep mod_version`, and that
-   the tag adds nothing the branch lacks: `git log --no-merges origin/architectury-1.21.1/dev..<tag>` is empty.
+   the tag adds nothing the branch lacks: `git cherry -v origin/architectury-1.21.1/dev <tag>` prints only
+   lines that start with `-` (already present under another sha). Plain `git log --no-merges` is not
+   enough: for v0.6.2 it lists `d681ac98`, a content duplicate of a commit the branch already has.
 2. Dry-run the conflicts without touching a file: `git merge-tree --write-tree --name-only --messages ac-implementation origin/architectury-1.21.1/dev`.
 3. Merge in its own worktree on a `ws/` branch, because the main checkout may carry uncommitted hunks
    (`docs/AC.md`) that a merge refuses to overwrite, then fast-forward `ac-implementation` over a stash
@@ -176,6 +197,11 @@ short and near the repo: `git worktree add -b ws/<name> /g/Claude/power-grid-ac/
 Review every agent branch with three independent lenses before merging: correctness, mutation
 (break the code, confirm the tests fail) and conformance (commit style, scope, this table). The
 mutation lens found an unguarded newest-sample bug in the multimeter that 26 green tests missed.
+
+Do not cite a sibling branch's sha in a commit message: cherry-pick integration rewrites it, and the
+reference dangles. After a mutation run, `git checkout -- <file>` and check `git status` is clean before
+the worktree is reused, or the next build tests mutated code. A mutation backup must be taken from the
+working file (CRLF), not from `git show` (LF).
 
 ## Performance facts already measured
 
