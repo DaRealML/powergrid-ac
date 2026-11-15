@@ -51,10 +51,15 @@ public class AssemblyTagTest {
 
     @Test
     void aTagWithNothingRenamedIsLeftExactlyAsItWas() {
-        var tag = assembly("powergrid:triode", 1, "powergrid:resistor", 4);
-        var before = tag.copy();
-        AssemblyTag.migrate(tag);
-        Assertions.assertEquals(before, tag);
+        // The second tag has no tube at all: migrating must not invent a powergrid:triode entry,
+        // even a zero one, because a circuit can only be finished once the Missing list is empty.
+        for(var tag : new CompoundTag[] {
+                assembly("powergrid:triode", 1, "powergrid:resistor", 4),
+                assembly("powergrid:resistor", 4)}) {
+            var before = tag.copy();
+            AssemblyTag.migrate(tag);
+            Assertions.assertEquals(before, tag);
+        }
     }
 
     @Test

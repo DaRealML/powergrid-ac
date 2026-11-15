@@ -232,9 +232,10 @@ public abstract class AbstractElectricWire implements INetworkElement, IMultiHoo
     /**
      * Power factor, P / S, in [-1, 1].
      * <p>
-     * {@link #power()} already averages the instantaneous product v*i across the sub-ticks,
-     * which is precisely the real power P. Returns 1 for an unloaded element, where S is zero
-     * and the ratio is undefined.
+     * {@link #power()} averages {@link #internalPower()} across the sub-ticks. For an ordinary
+     * wire that is the instantaneous product v*i, which is precisely the real power P; for the
+     * tubes, BJTs and VFETs, which override it, it is their dissipation. Returns 1 for an
+     * unloaded element, where S is zero and the ratio is undefined.
      */
     public double powerFactor() {
         var apparent = apparentPower();

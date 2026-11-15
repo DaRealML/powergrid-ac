@@ -83,8 +83,10 @@ public class ThyratronWire extends ColdCathodeRegulatorTubeWire {
      * current zero by two sub-ticks while the strike lags its threshold by one, which both widens
      * the conduction angle by a sub-tick and leaves the lit tube, a source behind a conductance,
      * pushing current backwards for the extra sub-tick. One call makes the two delays equal and
-     * the angle independent of the sub-tick count. An island stepped once per world tick is a DC
-     * island and keeps the original two.
+     * the angle independent of the sub-tick count. An island stepped once per world tick keeps the
+     * original two, which is every direct-current island at the default settings. The test is
+     * whether the island is sub-stepped, not whether it alternates, so a direct-current island that
+     * is sub-stepped anyway (a lockstep island, or {@code multiTicks} raised) gets one as well.
      */
     private int holdCalls() {
         return network != null && network.getMultiTick() > 1 ? 1 : 2;

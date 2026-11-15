@@ -33,8 +33,9 @@ import java.util.Map;
  */
 public final class AssemblyTag {
     /**
-     * Component ids that were renamed, old to new. {@code ComponentRegistry} remaps the same
-     * rename when it matches an item to a component; keep the two in step.
+     * Component ids that were renamed, old to new. The same rename is written out in two other
+     * places, {@code ComponentRegistry.remapId} (item to component) and {@code PlacedComponent.get}
+     * (schematics); a future rename has to touch all three.
      */
     private static final Map<String, String> RENAMED = Map.of(
             "powergrid:electron_tube", "powergrid:triode");

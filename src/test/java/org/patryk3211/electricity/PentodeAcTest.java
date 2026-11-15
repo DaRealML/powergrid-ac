@@ -46,9 +46,10 @@ public class PentodeAcTest extends TestHelper {
     /**
      * Largest plate-current error allowed against the oracle, in amps.
      * <p>
-     * The worst error measured over every case below was 7.6e-6 A (a held screen at 12 V of drive,
-     * 32 sub-ticks); a dropping-resistor screen and the triode were at 1e-7 or better. This is 2.6
-     * times the worst and 0.06 % of the smallest plate-current swing, 12.9 mA.
+     * The worst error over the cases below is 5.8e-6 A (a held screen at 12 V of drive, 64
+     * sub-ticks); a dropping-resistor screen and the triode stay under 1e-7 A. This is 3.4 times
+     * the worst and 0.4 % of the smallest plate-current swing, 5.0 mA (the dropped screen at 4 V of
+     * drive).
      */
     private static final double TOLERANCE = 2e-5;
 

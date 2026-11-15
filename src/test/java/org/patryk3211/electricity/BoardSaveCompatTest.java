@@ -169,9 +169,9 @@ public class BoardSaveCompatTest {
     void propertiesAbsentFromAnAc16SaveTakeTheirDefault() {
         // ac.16 saves have none of the 0.6.2 keys. The new through-board via flags are declared as
         // BooleanProperty(ns, "edge_connections", true) and (ns, "vertical_passthrough"); ViaComponent
-        // itself cannot be class-loaded headless (see the class comment), so the same declarations are
-        // used here. What matters is that an absent key reads as the declared default, which keeps an
-        // ac.16 edge via connected to its neighbour board.
+        // itself cannot be class-loaded headless (see the class comment), so they are re-declared here
+        // by hand. That means this pins PropertyEntry's handling of an absent key, and NOT that
+        // ViaComponent keeps these defaults: changing its own declaration would not fail this test.
         var edge = new BooleanProperty("powergrid", "edge_connections", true);
         var passthrough = new BooleanProperty("powergrid", "vertical_passthrough");
         var empty = new CompoundTag();
@@ -182,8 +182,10 @@ public class BoardSaveCompatTest {
         Assertions.assertEquals(true, edgeEntry.get());
         Assertions.assertEquals(false, passEntry.get());
 
-        // The pentode is new, but PentodeComponent.dataFixup exists to give a saved pentode a screen
-        // grid: an absent tube_kg2 must read as its default, not as 0 (the property's minimum is 200).
+        // An absent tube_kg2 must read as the property's declared default, not as 0 (its minimum is
+        // 200). This is PropertyEntry's absent-key path only: PentodeComponent.dataFixup, which exists
+        // to give a saved pentode a screen grid, is not called, and the comparison reads the same
+        // declaration it checks, so a changed default would not fail it.
         var kg2 = PropertyEntry.makeFor(PentodeComponent.K_G2, null);
         kg2.read(REGISTRIES, empty);
         Assertions.assertEquals(PentodeComponent.K_G2.defaultValue(), kg2.get());
